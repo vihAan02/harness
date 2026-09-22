@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import { AgentEvent, ToolIntentKind, Vendor } from "@mp/protocol";
 import { Daemon, DaemonError, type HookInput } from "./daemon.ts";
+import { isClaudeEventSlug } from "@mp/adapter-claude";
 import { ToolError } from "./tools.ts";
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -21,6 +22,7 @@ const Bodies = {
   }),
   stream: z.object({ events: z.array(AgentEvent).min(1).max(500) }),
   ack: z.object({ ids: z.array(z.string().min(1)).max(1000) }),
+  launch: z.object({ prompt: z.string().max(20_000).optional(), channels: z.boolean().optional() }),
   hook: z.object({
     agentId: z.string().optional(),
     cwd: z.string().optional(),
@@ -128,6 +130,21 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
     ["POST", /^\/v1\/agents\/([^/]+)\/tools\/([a-z_]+)$/, async ({ params, body }) => {
       const raw = (await body()) as { args?: unknown };
       return daemon.tool(params[0]!, params[1]!, raw?.args ?? {});
+    }],
+    ["POST", /^\/v1\/agents\/([^/]+)\/launch\/claude$/, async ({ params, body }) => {
+      const input = parse(Bodies.launch, await body());
+      return daemon.claude.launch(params[0]!, {
+        ...(input.prompt ? { prompt: input.prompt } : {}),
+        ...(input.channels !== undefined ? { channels: input.channels } : {}),
+      });
+    }],
+    // Claude Code's plugin hooks. Always answer 200 with Claude-shaped JSON; failures mean "carry on".
+    ["POST", /^\/v1\/hooks\/claude\/([a-z-]+)$/, async ({ params, req, body }) => {
+      const event = params[0]!;
+      if (!isClaudeEventSlug(event)) throw new HttpError(404, "not_found", `unknown Claude hook ${event}`);
+      const raw = await body().catch(() => ({}));
+      const header = req.headers["x-mp-agent-id"];
+      return daemon.claude.handle(event, raw, typeof header === "string" && header ? header : undefined);
     }],
     ["POST", /^\/v1\/hooks\/pre$/, async ({ body }) => daemon.preToolUse(parse(Bodies.hook, await body()) as HookInput)],
     ["POST", /^\/v1\/hooks\/post$/, async ({ body }) => daemon.postToolUse(parse(Bodies.hook, await body()) as HookInput)],

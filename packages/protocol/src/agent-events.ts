@@ -20,6 +20,8 @@ export type AgentEventKind = z.infer<typeof AgentEventKind>;
 export const AgentEvent = z.object({
   at: Timestamp,
   kind: AgentEventKind,
+  /** For `message`: who said it: the agent's user (a prompt) or the agent itself. */
+  role: z.enum(["user", "assistant"]).optional(),
   text: z.string().max(8000).optional(),
   tool: z.string().max(200).optional(),
   /** Summarized tool input (e.g. the command, or the edited path). */

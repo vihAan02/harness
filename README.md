@@ -15,7 +15,9 @@ The IDE itself (a Code-OSS fork) lives in a separate repo. See the plan for the 
 
 | `packages/mcp` | `mp-mcp`, the `multiplayer` MCP server. Claude Code and Codex launch it over stdio, one per agent session. It exposes the 12 `mp_*` tools, briefs the agent on how to coordinate, and (for Claude) pushes room messages into the session live as channel events. |
 
-Next up: `packages/adapter-claude` (plugin: hooks + MCP config), `packages/adapter-codex`, `packages/hook-shim`.
+| `packages/adapter-claude` | The Claude Code adapter, a pure library the daemon hosts. It translates Claude hook payloads and answers, turns transcripts into stream events (never Claude's reasoning, with secrets redacted), and generates the `multiplayer` plugin, the MCP config and the launch command. |
+
+Next up: `packages/adapter-codex`, `packages/hook-shim`, then the IDE.
 
 ## Commands
 
@@ -58,6 +60,20 @@ npm start -w @mp/daemon      # run mp-daemon (MP_HOME defaults to ~/.multiplayer
 - **Live push (Claude):** with `MP_CHANNELS=1`, the server declares `claude/channel`. It streams the agent's messages from the daemon (`GET /v1/agents/:id/feed`) and emits each as a `notifications/claude/channel` event. It then acknowledges them (`POST /v1/agents/:id/feed/ack`), and only then does the daemon count them as delivered. Unacknowledged messages fall back to hook delivery after 30s.
   - Only set `MP_CHANNELS=1` when Claude is started with `--dangerously-load-development-channels server:multiplayer`. Otherwise Claude silently drops channel events.
 - **Failure mode:** if the daemon is down, tools return a readable error and the agent keeps working.
+
+## Claude adapter in one screen
+
+- **Launch:** the IDE calls `POST /v1/agents/:id/launch/claude { prompt? }`. The daemon writes the plugin to `~/.multiplayer/claude/plugin/` and the agent's MCP config to `~/.multiplayer/claude/agents/<id>/mcp.json`, then returns `{ command, args, env, cwd }`:
+  - `claude --plugin-dir … --mcp-config … --dangerously-load-development-channels server:multiplayer "<prompt>"`, run in the worktree
+  - with `MP_AGENT_ID` and `MP_DAEMON_TOKEN` in the environment
+- **Hooks:** the plugin's HTTP hooks post to `/v1/hooks/claude/<event>`, sending the token and agent id as headers read from the environment (never written to disk).
+  - `SessionStart` briefs the agent and names the session.
+  - `PreToolUse` enforces plans, locks and freezes. It only ever denies or adds context, never auto-approves.
+  - `PostToolUse` and `UserPromptSubmit` deliver messages.
+  - `Stop` keeps Claude going only for unread questions and handoffs, once.
+  - `PermissionRequest` and `Stop` drive presence.
+  - If the daemon is unreachable, Claude treats it as a non-blocking error and works solo.
+- **Stream:** the session's transcript is followed as it grows. It shares prompts, replies, tool calls and short redacted results. It never shares thinking, the contents of reads or searches, or subagent side chains.
 
 ## Relay protocol in one screen
 

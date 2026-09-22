@@ -1,3 +1,4 @@
+export { ClaudeHost, DEFAULT_MCP_ENTRY, type ClaudeHostOptions } from "./claude.ts";
 export { CONFIG_FILE, DEFAULT_LOCK_EXEMPT, loadRepoConfig, RepoConfig } from "./config.ts";
 export { Daemon, DaemonError, fitForWire, type DaemonOptions, type FeedMessage, type HookInput } from "./daemon.ts";
 export { computeLiveDiff, parseUnifiedDiff, unquoteGitPath } from "./diff.ts";
@@ -11,3 +12,4 @@ export { RelayClient, wsUrlFor } from "./relay-client.ts";
 export { startServer, type ServerHandle } from "./server.ts";
 export { runTool, TOOL_NAMES, ToolError, type ToolName, type ToolResult } from "./tools.ts";
 export { slugify } from "./worktrees.ts";
+export { JsonlTail } from "./tail.ts";

@@ -17,6 +17,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@mp/adapter-claude": "*",
     "@mp/protocol": "*",
     "@mp/room": "*",
     "zod": "^4.1.0"

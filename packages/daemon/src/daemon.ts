@@ -2,6 +2,7 @@ import { watch, type FSWatcher } from "node:fs";
 import type { AgentEvent, AgentStatus, DiffFile, HookDecision, Message, RoomEvent, ToolIntentKind, Vendor } from "@mp/protocol";
 import { OPEN_REVIEW_STATUSES } from "@mp/protocol";
 import { loadRepoConfig, RepoConfig } from "./config.ts";
+import { ClaudeHost, type ClaudeHostOptions } from "./claude.ts";
 import { computeLiveDiff } from "./diff.ts";
 import { actorLabel, formatInbox, formatStatusTable } from "./format.ts";
 import { repoInfo } from "./git.ts";
@@ -41,6 +42,8 @@ export interface DaemonOptions {
   fetchOnCreate?: boolean;
   /** How long a message pushed to a live feed may go unacknowledged before hooks deliver it again. */
   feedAckTimeoutMs?: number;
+  /** Claude Code adapter settings (how to run mp-mcp, the claude binary, transcript polling). */
+  claude?: ClaudeHostOptions;
 }
 
 /** A hook call, already mapped to vendor-neutral terms by an adapter. */
@@ -108,7 +111,9 @@ function unref(t: { unref?: () => void } | undefined): void {
 export class Daemon {
   readonly home: Home;
   identity!: Identity;
-  private readonly opts: Required<Omit<DaemonOptions, "home" | "linkFactory" | "fetch">> & Pick<DaemonOptions, "linkFactory" | "fetch">;
+  private readonly opts: Required<Omit<DaemonOptions, "home" | "linkFactory" | "fetch" | "claude">> & Pick<DaemonOptions, "linkFactory" | "fetch">;
+  /** The Claude Code adapter: plugin hooks, transcript streaming, launch specs. */
+  readonly claude: ClaudeHost;
   private readonly rooms = new Map<string, RoomRuntime>();
   private readonly agents = new Map<string, LocalAgent>();
   private readonly runtime = new Map<string, AgentRuntime>();
@@ -119,6 +124,7 @@ export class Daemon {
 
   constructor(opts: DaemonOptions) {
     this.home = typeof opts.home === "string" ? new Home(opts.home) : opts.home;
+    this.claude = new ClaudeHost(this, opts.claude);
     this.opts = {
       diffDebounceMs: 400,
       statusDebounceMs: 750,
@@ -131,7 +137,7 @@ export class Daemon {
       feedAckTimeoutMs: 30_000,
       linkFactory: opts.linkFactory,
       fetch: opts.fetch,
-      ...Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)),
+      ...Object.fromEntries(Object.entries(opts).filter(([k, v]) => v !== undefined && k !== "claude")),
     } as Daemon["opts"];
   }
 
@@ -151,6 +157,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    this.claude.stop();
     for (const id of this.runtime.keys()) this.stopRuntime(id);
     for (const room of this.rooms.values()) {
       for (const off of room.offs) off();
@@ -728,6 +735,49 @@ export class Daemon {
       await this.persistAgents();
     }
     return pending;
+  }
+
+  // ------------------------------------------------------------------ helpers for vendor adapters
+
+  /** Publishes an agent's status (debounced), e.g. from a vendor hook. */
+  setAgentStatus(agentId: string, status: AgentStatus): void {
+    const agent = this.agents.get(agentId);
+    if (agent) this.setStatus(agent, status);
+  }
+
+  /**
+   * Takes pending messages for the agent (marking them delivered) and formats them as context.
+   * With `onlyNeedsReply`, only questions, handoffs and urgent messages are taken.
+   */
+  async inboxContext(agentId: string, opts: { onlyNeedsReply?: boolean } = {}): Promise<string | undefined> {
+    const agent = this.getAgent(agentId);
+    const room = this.rooms.get(agent.roomId);
+    if (!room) return undefined;
+    let pending = this.pendingFor(agent);
+    if (opts.onlyNeedsReply) pending = pending.filter((m) => m.urgent || m.kind === "question" || m.kind === "handoff");
+    if (!pending.length) return undefined;
+    agent.delivered = markDelivered(agent.delivered, pending.map((m) => m.id));
+    await this.persistAgents();
+    return formatInbox(pending, room.link.mirror.state);
+  }
+
+  /** What an agent is told when its session starts: who it is, the room right now, and how to begin. */
+  async briefing(agentId: string): Promise<string> {
+    const agent = this.getAgent(agentId);
+    const room = this.rooms.get(agent.roomId);
+    const lines = [
+      `You are "${agent.name}" (agent id ${agent.id}) in the multiplayer room for ${agent.repoKey}, working in your own worktree on branch ${agent.branch} (based on ${agent.baseRef}).`,
+      ...(agent.task ? [`Your task: ${agent.task}`] : []),
+    ];
+    if (room?.link.connected) {
+      lines.push("", "The room right now:", formatStatusTable(room.link.mirror.status(), room.link.mirror.state));
+    } else {
+      lines.push("", "The room is unreachable right now; coordination resumes when it's back.");
+    }
+    lines.push("", "Before your first edit, publish your plan with mp_plan and claim the area you'll own with mp_claim.");
+    const inbox = await this.inboxContext(agentId);
+    if (inbox) lines.push("", inbox);
+    return lines.join("\n");
   }
 
   // ------------------------------------------------------------------ live feed
