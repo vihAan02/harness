@@ -3,6 +3,7 @@ import type { AgentEvent, AgentStatus, DiffFile, HookDecision, Message, RoomEven
 import { OPEN_REVIEW_STATUSES } from "@mp/protocol";
 import { loadRepoConfig, RepoConfig } from "./config.ts";
 import { ClaudeHost, type ClaudeHostOptions } from "./claude.ts";
+import { CodexHost, type CodexHostOptions } from "./codex.ts";
 import { computeLiveDiff } from "./diff.ts";
 import { actorLabel, formatInbox, formatStatusTable } from "./format.ts";
 import { repoInfo } from "./git.ts";
@@ -44,6 +45,8 @@ export interface DaemonOptions {
   feedAckTimeoutMs?: number;
   /** Claude Code adapter settings (how to run mp-mcp, the claude binary, transcript polling). */
   claude?: ClaudeHostOptions;
+  /** Codex adapter settings (the codex binary, hook shim, how app-servers are started). */
+  codex?: CodexHostOptions;
 }
 
 /** A hook call, already mapped to vendor-neutral terms by an adapter. */
@@ -111,9 +114,11 @@ function unref(t: { unref?: () => void } | undefined): void {
 export class Daemon {
   readonly home: Home;
   identity!: Identity;
-  private readonly opts: Required<Omit<DaemonOptions, "home" | "linkFactory" | "fetch" | "claude">> & Pick<DaemonOptions, "linkFactory" | "fetch">;
+  private readonly opts: Required<Omit<DaemonOptions, "home" | "linkFactory" | "fetch" | "claude" | "codex">> & Pick<DaemonOptions, "linkFactory" | "fetch">;
   /** The Claude Code adapter: plugin hooks, transcript streaming, launch specs. */
   readonly claude: ClaudeHost;
+  /** The Codex adapter: per-agent app-servers, hooks via mp-hook, streaming and message push. */
+  readonly codex: CodexHost;
   private readonly rooms = new Map<string, RoomRuntime>();
   private readonly agents = new Map<string, LocalAgent>();
   private readonly runtime = new Map<string, AgentRuntime>();
@@ -125,6 +130,7 @@ export class Daemon {
   constructor(opts: DaemonOptions) {
     this.home = typeof opts.home === "string" ? new Home(opts.home) : opts.home;
     this.claude = new ClaudeHost(this, opts.claude);
+    this.codex = new CodexHost(this, opts.codex);
     this.opts = {
       diffDebounceMs: 400,
       statusDebounceMs: 750,
@@ -137,7 +143,7 @@ export class Daemon {
       feedAckTimeoutMs: 30_000,
       linkFactory: opts.linkFactory,
       fetch: opts.fetch,
-      ...Object.fromEntries(Object.entries(opts).filter(([k, v]) => v !== undefined && k !== "claude")),
+      ...Object.fromEntries(Object.entries(opts).filter(([k, v]) => v !== undefined && k !== "claude" && k !== "codex")),
     } as Daemon["opts"];
   }
 
@@ -158,6 +164,7 @@ export class Daemon {
   async stop(): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.claude.stop();
+    this.codex.stop();
     for (const id of this.runtime.keys()) this.stopRuntime(id);
     for (const room of this.rooms.values()) {
       for (const off of room.offs) off();

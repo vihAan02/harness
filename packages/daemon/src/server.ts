@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AgentEvent, ToolIntentKind, Vendor } from "@mp/protocol";
 import { Daemon, DaemonError, type HookInput } from "./daemon.ts";
 import { isClaudeEventSlug } from "@mp/adapter-claude";
+import { isCodexEventSlug } from "@mp/adapter-codex";
 import { ToolError } from "./tools.ts";
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -137,6 +138,18 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
         ...(input.prompt ? { prompt: input.prompt } : {}),
         ...(input.channels !== undefined ? { channels: input.channels } : {}),
       });
+    }],
+    ["POST", /^\/v1\/agents\/([^/]+)\/launch\/codex$/, async ({ params, body }) => {
+      const input = parse(Bodies.launch, await body());
+      return daemon.codex.launch(params[0]!, input.prompt ? { prompt: input.prompt } : {});
+    }],
+    // Codex hooks, forwarded by mp-hook. Always 200 with Codex-shaped JSON; failures mean "carry on".
+    ["POST", /^\/v1\/hooks\/codex\/([a-z-]+)$/, async ({ params, req, body }) => {
+      const event = params[0]!;
+      if (!isCodexEventSlug(event)) return {};
+      const raw = await body().catch(() => ({}));
+      const header = req.headers["x-mp-agent-id"];
+      return daemon.codex.handle(event, raw, typeof header === "string" && header ? header : undefined);
     }],
     // Claude Code's plugin hooks. Always answer 200 with Claude-shaped JSON; failures mean "carry on".
     ["POST", /^\/v1\/hooks\/claude\/([a-z-]+)$/, async ({ params, req, body }) => {

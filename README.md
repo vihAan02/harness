@@ -17,7 +17,10 @@ The IDE itself (a Code-OSS fork) lives in a separate repo. See the plan for the 
 
 | `packages/adapter-claude` | The Claude Code adapter, a pure library the daemon hosts. It translates Claude hook payloads and answers, turns transcripts into stream events (never Claude's reasoning, with secrets redacted), and generates the `multiplayer` plugin, the MCP config and the launch command. |
 
-Next up: `packages/adapter-codex`, `packages/hook-shim`, then the IDE.
+| `packages/adapter-codex` | The Codex adapter, a pure library the daemon hosts. It translates hook payloads (parsing `apply_patch` envelopes for the paths they touch), turns app-server items into stream events, and builds the `codex app-server` and `codex --remote` commands. |
+| `packages/hook-shim` | `mp-hook`, the one command every Codex hook runs. It forwards the event to the daemon and prints the answer, has no dependencies, and fails open. |
+
+Next up: the IDE.
 
 ## Commands
 
@@ -74,6 +77,20 @@ npm start -w @mp/daemon      # run mp-daemon (MP_HOME defaults to ~/.multiplayer
   - `PermissionRequest` and `Stop` drive presence.
   - If the daemon is unreachable, Claude treats it as a non-blocking error and works solo.
 - **Stream:** the session's transcript is followed as it grows. It shares prompts, replies, tool calls and short redacted results. It never shares thinking, the contents of reads or searches, or subagent side chains.
+
+## Codex adapter in one screen
+
+- **Launch:** the IDE calls `POST /v1/agents/:id/launch/codex { prompt? }`.
+  - The daemon starts a per-agent `codex app-server` on `ws://127.0.0.1:<port>`. It's protected by a capability token kept in a `0600` file, and the MCP server and hooks are passed as `-c` session overrides, so nothing is written to the repo or `~/.codex`.
+  - It returns `codex --remote ws://127.0.0.1:<port> --remote-auth-token-env MP_CODEX_REMOTE_TOKEN "<prompt>"` for a terminal in the worktree.
+- **Hooks:** every event runs the same `mp-hook codex` command. It reads the daemon's port and token from `daemon.json`, so the hook definition never changes and Codex only asks you to trust it once (in `/hooks`).
+  - `apply_patch` and Bash are gated like Claude's edits: plan, locks and freezes. We only ever deny or add context.
+  - `Stop` answers `decision: "block"` for unread questions and handoffs, so Codex continues with them as a prompt.
+- **Observer:** the daemon joins the terminal UI's thread with `thread/resume`, using the SessionStart hook's session id or, failing that, `thread/loaded/list`.
+  - It streams completed items into the room: never reasoning, never diffs, and command output is short and redacted.
+  - It tracks turns for presence.
+  - It never answers approval requests; those stay with the person at the terminal, and the agent shows as waiting for permission.
+- **Live messages:** mid-turn, room messages are delivered with `turn/steer`. When Codex is idle, only questions, handoffs and urgent messages start a turn (`turn/start`). Everything else waits for the agent's next hook.
 
 ## Relay protocol in one screen
 

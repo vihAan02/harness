@@ -1,10 +1,12 @@
 export { ClaudeHost, DEFAULT_MCP_ENTRY, type ClaudeHostOptions } from "./claude.ts";
+export { AppServerClient, RpcError } from "./codex-client.ts";
+export { CodexHost, formatForCodex, spawnAppServer, type AppServerHandle, type CodexHostOptions, type StartAppServer } from "./codex.ts";
 export { CONFIG_FILE, DEFAULT_LOCK_EXEMPT, loadRepoConfig, RepoConfig } from "./config.ts";
 export { Daemon, DaemonError, fitForWire, type DaemonOptions, type FeedMessage, type HookInput } from "./daemon.ts";
 export { computeLiveDiff, parseUnifiedDiff, unquoteGitPath } from "./diff.ts";
 export { agentLabel, formatInbox, formatLockDenial, formatStatusTable, PLAN_REQUIRED } from "./format.ts";
 export { git, normalizeRemote, repoInfo } from "./git.ts";
-export { defaultHome, Home, type DaemonInfo, type Identity, type LocalAgent, type RoomRecord } from "./home.ts";
+export { defaultHome, Home, writePrivateFile, type DaemonInfo, type Identity, type LocalAgent, type RoomRecord } from "./home.ts";
 export { formatInvite, parseInvite, type Invite } from "./invite.ts";
 export { OfflineError, OpFailedError, type OpRequest, type RoomLink } from "./link.ts";
 export { classifyPaths, decidePreEdit, OFFLINE_WARNING } from "./policy.ts";

@@ -31,4 +31,5 @@ export {
   type LaunchSpec,
   type McpCommand,
 } from "./launch.ts";
-export { redact, TranscriptParser } from "./transcript.ts";
+export { redact } from "@mp/protocol";
+export { TranscriptParser } from "./transcript.ts";

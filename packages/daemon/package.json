@@ -18,11 +18,14 @@
   },
   "dependencies": {
     "@mp/adapter-claude": "*",
+    "@mp/adapter-codex": "*",
     "@mp/protocol": "*",
     "@mp/room": "*",
+    "ws": "^8.21.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "wrangler": "^4.136.1"
   }
 }

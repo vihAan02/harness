@@ -1,0 +1,17 @@
+{
+  "name": "@mp/hook-shim",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "mp-hook: the command hook Codex runs for every lifecycle event. Forwards the event to mp-daemon and prints its answer. No dependencies, fails open.",
+  "bin": {
+    "mp-hook": "./src/main.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@mp/daemon": "*"
+  }
+}

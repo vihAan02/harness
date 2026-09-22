@@ -1,0 +1,17 @@
+{
+  "name": "@mp/adapter-codex",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Codex adapter: hook payload translation (incl. apply_patch parsing), app-server item → stream mapping, and app-server/TUI launch specs. Pure library; mp-daemon hosts it.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@mp/protocol": "*"
+  }
+}

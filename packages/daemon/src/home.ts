@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Vendor } from "@mp/protocol";
 
 export interface Identity {
@@ -47,6 +47,13 @@ export interface DaemonInfo {
 
 export function defaultHome(): string {
   return process.env.MP_HOME || join(homedir(), ".multiplayer");
+}
+
+/** Writes a file only the current user can read, creating private parent directories as needed. */
+export async function writePrivateFile(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writeFile(path, content, { mode: 0o600 });
+  await chmod(path, 0o600);
 }
 
 export function randomId(bytes = 6): string {
