@@ -1,0 +1,22 @@
+{
+  "name": "@mp/relay",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker + Room Durable Object: the authoritative, hosted home of each room.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@mp/protocol": "*",
+    "@mp/room": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260922.1",
+    "wrangler": "^4.136.1"
+  }
+}

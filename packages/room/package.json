@@ -1,0 +1,21 @@
+{
+  "name": "@mp/room",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Pure, deterministic room state machine: the single source of truth for locks, claims, plans, threads, reviews and status. Run authoritatively by the relay and mirrored by daemons.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@mp/protocol": "*",
+    "picomatch": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@mp/protocol",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Shared wire protocol for the multiplayer relay, daemon and IDE: entities, client ops, server messages, agent events.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  }
+}
