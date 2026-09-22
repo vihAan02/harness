@@ -1,0 +1,27 @@
+{
+  "name": "@mp/daemon",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "mp-daemon: one per machine. Connects to rooms, manages agent worktrees, answers agent hooks, publishes live diffs and streams, and serves the mp_* agent tools.",
+  "bin": {
+    "mp-daemon": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/loopback.ts"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@mp/protocol": "*",
+    "@mp/room": "*",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.136.1"
+  }
+}

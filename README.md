@@ -11,8 +11,9 @@ The IDE itself (a Code-OSS fork) lives in a separate repo. See the plan for the 
 | `packages/protocol` | Wire protocol (zod): entities, client ops, server messages, agent stream events, status rows. |
 | `packages/room` | Pure, deterministic room engine: locks, claims, plans, threads, reviews, freezes, expiry, and the "What is everyone doing?" status. The relay runs it authoritatively; daemons mirror it. |
 | `apps/relay` | Cloudflare Worker + one SQLite-backed Durable Object per room. Hibernatable WebSockets, replay-on-reconnect, alarms for expiry. Runs on the Workers Free plan. |
+| `packages/daemon` | `mp-daemon`, one per machine; the IDE runs it as a background process. It keeps a live mirror of each room, gives every agent its own git worktree and branch, answers agent hooks, publishes live diffs and streams, delivers messages, and serves the `mp_*` agent tools over a localhost API. |
 
-Next up (milestones M1–M3): `packages/daemon`, `packages/mcp`, `packages/adapter-claude`, `packages/adapter-codex`, `packages/hook-shim`.
+Next up: `packages/mcp` (exposes the `mp_*` tools to agents), `packages/adapter-claude`, `packages/adapter-codex`, `packages/hook-shim`.
 
 ## Commands
 
@@ -22,7 +23,25 @@ npm test            # all workspaces (relay tests run in the local Workers runti
 npm run typecheck
 npm run dev -w @mp/relay     # local relay on http://localhost:8787
 npm run deploy -w @mp/relay  # deploy to your Cloudflare account (free plan works)
+npm start -w @mp/daemon      # run mp-daemon (MP_HOME defaults to ~/.multiplayer, port 47800)
 ```
+
+## Daemon in one screen
+
+- **Home:** `~/.multiplayer/` (`0700`) holds four files: `identity.json`, `rooms.json` (room secrets, `0600`), `agents.json`, and `daemon.json` (pid, port and API token, `0600`). Agent worktrees live in `worktrees/<repo>/<agent>` on branches `mp/<you>/<agent>`.
+- **API:** `http://127.0.0.1:47800/v1/...`, which needs `Authorization: Bearer <token from daemon.json>`. Requests with a browser `Origin` header or a foreign `Host` are refused.
+  - Rooms: `POST /rooms` (create), `POST /rooms/join` (invite link), `GET /rooms/:id/status` ("What is everyone doing?")
+  - Agents: `POST /agents` (worktree + register), `DELETE /agents/:id`, `POST /agents/:id/stream`
+  - Hooks: `POST /hooks/pre` and `POST /hooks/post`, with a vendor-neutral `{ cwd | agentId, kind, tool, paths, command }` body
+  - Tools: `POST /agents/:id/tools/:name`, where the name is one of `status`, `agent`, `plan`, `update_plan`, `claim`, `release`, `message`, `answer`, `inbox`, `who_touches`, `ask`, `handoff`
+- **Edit policy:**
+  1. Edits in another checkout are denied.
+  2. The agent must have published a plan.
+  3. Entering another agent's claim triggers a one-time warning.
+  4. The hot-file lock comes from the relay, except for lockfiles. If another agent holds it, the edit is denied with who holds it and why.
+  5. A review freeze holds the edit until it clears.
+
+  If the relay is unreachable, edits are allowed with a warning.
 
 ## Relay protocol in one screen
 

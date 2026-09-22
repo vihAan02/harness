@@ -12,3 +12,4 @@ export {
   type RoomState,
 } from "./state.ts";
 export { computeCollisions, computeStatus, type Collision } from "./status.ts";
+export { applyEvent, RoomMirror, SeqGapError, type MirrorOptions } from "./mirror.ts";

@@ -18,6 +18,8 @@ type Pred = (m: ServerMsg) => boolean;
 /** A minimal relay client for tests: an inbox you can take matching messages from. */
 export class TestClient {
   readonly inbox: ServerMsg[] = [];
+  /** Every message in arrival order, including ones already taken. */
+  readonly log: ServerMsg[] = [];
   closed: { code: number; reason: string } | null = null;
   private waiters: { pred: Pred; resolve: (m: ServerMsg) => void }[] = [];
   private req = 0;
@@ -27,6 +29,7 @@ export class TestClient {
     this.ws = ws;
     ws.addEventListener("message", (e) => {
       const msg = JSON.parse(e.data as string) as ServerMsg;
+      this.log.push(msg);
       const i = this.waiters.findIndex((w) => w.pred(msg));
       if (i >= 0) this.waiters.splice(i, 1)[0]!.resolve(msg);
       else this.inbox.push(msg);

@@ -83,6 +83,17 @@ describe("room over the wire", () => {
     });
   });
 
+  it("delivers an op's events to the sender before its ack (read-your-writes)", async () => {
+    const { roomId, secret } = await createRoom();
+    const sam = await joined(roomId, secret, SAM);
+    await sam.client.ok({ op: "agent.upsert", agent: claudeAgent });
+    const log = sam.client.log;
+    const eventAt = log.findIndex((m) => m.t === "event" && m.event.type === "agent.updated");
+    const ackAt = log.findIndex((m) => m.t === "ack");
+    expect(eventAt).toBeGreaterThanOrEqual(0);
+    expect(eventAt).toBeLessThan(ackAt);
+  });
+
   it("refuses to let one member act as another member's agent", async () => {
     const { roomId, secret } = await createRoom();
     const sam = await joined(roomId, secret, SAM);

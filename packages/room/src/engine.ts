@@ -588,15 +588,16 @@ export class RoomEngine {
       }
     }
 
-    const participants =
-      thread.kind === "room" ? thread.participants : uniqRefs([...thread.participants, op.from]);
-    const nextThread: Thread = { ...thread, participants, lastMessageAt: ctx.now };
-    tx.put("threads", nextThread.id, nextThread);
-    if (isNew) tx.emit({ type: "thread.opened", thread: nextThread });
+    if (isNew) {
+      const participants = thread.kind === "room" ? thread.participants : uniqRefs([...thread.participants, op.from]);
+      thread = { ...thread, participants };
+      tx.put("threads", thread.id, thread);
+      tx.emit({ type: "thread.opened", thread });
+    }
 
     const message: Message = {
       id: this.opts.newId(),
-      threadId: nextThread.id,
+      threadId: thread.id,
       from: op.from,
       to: op.to,
       kind: op.kind,
@@ -606,10 +607,20 @@ export class RoomEngine {
       createdAt: ctx.now,
     };
     this.postMessage(message, tx);
-    return { threadId: nextThread.id, messageId: message.id };
+    return { threadId: thread.id, messageId: message.id };
   }
 
+  /**
+   * Stores a message, adds its sender to the thread, and trims the thread. Mirrors replay the same
+   * rules from `message.posted` alone (see mirror.ts), so keep the two in sync.
+   */
   private postMessage(message: Message, tx: Tx): void {
+    const thread = this.state.threads.get(message.threadId);
+    if (thread) {
+      const isParticipant = thread.participants.some((p) => p.type === message.from.type && p.id === message.from.id);
+      const participants = thread.kind === "room" || isParticipant ? thread.participants : [...thread.participants, message.from];
+      tx.put("threads", thread.id, { ...thread, participants, lastMessageAt: message.createdAt });
+    }
     tx.put("messages", message.id, message);
     tx.emit({ type: "message.posted", message });
     const inThread = [...this.state.messages.values()]

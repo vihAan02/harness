@@ -102,6 +102,7 @@ export type ServerMsg =
   | { t: "event"; event: RoomEvent }
   /** Ephemeral: stream entries are not part of the seq'd event log. */
   | { t: "stream"; agentId: string; events: AgentEvent[] }
+  /** Sent after every event the op caused, so the sender's replica already reflects its write. */
   | { t: "ack"; reqId: string; ok: true; result?: unknown }
   | { t: "ack"; reqId: string; ok: false; error: OpError }
   | { t: "error"; error: OpError };

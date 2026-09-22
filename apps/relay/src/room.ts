@@ -99,9 +99,11 @@ export class RoomDO extends DurableObject<Env> {
       return this.send(ws, { t: "ack", reqId, ok: false, error: result.error! });
     }
     this.store.save(result, engine.state.seq);
-    this.send(ws, { t: "ack", reqId, ok: true, ...(result.result !== undefined ? { result: result.result } : {}) });
+    // Events before the ack: a client's mirror always includes its own write by the time the write
+    // resolves (read-your-writes). WebSocket frames on one socket are delivered in order.
     this.broadcast(result.events);
     if (result.stream) this.broadcastStream(result.stream.agentId, result.stream.events, ws);
+    this.send(ws, { t: "ack", reqId, ok: true, ...(result.result !== undefined ? { result: result.result } : {}) });
     await this.scheduleFromEngine();
   }
 
