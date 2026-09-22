@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "harness-ui-directions",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "apps/ide/design", "--", "--port", "5178", "--strictPort"],
+      "port": 5178
+    }
+  ]
+}

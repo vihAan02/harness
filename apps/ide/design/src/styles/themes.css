@@ -1,0 +1,129 @@
+/*
+ * Two Harness UI directions share one component set; each owns its tokens.
+ * The theme class lives on <html> so portalled shadcn surfaces (dialogs, popovers) inherit it.
+ */
+
+/* ── A · Graphite: editor-first, warm graphite, floating panels (Cursor-for-VS-Code) ── */
+.theme-graphite {
+  --frame: #0c0c0b;
+  --panel: #141413;
+  --background: #161615;
+  --raised: #1d1d1b;
+  --card: #1a1a19;
+  --card-foreground: #ecebe7;
+  --popover: #1b1b1a;
+  --popover-foreground: #ecebe7;
+  --foreground: #ecebe7;
+  --muted: #212120;
+  --muted-foreground: #8f8e88;
+  --faint: #6a6964;
+  --primary: #f3f2ee;
+  --primary-foreground: #121211;
+  --secondary: #242422;
+  --secondary-foreground: #ecebe7;
+  --accent: #242422;
+  --accent-foreground: #ecebe7;
+  --destructive: #ef6b6b;
+  --border: #272725;
+  --hairline: #22221f;
+  --input: #2c2c29;
+  --ring: #6a6964;
+  --radius: 0.625rem;
+  --warn: #e6b56a;
+  --danger: #ef6b6b;
+  --ok: #86d49e;
+  --code-font: 'JetBrains Mono Variable';
+
+  --syn-kw: #c0a3f0;
+  --syn-str: #a9cf8e;
+  --syn-num: #e6b977;
+  --syn-fn: #8fb9f2;
+  --syn-type: #7fcdc3;
+  --syn-com: #62615c;
+  --syn-punct: #8f8e88;
+  --syn-id: #dcdbd6;
+  --syn-prop: #e8ae8c;
+}
+
+/* ── B · Prism: agent-first mission control, pure black, spectral light (vgpu.sh) ── */
+.theme-prism {
+  --frame: #000000;
+  --panel: #040404;
+  --background: #000000;
+  --raised: #0b0b0b;
+  --card: #080808;
+  --card-foreground: #f4f4f5;
+  --popover: #0a0a0a;
+  --popover-foreground: #f4f4f5;
+  --foreground: #f4f4f5;
+  --muted: #101010;
+  --muted-foreground: #8b8b8b;
+  --faint: #545454;
+  --primary: #fafafa;
+  --primary-foreground: #000000;
+  --secondary: #111111;
+  --secondary-foreground: #f4f4f5;
+  --accent: #141414;
+  --accent-foreground: #f4f4f5;
+  --destructive: #ff5d5d;
+  --border: rgb(255 255 255 / 0.09);
+  --hairline: rgb(255 255 255 / 0.065);
+  --input: rgb(255 255 255 / 0.12);
+  --ring: rgb(255 255 255 / 0.35);
+  --radius: 0.5rem;
+  --warn: #ffb547;
+  --danger: #ff5d5d;
+  --ok: #5ee89b;
+  --code-font: 'Geist Mono Variable';
+
+  --syn-kw: #a98bff;
+  --syn-str: #62e6a0;
+  --syn-num: #ffb547;
+  --syn-fn: #56d5ff;
+  --syn-type: #ff8cc6;
+  --syn-com: #4a4a4a;
+  --syn-punct: #7a7a7a;
+  --syn-id: #ebebeb;
+  --syn-prop: #ffd08a;
+}
+
+html, body, #root { height: 100%; }
+body { font-size: 13px; -webkit-font-smoothing: antialiased; overflow: hidden; background: var(--frame); }
+::selection { background: rgb(143 185 242 / 0.28); }
+.theme-prism ::selection { background: rgb(169 139 255 / 0.35); }
+
+/* thin, quiet scrollbars */
+* { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 0.12) transparent; }
+
+/* syntax */
+.tok-kw { color: var(--syn-kw); }
+.tok-str { color: var(--syn-str); }
+.tok-num { color: var(--syn-num); }
+.tok-fn { color: var(--syn-fn); }
+.tok-type { color: var(--syn-type); }
+.tok-com { color: var(--syn-com); font-style: italic; }
+.tok-punct { color: var(--syn-punct); }
+.tok-id { color: var(--syn-id); }
+.tok-prop { color: var(--syn-prop); }
+
+/* "Thinking…" shimmer, like Cursor's agent status line */
+.shimmer {
+  background: linear-gradient(90deg, var(--muted-foreground) 0%, var(--muted-foreground) 40%, var(--foreground) 50%, var(--muted-foreground) 60%, var(--muted-foreground) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.4s linear infinite;
+}
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+
+.blink { animation: blink 1.05s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* mono micro-labels (Prism) */
+.micro { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer, .blink { animation: none; }
+  .shimmer { color: var(--muted-foreground); }
+}
