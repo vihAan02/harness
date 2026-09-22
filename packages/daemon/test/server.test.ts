@@ -72,6 +72,12 @@ describe("localhost API", () => {
     expect(status.body.table).toContain("auth-refactor (Claude · Sam");
   });
 
+  it("resolves a folder to its repo and room", async () => {
+    const res = await call("GET", `/v1/repos/resolve?path=${encodeURIComponent(repoPath + "/src")}`);
+    expect(res.body).toMatchObject({ root: repoPath, room: { roomId: ROOM_ID, connected: true } });
+    expect((await call("GET", `/v1/repos/resolve?path=${encodeURIComponent("/")}`)).status).toBe(404);
+  });
+
   it("reports bad input clearly", async () => {
     expect((await call("POST", "/v1/agents", { repoPath, name: "x", vendor: "gemini" })).status).toBe(400);
     const bad = await call("POST", `/v1/agents/${agent.id}/tools/claim`, { args: {} });
@@ -81,5 +87,47 @@ describe("localhost API", () => {
 
   it("ignores hooks from sessions it doesn't manage", async () => {
     expect((await call("POST", "/v1/hooks/pre", { cwd: "/tmp", kind: "edit", tool: "Edit", paths: ["/tmp/x"] })).body).toEqual({ decision: "allow" });
+  });
+});
+
+describe("room events for the IDE", () => {
+  it("streams a snapshot, then live events, and lets a human post to the room", async () => {
+    const ctrl = new AbortController();
+    const res = await fetch(`http://127.0.0.1:${server.port}/v1/rooms/${ROOM_ID}/events`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+      signal: ctrl.signal,
+    });
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    const next = async (event: string) => {
+      for (;;) {
+        const i = buf.indexOf("\n\n");
+        if (i >= 0) {
+          const block = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const name = /^event: (.+)$/m.exec(block)?.[1];
+          const data = /^data: (.+)$/m.exec(block)?.[1];
+          if (name === event && data) return JSON.parse(data);
+          continue;
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error("stream ended");
+        buf += decoder.decode(value, { stream: true });
+      }
+    };
+    const snap = await next("snapshot");
+    expect(snap).toMatchObject({ connected: true, identity: { name: "Sam" } });
+    expect(snap.localAgents.map((a: LocalAgent) => a.id)).toContain(agent.id);
+    expect(snap.room.agents.map((a: { id: string }) => a.id)).toContain(agent.id);
+
+    const posted = await call("POST", `/v1/rooms/${ROOM_ID}/messages`, { body: "standup in 5" });
+    expect(posted.status).toBe(200);
+    const ev = await next("event");
+    expect(ev).toMatchObject({ type: "thread.opened" });
+    const msg = await next("event");
+    expect(msg).toMatchObject({ type: "message.posted", message: { body: "standup in 5", from: { type: "member" } } });
+    ctrl.abort();
   });
 });

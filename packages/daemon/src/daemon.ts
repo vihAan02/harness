@@ -281,6 +281,18 @@ export class Daemon {
     await this.home.saveRooms((await this.home.rooms()).filter((r) => r.roomId !== roomId));
   }
 
+  /** Which repo a folder belongs to, and its room on this machine (if any). Used by the IDE on startup. */
+  async resolveRepo(path: string) {
+    let info;
+    try {
+      info = await repoInfo(path);
+    } catch (err) {
+      throw new DaemonError(404, "not_a_repo", (err as Error).message);
+    }
+    const room = this.listRooms().find((r) => r.repoKey === info.repoKey) ?? null;
+    return { root: info.root, repoKey: info.repoKey, defaultBase: info.defaultBase, remoteUrl: info.remoteUrl, room };
+  }
+
   listRooms() {
     return [...this.rooms.values()].map((r) => ({
       roomId: r.record.roomId,

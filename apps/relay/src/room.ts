@@ -102,7 +102,9 @@ export class RoomDO extends DurableObject<Env> {
     // Events before the ack: a client's mirror always includes its own write by the time the write
     // resolves (read-your-writes). WebSocket frames on one socket are delivered in order.
     this.broadcast(result.events);
-    if (result.stream) this.broadcastStream(result.stream.agentId, result.stream.events, ws);
+    // Streams go to everyone, sender included: the sender's own replica (and the IDE on that
+    // machine) shows its agents' activity from the same source as everyone else's.
+    if (result.stream) this.broadcastStream(result.stream.agentId, result.stream.events);
     this.send(ws, { t: "ack", reqId, ok: true, ...(result.result !== undefined ? { result: result.result } : {}) });
     await this.scheduleFromEngine();
   }
@@ -217,9 +219,9 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
-  private broadcastStream(agentId: string, events: AgentEvent[], except: WebSocket): void {
+  private broadcastStream(agentId: string, events: AgentEvent[]): void {
     const frame = JSON.stringify({ t: "stream", agentId, events } satisfies ServerMsg);
-    for (const ws of this.authedSockets(except)) this.sendRaw(ws, frame);
+    for (const ws of this.authedSockets()) this.sendRaw(ws, frame);
   }
 
   private send(ws: WebSocket, msg: ServerMsg): void {

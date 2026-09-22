@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { z } from "zod";
 import { AgentEvent, ToolIntentKind, Vendor } from "@mp/protocol";
 import { Daemon, DaemonError, type HookInput } from "./daemon.ts";
-import { isClaudeEventSlug } from "@mp/adapter-claude";
+import { initialPrompt, isClaudeEventSlug } from "@mp/adapter-claude";
 import { isCodexEventSlug } from "@mp/adapter-codex";
 import { ToolError } from "./tools.ts";
 
@@ -23,7 +23,19 @@ const Bodies = {
   }),
   stream: z.object({ events: z.array(AgentEvent).min(1).max(500) }),
   ack: z.object({ ids: z.array(z.string().min(1)).max(1000) }),
-  launch: z.object({ prompt: z.string().max(20_000).optional(), channels: z.boolean().optional() }),
+  launch: z.object({
+    prompt: z.string().max(20_000).optional(),
+    /** A task for a new agent: becomes its first prompt, with a nudge to coordinate first. */
+    task: z.string().max(20_000).optional(),
+    channels: z.boolean().optional(),
+  }),
+  humanMessage: z.object({
+    to: z.array(z.object({ type: z.enum(["agent", "member"]), id: z.string().min(1) })).max(50).default([]),
+    body: z.string().min(1).max(16_000),
+    kind: z.enum(["chat", "fyi", "question", "handoff"]).default("chat"),
+    threadId: z.string().optional(),
+    urgent: z.boolean().optional(),
+  }),
   hook: z.object({
     agentId: z.string().optional(),
     cwd: z.string().optional(),
@@ -101,9 +113,26 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
       return daemon.identity;
     }],
     ["GET", /^\/v1\/rooms$/, async () => daemon.listRooms()],
+    ["GET", /^\/v1\/repos\/resolve$/, async ({ url }) => {
+      const path = url.searchParams.get("path");
+      if (!path) throw new HttpError(400, "bad_request", "path is required");
+      return daemon.resolveRepo(path);
+    }],
     ["POST", /^\/v1\/rooms$/, async ({ body }) => daemon.createRoom(parse(Bodies.createRoom, await body()))],
     ["POST", /^\/v1\/rooms\/join$/, async ({ body }) => daemon.joinRoom(parse(Bodies.joinRoom, await body()))],
     ["GET", /^\/v1\/rooms\/([^/]+)\/status$/, async ({ params }) => daemon.roomStatus(params[0]!)],
+    ["POST", /^\/v1\/rooms\/([^/]+)\/messages$/, async ({ params, body }) => {
+      const m = parse(Bodies.humanMessage, await body());
+      return daemon.link(params[0]!).request({
+        op: "message.send",
+        from: { type: "member", id: daemon.identity.memberId },
+        to: m.to,
+        kind: m.kind,
+        body: m.body,
+        ...(m.threadId ? { threadId: m.threadId } : {}),
+        ...(m.urgent !== undefined ? { urgent: m.urgent } : {}),
+      });
+    }],
     ["GET", /^\/v1\/agents$/, async () => daemon.listAgents()],
     ["GET", /^\/v1\/agents\/resolve$/, async ({ url }) => {
       const cwd = url.searchParams.get("cwd");
@@ -134,14 +163,16 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
     }],
     ["POST", /^\/v1\/agents\/([^/]+)\/launch\/claude$/, async ({ params, body }) => {
       const input = parse(Bodies.launch, await body());
+      const prompt = input.prompt ?? (input.task ? initialPrompt(input.task) : undefined);
       return daemon.claude.launch(params[0]!, {
-        ...(input.prompt ? { prompt: input.prompt } : {}),
+        ...(prompt ? { prompt } : {}),
         ...(input.channels !== undefined ? { channels: input.channels } : {}),
       });
     }],
     ["POST", /^\/v1\/agents\/([^/]+)\/launch\/codex$/, async ({ params, body }) => {
       const input = parse(Bodies.launch, await body());
-      return daemon.codex.launch(params[0]!, input.prompt ? { prompt: input.prompt } : {});
+      const prompt = input.prompt ?? (input.task ? initialPrompt(input.task) : undefined);
+      return daemon.codex.launch(params[0]!, prompt ? { prompt } : {});
     }],
     // Codex hooks, forwarded by mp-hook. Always 200 with Codex-shaped JSON; failures mean "carry on".
     ["POST", /^\/v1\/hooks\/codex\/([a-z-]+)$/, async ({ params, req, body }) => {
@@ -174,6 +205,8 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
       const url = new URL(req.url ?? "/", `http://${host}`);
       const feed = /^\/v1\/agents\/([^/]+)\/feed$/.exec(url.pathname);
       if (feed && req.method === "GET") return openFeed(daemon, decodeURIComponent(feed[1]!), req, res);
+      const roomEvents = /^\/v1\/rooms\/([^/]+)\/events$/.exec(url.pathname);
+      if (roomEvents && req.method === "GET") return openRoomEvents(daemon, decodeURIComponent(roomEvents[1]!), req, res);
       for (const [method, pattern, handler] of routes) {
         const m = pattern.exec(url.pathname);
         if (!m || req.method !== method) continue;
@@ -210,6 +243,42 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
 }
 
 const FEED_PING_MS = 15_000;
+
+/**
+ * The live room for UIs (the IDE): `snapshot` first (room state, connection, this machine's agents
+ * and identity), then every `event`, `stream` and `status` change as it happens.
+ */
+function openRoomEvents(daemon: Daemon, roomId: string, req: IncomingMessage, res: ServerResponse): void {
+  let link;
+  try {
+    link = daemon.link(roomId);
+  } catch (err) {
+    const e = err as DaemonError;
+    return send(res, e.status ?? 404, { error: { code: e.code ?? "no_room", message: e.message } });
+  }
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+  const write = (event: string, data: unknown) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  write("snapshot", {
+    connected: link.connected,
+    room: link.mirror.stateSnapshot(),
+    localAgents: daemon.listAgents().filter((a) => a.roomId === roomId),
+    identity: daemon.identity,
+  });
+  const offs = [
+    link.on("event", (event) => write("event", event)),
+    link.on("stream", (agentId, events) => write("stream", { agentId, events })),
+    link.on("status", (connected) => {
+      write("status", { connected });
+      // After a reconnect the mirror may have been replaced wholesale; resend it.
+      if (connected) write("snapshot", { connected, room: link.mirror.stateSnapshot(), localAgents: daemon.listAgents().filter((a) => a.roomId === roomId), identity: daemon.identity });
+    }),
+  ];
+  const ping = setInterval(() => res.write(": ping\n\n"), FEED_PING_MS);
+  req.on("close", () => {
+    clearInterval(ping);
+    for (const off of offs) off();
+  });
+}
 
 /** Server-sent events: `event: messages` with a JSON array of FeedMessage, plus keep-alive comments. */
 function openFeed(daemon: Daemon, agentId: string, req: IncomingMessage, res: ServerResponse): void {

@@ -25,7 +25,9 @@ export class LoopbackRelay {
 
   /** @internal */
   deliver(events: RoomEvent[], stream: { agentId: string; events: AgentEvent[] } | undefined, from: LoopbackLink | null) {
-    for (const link of this.links) link.receive(events, stream && link !== from ? stream : undefined);
+    // Like the relay: stream entries go to every link, the sender's included.
+    void from;
+    for (const link of this.links) link.receive(events, stream);
   }
 
   /** Runs the engine's timers (offline agents, lock expiry) at `now`. */

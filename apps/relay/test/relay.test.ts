@@ -123,8 +123,8 @@ describe("room over the wire", () => {
     await sam.client.ok({ op: "stream.push", agentId: "claude-1", events: [{ at: 1, kind: "message", text: "Refactoring session store" }] });
     const stream = await ria.client.take((m) => m.t === "stream");
     expect(stream).toMatchObject({ t: "stream", agentId: "claude-1", events: [{ text: "Refactoring session store" }] });
-    // The sender does not get its own stream echoed back.
-    expect(sam.client.inbox.some((m) => m.t === "stream")).toBe(false);
+    // The sender gets it too, so its own replica shows its agents' activity.
+    expect(await sam.client.take((m) => m.t === "stream")).toMatchObject({ agentId: "claude-1" });
   });
 
   it("rejects malformed ops with bad_request", async () => {
