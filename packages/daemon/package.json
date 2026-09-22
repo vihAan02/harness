@@ -9,7 +9,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./src/testing/loopback.ts"
+    "./testing": "./src/testing/index.ts"
   },
   "scripts": {
     "start": "node src/main.ts",

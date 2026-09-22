@@ -1,5 +1,5 @@
 export { CONFIG_FILE, DEFAULT_LOCK_EXEMPT, loadRepoConfig, RepoConfig } from "./config.ts";
-export { Daemon, DaemonError, fitForWire, type DaemonOptions, type HookInput } from "./daemon.ts";
+export { Daemon, DaemonError, fitForWire, type DaemonOptions, type FeedMessage, type HookInput } from "./daemon.ts";
 export { computeLiveDiff, parseUnifiedDiff, unquoteGitPath } from "./diff.ts";
 export { agentLabel, formatInbox, formatLockDenial, formatStatusTable, PLAN_REQUIRED } from "./format.ts";
 export { git, normalizeRemote, repoInfo } from "./git.ts";

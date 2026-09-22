@@ -13,7 +13,9 @@ The IDE itself (a Code-OSS fork) lives in a separate repo. See the plan for the 
 | `apps/relay` | Cloudflare Worker + one SQLite-backed Durable Object per room. Hibernatable WebSockets, replay-on-reconnect, alarms for expiry. Runs on the Workers Free plan. |
 | `packages/daemon` | `mp-daemon`, one per machine; the IDE runs it as a background process. It keeps a live mirror of each room, gives every agent its own git worktree and branch, answers agent hooks, publishes live diffs and streams, delivers messages, and serves the `mp_*` agent tools over a localhost API. |
 
-Next up: `packages/mcp` (exposes the `mp_*` tools to agents), `packages/adapter-claude`, `packages/adapter-codex`, `packages/hook-shim`.
+| `packages/mcp` | `mp-mcp`, the `multiplayer` MCP server. Claude Code and Codex launch it over stdio, one per agent session. It exposes the 12 `mp_*` tools, briefs the agent on how to coordinate, and (for Claude) pushes room messages into the session live as channel events. |
+
+Next up: `packages/adapter-claude` (plugin: hooks + MCP config), `packages/adapter-codex`, `packages/hook-shim`.
 
 ## Commands
 
@@ -42,6 +44,20 @@ npm start -w @mp/daemon      # run mp-daemon (MP_HOME defaults to ~/.multiplayer
   5. A review freeze holds the edit until it clears.
 
   If the relay is unreachable, edits are allowed with a warning.
+
+## MCP server in one screen
+
+- **Launch:** `node packages/mcp/src/main.ts` over stdio.
+  - `MP_AGENT_ID` names the agent. Without it, the agent is found from the working directory.
+  - `MP_HOME` locates the daemon.
+  - `MP_CHANNELS=1` turns on live push.
+- **Tools:**
+  - reading the room: `mp_status`, `mp_agent`, `mp_who_touches`
+  - planning and claims: `mp_plan`, `mp_update_plan`, `mp_claim`, `mp_release`
+  - messaging: `mp_message`, `mp_answer`, `mp_inbox`, `mp_ask`, `mp_handoff`
+- **Live push (Claude):** with `MP_CHANNELS=1`, the server declares `claude/channel`. It streams the agent's messages from the daemon (`GET /v1/agents/:id/feed`) and emits each as a `notifications/claude/channel` event. It then acknowledges them (`POST /v1/agents/:id/feed/ack`), and only then does the daemon count them as delivered. Unacknowledged messages fall back to hook delivery after 30s.
+  - Only set `MP_CHANNELS=1` when Claude is started with `--dangerously-load-development-channels server:multiplayer`. Otherwise Claude silently drops channel events.
+- **Failure mode:** if the daemon is down, tools return a readable error and the agent keeps working.
 
 ## Relay protocol in one screen
 

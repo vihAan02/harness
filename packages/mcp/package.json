@@ -1,0 +1,26 @@
+{
+  "name": "@mp/mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The `multiplayer` MCP server: gives Claude Code and Codex the mp_* tools, and pushes room messages into Claude sessions over channels.",
+  "bin": {
+    "mp-mcp": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@mp/daemon": "*",
+    "@mp/protocol": "*"
+  }
+}

@@ -20,6 +20,7 @@ const Bodies = {
     baseBranch: z.string().min(1).optional(),
   }),
   stream: z.object({ events: z.array(AgentEvent).min(1).max(500) }),
+  ack: z.object({ ids: z.array(z.string().min(1)).max(1000) }),
   hook: z.object({
     agentId: z.string().optional(),
     cwd: z.string().optional(),
@@ -101,6 +102,17 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
     ["POST", /^\/v1\/rooms\/join$/, async ({ body }) => daemon.joinRoom(parse(Bodies.joinRoom, await body()))],
     ["GET", /^\/v1\/rooms\/([^/]+)\/status$/, async ({ params }) => daemon.roomStatus(params[0]!)],
     ["GET", /^\/v1\/agents$/, async () => daemon.listAgents()],
+    ["GET", /^\/v1\/agents\/resolve$/, async ({ url }) => {
+      const cwd = url.searchParams.get("cwd");
+      if (!cwd) throw new HttpError(400, "bad_request", "cwd is required");
+      const agent = await daemon.resolveAgent({ cwd });
+      if (!agent) throw new HttpError(404, "no_agent", `no agent works in ${cwd}`);
+      return agent;
+    }],
+    ["POST", /^\/v1\/agents\/([^/]+)\/feed\/ack$/, async ({ params, body }) => {
+      await daemon.ackFeed(params[0]!, parse(Bodies.ack, await body()).ids);
+      return { acked: true };
+    }],
     ["POST", /^\/v1\/agents$/, async ({ body }) => daemon.createAgent(parse(Bodies.createAgent, await body()))],
     ["DELETE", /^\/v1\/agents\/([^/]+)$/, async ({ params, url }) => {
       await daemon.removeAgent(params[0]!, {
@@ -130,6 +142,8 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
       if (!tokenOk(req.headers.authorization, opts.token)) throw new HttpError(401, "unauthorized", "missing or wrong bearer token");
 
       const url = new URL(req.url ?? "/", `http://${host}`);
+      const feed = /^\/v1\/agents\/([^/]+)\/feed$/.exec(url.pathname);
+      if (feed && req.method === "GET") return openFeed(daemon, decodeURIComponent(feed[1]!), req, res);
       for (const [method, pattern, handler] of routes) {
         const m = pattern.exec(url.pathname);
         if (!m || req.method !== method) continue;
@@ -157,6 +171,33 @@ export async function startServer(daemon: Daemon, opts: { port: number; token: s
   return {
     server,
     port,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections(); // ends open feed streams
+      }),
   };
+}
+
+const FEED_PING_MS = 15_000;
+
+/** Server-sent events: `event: messages` with a JSON array of FeedMessage, plus keep-alive comments. */
+function openFeed(daemon: Daemon, agentId: string, req: IncomingMessage, res: ServerResponse): void {
+  let unsubscribe: () => void;
+  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+  res.write(": connected\n\n");
+  try {
+    unsubscribe = daemon.subscribeFeed(agentId, (messages) => {
+      res.write(`event: messages\ndata: ${JSON.stringify(messages)}\n\n`);
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.end(`event: error\ndata: ${JSON.stringify({ message })}\n\n`);
+    return;
+  }
+  const ping = setInterval(() => res.write(": ping\n\n"), FEED_PING_MS);
+  req.on("close", () => {
+    clearInterval(ping);
+    unsubscribe();
+  });
 }

@@ -3,7 +3,7 @@ import type { AgentEvent, AgentStatus, DiffFile, HookDecision, Message, RoomEven
 import { OPEN_REVIEW_STATUSES } from "@mp/protocol";
 import { loadRepoConfig, RepoConfig } from "./config.ts";
 import { computeLiveDiff } from "./diff.ts";
-import { formatInbox, formatStatusTable } from "./format.ts";
+import { actorLabel, formatInbox, formatStatusTable } from "./format.ts";
 import { repoInfo } from "./git.ts";
 import { Home, randomId, type Identity, type LocalAgent, type RoomRecord } from "./home.ts";
 import { markDelivered, pendingMessages } from "./inbox.ts";
@@ -39,6 +39,8 @@ export interface DaemonOptions {
   watch?: boolean;
   /** `git fetch` the base branch before creating a worktree. */
   fetchOnCreate?: boolean;
+  /** How long a message pushed to a live feed may go unacknowledged before hooks deliver it again. */
+  feedAckTimeoutMs?: number;
 }
 
 /** A hook call, already mapped to vendor-neutral terms by an adapter. */
@@ -63,6 +65,22 @@ interface AgentRuntime {
   sentStatus?: AgentStatus;
   wantStatus: AgentStatus;
   statusTimer?: ReturnType<typeof setTimeout>;
+  /** Live push subscribers (the MCP server's channel feed). */
+  feeds: Set<(messages: FeedMessage[]) => void>;
+  /** Messages pushed to a feed but not yet acknowledged, with their expiry. Hooks skip these. */
+  inflight: Map<string, number>;
+}
+
+/** A room message as pushed to an agent's live feed. */
+export interface FeedMessage {
+  id: string;
+  threadId: string;
+  kind: Message["kind"];
+  body: string;
+  urgent: boolean;
+  replyTo?: string;
+  from: { type: "agent" | "member"; id: string; label: string };
+  createdAt: number;
 }
 
 interface RoomRuntime {
@@ -110,6 +128,7 @@ export class Daemon {
       connectTimeoutMs: 10_000,
       watch: true,
       fetchOnCreate: true,
+      feedAckTimeoutMs: 30_000,
       linkFactory: opts.linkFactory,
       fetch: opts.fetch,
       ...Object.fromEntries(Object.entries(opts).filter(([, v]) => v !== undefined)),
@@ -291,6 +310,7 @@ export class Daemon {
       const rt = this.runtime.get(agent.id);
       if (rt) rt.lastDiffKey = undefined;
       this.scheduleDiff(agent.id, 0);
+      this.pumpFeeds(agent);
     }
   }
 
@@ -328,6 +348,9 @@ export class Daemon {
   // ------------------------------------------------------------------ events & waiting
 
   private onEvent(roomId: string, e: RoomEvent): void {
+    if (e.type === "message.posted") {
+      for (const agent of this.agents.values()) if (agent.roomId === roomId) this.pumpFeeds(agent);
+    }
     const set = this.waiters.get(roomId);
     if (!set) return;
     for (const w of [...set]) {
@@ -493,7 +516,14 @@ export class Daemon {
 
   private startRuntime(agent: LocalAgent): void {
     if (this.runtime.has(agent.id)) return;
-    const rt: AgentRuntime = { diffChain: Promise.resolve(), warned: new Set(), streamBuf: [], wantStatus: "idle" };
+    const rt: AgentRuntime = {
+      diffChain: Promise.resolve(),
+      warned: new Set(),
+      streamBuf: [],
+      wantStatus: "idle",
+      feeds: new Set(),
+      inflight: new Map(),
+    };
     this.runtime.set(agent.id, rt);
     if (this.opts.watch) {
       try {
@@ -677,15 +707,80 @@ export class Daemon {
     return messages.length ? { additionalContext: formatInbox(messages, this.room(agent.roomId).link.mirror.state) } : {};
   }
 
-  private async takeInbox(agent: LocalAgent): Promise<Message[]> {
+  /** Pending messages for the agent, minus ones pushed to a feed and still awaiting acknowledgement. */
+  private pendingFor(agent: LocalAgent): Message[] {
     const room = this.rooms.get(agent.roomId);
     if (!room) return [];
-    const pending = pendingMessages(room.link.mirror.state, agent.id, new Set(agent.delivered));
+    const rt = this.runtime.get(agent.id);
+    const now = Date.now();
+    const skip = new Set(agent.delivered);
+    for (const [id, until] of rt?.inflight ?? []) {
+      if (until > now) skip.add(id);
+      else rt!.inflight.delete(id);
+    }
+    return pendingMessages(room.link.mirror.state, agent.id, skip);
+  }
+
+  private async takeInbox(agent: LocalAgent): Promise<Message[]> {
+    const pending = this.pendingFor(agent);
     if (pending.length) {
       agent.delivered = markDelivered(agent.delivered, pending.map((m) => m.id));
       await this.persistAgents();
     }
     return pending;
+  }
+
+  // ------------------------------------------------------------------ live feed
+
+  /**
+   * Subscribes to messages for an agent as they arrive (used by the MCP server to push them into a
+   * Claude session over channels). Messages count as delivered only once acknowledged with `ackFeed`;
+   * unacknowledged ones fall back to hook delivery after `feedAckTimeoutMs`.
+   */
+  subscribeFeed(agentId: string, send: (messages: FeedMessage[]) => void): () => void {
+    const agent = this.getAgent(agentId);
+    const rt = this.runtime.get(agentId);
+    if (!rt) throw new DaemonError(404, "no_agent", `agent ${agentId} is not running`);
+    rt.feeds.add(send);
+    this.pumpFeeds(agent);
+    return () => rt.feeds.delete(send);
+  }
+
+  async ackFeed(agentId: string, ids: readonly string[]): Promise<void> {
+    const agent = this.getAgent(agentId);
+    const rt = this.runtime.get(agentId);
+    for (const id of ids) rt?.inflight.delete(id);
+    agent.delivered = markDelivered(agent.delivered, ids);
+    await this.persistAgents();
+  }
+
+  private pumpFeeds(agent: LocalAgent): void {
+    const rt = this.runtime.get(agent.id);
+    const room = this.rooms.get(agent.roomId);
+    if (!rt?.feeds.size || !room) return;
+    const pending = this.pendingFor(agent);
+    if (!pending.length) return;
+    const until = Date.now() + this.opts.feedAckTimeoutMs;
+    for (const m of pending) rt.inflight.set(m.id, until);
+    const state = room.link.mirror.state;
+    const out: FeedMessage[] = pending.map((m) => ({
+      id: m.id,
+      threadId: m.threadId,
+      kind: m.kind,
+      body: m.body,
+      urgent: m.urgent === true,
+      ...(m.replyTo ? { replyTo: m.replyTo } : {}),
+      from: { ...m.from, label: actorLabel(state, m.from) },
+      createdAt: m.createdAt,
+    }));
+    // One subscriber is enough; if several are attached (e.g. a restarted MCP server), the newest wins.
+    const newest = [...rt.feeds].at(-1)!;
+    try {
+      newest(out);
+    } catch (err) {
+      for (const m of pending) rt.inflight.delete(m.id);
+      console.error(`[mp] feed push for ${agent.id} failed`, err);
+    }
   }
 
   // ------------------------------------------------------------------ tools

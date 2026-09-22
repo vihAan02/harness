@@ -206,6 +206,33 @@ describe("messages between agents", () => {
     expect(await riaD.postToolUse({ agentId: codex.id, kind: "other", tool: "Read" })).toEqual({});
   });
 
+  it("pushes new messages to a live feed, and hooks skip them once acknowledged", async () => {
+    const pushed: string[][] = [];
+    const off = samD.subscribeFeed(claude.id, (msgs) => pushed.push(msgs.map((m) => `${m.from.label}: ${m.body}`)));
+    await riaD.tool(codex.id, "message", { to: claude.id, kind: "question", body: "Which files are you in?" });
+    expect(pushed).toEqual([["Ria's billing (Codex): Which files are you in?"]]);
+
+    // Not acknowledged yet: in flight, so the hook doesn't deliver a duplicate.
+    expect(await samD.postToolUse({ agentId: claude.id, kind: "other", tool: "Read" })).toEqual({});
+    const id = [...samD.link(ROOM_ID).mirror.state.messages.values()].at(-1)!.id;
+    await samD.ackFeed(claude.id, [id]);
+    expect(samD.getAgent(claude.id).delivered).toContain(id);
+    off();
+  });
+
+  it("falls back to hook delivery when a pushed message is never acknowledged", async () => {
+    await samD.stop();
+    samD = await makeDaemon(relay, "Sam", { home: samD.home.dir, feedAckTimeoutMs: 30 });
+    await samD.joinRoom({ repoPath: repos.sam, invite: LOOPBACK_INVITE });
+    const off = samD.subscribeFeed(claude.id, () => undefined);
+    await riaD.tool(codex.id, "message", { to: claude.id, body: "lost in transit" });
+    expect(await samD.postToolUse({ agentId: claude.id, kind: "other", tool: "Read" })).toEqual({});
+    await sleep(50);
+    const later = await samD.postToolUse({ agentId: claude.id, kind: "other", tool: "Read" });
+    expect(later.additionalContext).toContain("lost in transit");
+    off();
+  });
+
   it("mp_ask waits for the other agent's mp_answer", async () => {
     const asking = riaD.tool(codex.id, "ask", { agentId: claude.id, question: "What are you doing in src/auth?", waitSeconds: 5 });
 
