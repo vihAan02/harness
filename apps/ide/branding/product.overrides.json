@@ -1,0 +1,22 @@
+{
+  "nameShort": "Harness",
+  "nameLong": "Harness",
+  "applicationName": "harness",
+  "dataFolderName": ".harness",
+  "win32MutexName": "harness",
+  "darwinBundleIdentifier": "dev.harness.ide",
+  "linuxIconName": "harness",
+  "urlProtocol": "harness",
+  "serverApplicationName": "harness-server",
+  "serverDataFolderName": ".harness-server",
+  "reportIssueUrl": "https://github.com/vihAan02/harness/issues/new",
+  "enableTelemetry": false,
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "itemUrl": "https://open-vsx.org/vscode/item",
+    "extensionUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+    "resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}",
+    "controlUrl": "",
+    "nlsBaseUrl": ""
+  }
+}

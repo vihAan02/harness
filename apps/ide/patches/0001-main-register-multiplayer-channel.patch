@@ -1,0 +1,24 @@
+diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
+index b419d5a8..81127fa6 100644
+--- a/src/vs/code/electron-main/app.ts
++++ b/src/vs/code/electron-main/app.ts
+@@ -42,6 +42,8 @@ import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/
+ import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
+ import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
+ import { IEnvironmentMainService } from '../../platform/environment/electron-main/environmentMainService.js';
++import { MultiplayerMainService } from '../../platform/multiplayer/electron-main/multiplayerMainService.js';
++import { MULTIPLAYER_CHANNEL } from '../../platform/multiplayer/common/multiplayer.js';
+ import { isLaunchedFromCli } from '../../platform/environment/node/argvHelper.js';
+ import { getResolvedShellEnv } from '../../platform/shell/node/shellEnv.js';
+ import { IExtensionHostStarter, ipcExtensionHostStarterChannelName } from '../../platform/extensions/common/extensionHostStarter.js';
+@@ -1379,6 +1381,10 @@ export class CodeApplication extends Disposable {
+ 		const encryptionChannel = ProxyChannel.fromService(accessor.get(IEncryptionMainService), disposables);
+ 		mainProcessElectronServer.registerChannel('encryption', encryptionChannel);
+ 
++		// Harness: multiplayer (mp-daemon bridge)
++		const multiplayerMainService = disposables.add(new MultiplayerMainService(this.logService, this.environmentMainService.appRoot));
++		mainProcessElectronServer.registerChannel(MULTIPLAYER_CHANNEL, ProxyChannel.fromService(multiplayerMainService, disposables));
++
+ 		// Browser View
+ 		const browserViewChannel = ProxyChannel.fromService(accessor.get(IBrowserViewMainService), disposables);
+ 		mainProcessElectronServer.registerChannel(ipcBrowserViewChannelName, browserViewChannel);

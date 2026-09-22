@@ -1,0 +1,15 @@
+diff --git a/src/vs/workbench/workbench.desktop.main.ts b/src/vs/workbench/workbench.desktop.main.ts
+index a02eb91a..8f8eb05a 100644
+--- a/src/vs/workbench/workbench.desktop.main.ts
++++ b/src/vs/workbench/workbench.desktop.main.ts
+@@ -140,6 +140,10 @@ import './contrib/surveys/browser/survey.contribution.js';
+ // Process Explorer
+ import './contrib/processExplorer/electron-browser/processExplorer.contribution.js';
+ 
++// Harness: multiplayer
++import './services/multiplayer/electron-browser/multiplayerService.js';
++import './contrib/multiplayer/browser/multiplayer.contribution.js';
++
+ // Remote
+ import './contrib/remote/electron-browser/remote.contribution.js';
+ 

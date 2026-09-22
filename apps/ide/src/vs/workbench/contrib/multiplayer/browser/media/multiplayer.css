@@ -1,0 +1,47 @@
+/*---------------------------------------------------------------------------------------------
+ *  Harness: multiplayer views.
+ *--------------------------------------------------------------------------------------------*/
+
+.harness-room-home { overflow: auto; padding: 24px 32px; box-sizing: border-box; color: var(--vscode-foreground); }
+.harness-room-home h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.harness-room-home h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--vscode-descriptionForeground); margin: 0 0 8px; }
+.harness-meta { display: flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground); }
+.harness-actions { display: flex; gap: 8px; margin: 16px 0; }
+.harness-button { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-button-border, transparent); border-radius: 4px; padding: 4px 12px; cursor: pointer; font: inherit; }
+.harness-button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.harness-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--vscode-disabledForeground); flex: none; }
+.harness-dot.on { background: var(--vscode-testing-iconPassed, #3fb950); }
+.harness-error { color: var(--vscode-errorForeground); }
+.harness-empty { color: var(--vscode-descriptionForeground); }
+.harness-sub { color: var(--vscode-descriptionForeground); font-size: 12px; }
+
+.harness-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+.harness-table th { text-align: left; font-weight: 600; font-size: 12px; color: var(--vscode-descriptionForeground); border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); padding: 6px 8px; }
+.harness-table td { vertical-align: top; padding: 8px; border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
+.harness-agent strong { margin-left: 6px; }
+.harness-add { color: var(--vscode-gitDecoration-addedResourceForeground); }
+.harness-del { color: var(--vscode-gitDecoration-deletedResourceForeground); }
+.harness-lock { color: var(--vscode-list-warningForeground); }
+.harness-conflict { color: var(--vscode-list-warningForeground); margin-bottom: 2px; }
+
+.harness-vendor { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; margin-right: 6px; }
+.harness-vendor.claude { background: rgba(217, 119, 87, .2); color: #d97757; }
+.harness-vendor.codex { background: rgba(88, 166, 255, .18); color: #58a6ff; }
+.harness-status { font-size: 11px; margin-left: 6px; color: var(--vscode-descriptionForeground); }
+.harness-status.editing, .harness-status.running, .harness-status.thinking { color: var(--vscode-charts-blue); }
+.harness-status.blocked, .harness-status.waiting_permission, .harness-status.waiting_review { color: var(--vscode-list-warningForeground); }
+
+.harness-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.harness-panel { min-width: 0; }
+.harness-messages { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
+.harness-message { border-left: 2px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); padding-left: 8px; white-space: pre-wrap; word-break: break-word; }
+
+.harness-room-view { overflow: auto; padding: 0 12px 12px 20px; box-sizing: border-box; }
+.harness-view-header { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; color: var(--vscode-descriptionForeground); }
+.harness-person { margin: 10px 0; }
+.harness-person-name { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.harness-agent-row { margin: 4px 0 8px 14px; }
+.harness-indent { margin-left: 14px; }
+.harness-link, .harness-links a { color: var(--vscode-textLink-foreground); cursor: pointer; }
+.harness-link:hover, .harness-links a:hover { text-decoration: underline; }
+.harness-links { font-size: 12px; margin-top: 2px; }

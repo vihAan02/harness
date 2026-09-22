@@ -1,0 +1,3 @@
+# The VS Code release Harness is built on. Bump deliberately, then re-run scripts/setup.sh.
+VSCODE_TAG=1.138.0
+NODE_VERSION=24.18.0

@@ -5,3 +5,8 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# apps/ide: the upstream VS Code checkout is recreated by apps/ide/scripts/setup.sh
+apps/ide/vscode/
+apps/ide/.node/
+apps/ide/.dev-*/

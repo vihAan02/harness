@@ -2,7 +2,7 @@
 
 Coordination backend for a multiplayer AI IDE: many Claude Code and Codex agents, on many devices, working on one repo at once. They share plans, claimed directories, live diffs and messages, and coordinate through locks and reviews.
 
-The IDE itself (a Code-OSS fork) lives in a separate repo. See the plan for the full design.
+The IDE, Harness, is a Code-OSS fork built from `apps/ide`.
 
 ## Layout
 
@@ -20,7 +20,7 @@ The IDE itself (a Code-OSS fork) lives in a separate repo. See the plan for the 
 | `packages/adapter-codex` | The Codex adapter, a pure library the daemon hosts. It translates hook payloads (parsing `apply_patch` envelopes for the paths they touch), turns app-server items into stream events, and builds the `codex app-server` and `codex --remote` commands. |
 | `packages/hook-shim` | `mp-hook`, the one command every Codex hook runs. It forwards the event to the daemon and prints the answer, has no dependencies, and fails open. |
 
-Next up: the IDE.
+| `apps/ide` | **Harness**, the IDE: a VS Code 1.138 fork with multiplayer in the core workbench. Only Harness's files, patches and branding live here; `scripts/setup.sh` fetches VS Code. See [apps/ide/README.md](apps/ide/README.md). |
 
 ## Commands
 
