@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-01):** Planning complete. **Pre-Phase 0A. No product code exists.**
+> **Status (2026-10-01):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59); its first step, the adapter spike, is in progress. No product code exists.**
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: the owner picks the stack ([Q-01](docs/open-questions.md#q-01)) and gives the Phase 0A go-ahead.
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: finish the spike, report its results and any architecture changes to the owner, and only then go deeper into 0A.
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -18,19 +18,20 @@
 | **Q-xx** | Open question | [open-questions.md](docs/open-questions.md) |
 | **TH-x / T-x** | Threat / security test | [security.md](docs/security.md), [validation.md](docs/validation.md) |
 | **SC-x / M-x / P-x / G-x** | A/B scenario / metric / pass criterion / guardrail | [validation.md](docs/validation.md) |
-| **PROPOSAL** | A default that's good to build with in its phase unless the owner objects. **Exception:** the A/B pass bar needs the owner's explicit approval before use. | inline |
+| **PROPOSAL** | A default that's good to build with in its phase unless the owner objects. **Exception:** the A/B pass bar needs the owner's explicit approval before use (given for v1, D-57). | inline |
 
 ---
 
 ## 1. Context and provenance
 
-Three sources define this plan. Later sources win where they sharpen or override earlier ones.
+Four sources define this plan. Later sources win where they sharpen or override earlier ones.
 
 | | Source | What it contributed |
 |---|---|---|
 | **S1** | [Architecture review](docs/source/2026-10-01-S1-architecture-review.md) | Evaluated an earlier "harness" proposal. Kept its core and fixed its blind spot: agents don't route their work through your MCP tools. Added the cross-human threat model, cut MVP scope, and proposed Phases 0–3 plus three validation tests. |
 | **S2** | [Owner's ranked concerns](docs/source/2026-10-01-S2-owner-concerns.md) | Made stale context and read-set invalidation central. Added sparse typed messages, `AgentAdapter`, human-led task breakdown, deadlocks, local resource limits, secrets by reference, harder scope cuts, and the real baseline to beat. Became the risk register (§9). |
 | **S3** | [Owner's final adjustments](docs/source/2026-10-01-S3-final-adjustments.md) | Keep the vision ambitious and the sequence disciplined. Added the Phase 0A/0B split, best-effort read sets, three claim levels, MCP as compatibility only, the identity model from day one, the contract-awareness direction, the A/B test as a first-class gate, and the core principles. |
+| **S4** | [Owner's approval and 0A go-ahead](docs/source/2026-10-01-S4-owner-approval-and-0a-go.md) | Approved this plan as the initial source of truth. Answered Q-01 (TypeScript), Q-04 for experiments (API keys), Q-03 (pass bar approved, versioned) and Q-02 (a purpose-built benchmark repo, then a real project as a separate test). Approved Phase 0A, starting with an empirical spike of ten named assumptions (D-55 to D-59). |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -143,7 +144,7 @@ flowchart LR
 |---|---|---|---|
 | **0A** | The core coordination loop works | Adapter spike, a throwaway that verifies the riskiest vendor facts; `AgentAdapter` + `ClaudeAdapter`; repo executable config locked out (D-45) and vendor peer channels off (D-46); minimal `compilePermissions` (write confinement, shared-`.git` deny, sandbox on); worktree lifecycle with `harnessd`-owned Git (D-50); agent/task/session lifecycle (D-54); presence and status; typed messages `question`/`answer`/`claim_conflict`; prospective and observed soft claims; overlap warnings; event log with cursors (only as far as needed); internal protocol; approved setup command (D-52); per-agent ports; metrics capture | The harness knows who's alive, who owns what, what each agent is modifying, what others are doing, and when work likely overlaps. A question from A to B and the answer back complete at safe boundaries. |
 | **0B** | Stale-context protection works | Read sets `(path, content hash)`; dependency invalidation and stale-context notices; worktree sync after a landed change (D-53); `wait_for(..., timeout)`; hard claims with fencing tokens; local land step (D-51); hook-based delivery (notices attached to tool results, Stop gate); read confinement good enough for T-1 | Security tests T-1, T-1b and T-2 pass, **then the A/B test runs against the baseline** ([validation.md](docs/validation.md)) |
-| **Gate** | Coordination is materially better than "two terminals + two branches + a human relaying in Slack" | n/a | The owner evaluates the results against the pass bar they approved ([Q-03](docs/open-questions.md#q-03)) and records go or no-go as a D-ID. If it fails, adjust the thesis before Phase 1. |
+| **Gate** | Coordination is materially better than "two terminals + two branches + a human relaying in Slack" | The controlled A/B test on the purpose-built benchmark repo; then a separate test on a real existing project (D-58) | The owner evaluates the results against the versioned pass bar (v1, D-57) and records go or no-go as a D-ID. If it fails, adjust the thesis before Phase 1. Whether Phase 1 also waits for the real-project test is [Q-17](docs/open-questions.md#q-17). |
 | **1** | Multiplayer across people and vendors | A second human and device; `CodexAdapter`; the real identity and security model (signed commands, local approvals, local ∩ cloud); checkpoint pushes at meaningful boundaries; GitHub PRs + required CI (+ merge queue where available, D-51); post-merge notices; deadlock cycle detection; first contract-aware notices | Two humans on two machines finish coupled work with fewer incidents than the baseline. Security tests pass across people. |
 | **2** | It works day to day | Dashboard; full policy compilation into each vendor's native config; worktree bootstrap (dependencies, secret references, services, DB state, generated files); local resource scheduler; R2 for shared artifacts | See the roadmap |
 | **3** | Wider reach | Non-Git sources copied in read-only; cloud agents; a planner agent whose dependency graph a human approves; an integration and review agent; on-demand reads across devices; Drive and Notion sources | See the roadmap |
@@ -176,7 +177,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **Baseline:** two terminals, two branches or worktrees, and a human relaying context through Slack or Discord.
   - **Success isn't only speed.** Similar time with less duplicated work, fewer broken contracts, fewer interventions and fewer stale-context failures still validates the product.
   - **Pass bar:** proposed in [validation.md](docs/validation.md) and awaiting the owner's approval ([Q-03](docs/open-questions.md#q-03)).
-  - *Source:* S1, S2, S3. *Status:* Locked.
+  - *Source:* S1, S2, S3. *Status:* Locked. *The pass-bar line is superseded by D-57 (approved, versioned).*
 - **D-06 Deferred until the thesis is validated:**
   - **Storage and files:** R2, a distributed filesystem, Drive and Notion sources, on-demand reads across devices.
   - **Agents:** cloud execution, planner agents, integration agents.
@@ -457,6 +458,32 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - Keep the docs clear; avoid process overhead.
   - *Source:* S3. *Status:* Locked.
 
+### Owner decisions of 2026-10-01 (S4)
+- **D-55 Implementation stack: TypeScript.** The server, `harnessd`, adapters, protocol types and CLI are TypeScript. Resolves [Q-01](docs/open-questions.md#q-01).
+  - *Why:* the Claude Agent SDK is TypeScript-first (F-01); one language for protocol types end to end.
+  - *Still open, decided in 0A item 1:* runtime and packaging details (Node version, package manager, how `harnessd` ships). Postgres stays the store (D-11).
+  - *Source:* S4. *Status:* Locked.
+- **D-56 Phase 0 experiments use API keys.** The spike, 0A, 0B and both A/B arms authenticate with an Anthropic API key (later an OpenAI API key for Codex). The prototype never depends on consumer subscription login. Resolves part 1 of [Q-04](docs/open-questions.md#q-04); part 2 (the product's default before any commercial launch) stays open.
+  - *How it's enforced:* every session gets an explicit env with the key (D-48 pass-through); the adapter checks the session's reported auth source and refuses to run if it isn't the API key.
+  - *Source:* S4. *Status:* Locked.
+- **D-57 The A/B pass bar is approved as version 1, and it's versioned.** Supersedes D-05's "awaiting approval".
+  - Bar v1 is [validation.md §5](docs/validation.md#5-pass-bar-v1-approved-2026-10-01-d-57) exactly as proposed. Resolves [Q-03](docs/open-questions.md#q-03).
+  - **Versioning rules:** each version has a number, a date and a reason. A run is always judged against the version in force when it started. A new version applies only to runs that start after it's recorded.
+  - **No weakening after seeing results.** Results already seen are never re-judged under a weaker bar, and a bar can't be loosened to rescue a result. Tightening, or adding a criterion, is allowed at any time. Loosening for future runs needs a reason that doesn't depend on the results being rescued, and the owner's sign-off.
+  - *Source:* S4. *Status:* Locked.
+- **D-58 The A/B test runs on a purpose-built benchmark repo, then on a real project as a separate test.**
+  - **The benchmark repo** is dedicated to the experiment. It must be **small enough to run repeatedly** and **realistic enough to expose real multi-agent coordination problems**. It plants five scenarios: an API contract change (SC-1), a shared type/interface change (SC-2), a DB schema change (SC-3), two different-looking tasks that cause duplicate work (SC-4), and a control with genuinely independent tasks (SC-0). Requirements: [validation.md §3](docs/validation.md#benchmark-repo-d-58).
+  - **Real-project validation** follows the controlled test as a **separate** test ([validation.md §3](docs/validation.md#real-project-validation-d-58)). Whether Phase 1 waits for it is [Q-17](docs/open-questions.md#q-17).
+  - Resolves the repo choice in [Q-02](docs/open-questions.md#q-02).
+  - *Source:* S4. *Status:* Locked.
+- **D-59 Phase 0A is approved, and starts with an empirical spike.**
+  - **Scope:** Phase 0A only.
+  - **First step:** the adapter spike (roadmap 0A item 0) tests the ten assumptions S4 names, plus the item-0 checklist. It's throwaway code, not production quality.
+  - **Each result is recorded as VERIFIED, CONTRADICTED, PARTIAL or UNVERIFIED,** with the exact vendor and runtime versions tested, in [research/spike-0a.md](docs/research/spike-0a.md).
+  - **If a core assumption fails, the architecture changes** (new D-IDs that supersede the old ones). Don't hack around a failure to preserve the plan.
+  - **Stop point:** report the spike results and any architecture changes to the owner before going deeper into 0A.
+  - *Source:* S4. *Status:* Locked.
+
 ## 8. Hypotheses (what we're testing, not assuming)
 
 | ID | Hypothesis | Tested by |
@@ -534,13 +561,14 @@ Vendor and infrastructure claims were checked on 2026-10-01: seven research pass
 ## 12. What must happen before and during Phase 0A
 
 This is the canonical list. README, AGENTS.md and the roadmap point here.
-1. **Before any code:** the owner picks the stack ([Q-01](docs/open-questions.md#q-01)) and gives the Phase 0A go-ahead. That go-ahead also covers the throwaway adapter spike (roadmap 0A item 0).
-2. **Before the spike** (roadmap 0A item 0, which already runs real agent sessions): the owner picks the auth mode for experiments ([Q-04](docs/open-questions.md#q-04); recommendation: API keys). The spike, 0A and the A/B test all use that mode.
-3. **During 0A:**
+1. ~~**Before any code:** the owner picks the stack ([Q-01](docs/open-questions.md#q-01)) and gives the Phase 0A go-ahead.~~ **Done 2026-10-01:** TypeScript (D-55); 0A approved (D-59).
+2. ~~**Before the spike:** the owner picks the auth mode for experiments ([Q-04](docs/open-questions.md#q-04)).~~ **Done 2026-10-01:** API keys (D-56).
+3. **Now: the adapter spike** (roadmap 0A item 0, D-59). Results go in [research/spike-0a.md](docs/research/spike-0a.md). **Stop and report to the owner** before roadmap 0A item 1.
+4. **During 0A:**
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
-   - The A/B repo is chosen ([Q-02](docs/open-questions.md#q-02)).
-4. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
-5. **Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).
+   - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
+5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
+6. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
 ## 13. Glossary
 
@@ -583,8 +611,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 | [docs/local-runtime.md](docs/local-runtime.md) | `harnessd` on a laptop: worktrees, setup, ports, secrets, resources, sleep and resume |
 | [docs/protocol.md](docs/protocol.md) | Internal protocol, event log and cursors, data model, agent-facing tools, hook contracts, envelope |
 | [docs/security.md](docs/security.md) | Threat model, controls by phase, security tests |
-| [docs/validation.md](docs/validation.md) | The A/B test, metrics, **proposed** pass bar, security tests |
+| [docs/validation.md](docs/validation.md) | The A/B test, the benchmark repo, metrics, the versioned pass bar (v1 approved), security tests |
 | [docs/roadmap.md](docs/roadmap.md) | Ordered checklists and exit criteria per phase |
 | [docs/open-questions.md](docs/open-questions.md) | What's undecided, and what it blocks |
-| [docs/research/](docs/research/) | Researched facts (F-IDs) and the competitive landscape |
-| [docs/source/](docs/source/) | The raw S1, S2 and S3 records. Never edit these. |
+| [docs/research/](docs/research/) | Researched facts (F-IDs), the 0A adapter spike results, and the competitive landscape |
+| [docs/source/](docs/source/) | The raw S1 to S4 records. Never edit these. |

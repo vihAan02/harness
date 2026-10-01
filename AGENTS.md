@@ -7,8 +7,9 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
 - **The first wedge:** several humans, each with their own agents on their own machines, coordinating on one repo.
 
 ## Current state
-- **Phase:** pre-0A.
-- **Code:** none exists. The repo is planning docs only.
+- **Phase:** 0A, approved 2026-10-01 (D-59). Current step: the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`, with results in [docs/research/spike-0a.md](docs/research/spike-0a.md). After the spike, stop and report to the owner before 0A item 1.
+- **Code:** no product code exists. The spike is throwaway, and product code never imports it.
+- **Stack:** TypeScript (D-55). Experiments use API keys, never subscription login (D-56).
 - **Next step, and what must happen first:** see [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a). That's the only canonical copy.
 
 ## Read in this order before doing anything
@@ -48,11 +49,11 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   - **H (hypothesis):** to be tested.
   - **Q (open question).**
   - **R (risk)**, **TH/T (threat/test)**, **C (contradiction found by research)**, **SC/M/P/G (A/B scenario/metric/pass criterion/guardrail)**: see the label table at the top of PLAN.md.
-  - **PROPOSAL:** a default you may build with in its phase unless the owner objects. The A/B pass bar is the exception: it needs explicit approval.
+  - **PROPOSAL:** a default you may build with in its phase unless the owner objects. The A/B pass bar is the exception: it needs explicit approval (v1 approved, D-57), and it's versioned and never weakened after results are seen.
   
   Never present a hypothesis or an unverified vendor behavior as fact.
 - **Re-verify vendor facts before relying on them in code.** Agent CLIs change fast. If a fact is more than about 60 days old, re-check it and update its F-ID.
-- **`docs/source/` holds raw records of the owner's instructions (S1–S3).** Never edit them.
+- **`docs/source/` holds raw records of the owner's instructions (S1–S4).** Never edit them.
 - **Keep the docs clear, not bureaucratic.** Don't add documents that duplicate others.
 - **Git:** don't commit or push unless the owner asks. Never commit secrets or `.env` files.
 - **Security defaults you must not weaken:** no repo-controlled executable config in agent sessions (D-45), no vendor peer channels (D-46), sandbox and deny rules first and hooks second (D-47), never touch vendor credentials (D-48), `harnessd` owns Git writes (D-50), and `harness.yaml` is untrusted input (D-52).

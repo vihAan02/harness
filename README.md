@@ -8,7 +8,7 @@ The first wedge: **several humans, each running their own AI coding agents on th
 
 **Planning only. No product code exists yet.**
 - The architecture, decisions, risks, roadmap and validation plan are written down.
-- The next step is Phase 0A. What has to happen first is in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
+- Phase 0A is approved (D-59) and starts with a throwaway adapter spike; its results go in [docs/research/spike-0a.md](docs/research/spike-0a.md). The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
 
 ## The idea in one screen
 

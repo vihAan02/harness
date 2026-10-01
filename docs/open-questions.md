@@ -6,10 +6,10 @@
 
 | ID | Question | Blocks | Status |
 |---|---|---|---|
-| [Q-01](#q-01) | Implementation stack | Any 0A code | **Open, needs owner** |
-| [Q-02](#q-02) | A/B repo and scenario details | Repo chosen during 0A; scenarios built in 0B | Open |
-| [Q-03](#q-03) | Approve the A/B pass bar | Running the A/B test | **Open, needs owner** |
-| [Q-04](#q-04) | Vendor login: subscription vs API key | 0A item 0 (the spike runs real agents); any commercial launch | **Open, needs owner** |
+| [Q-01](#q-01) | Implementation stack | Any 0A code | **Resolved → D-55** (TypeScript) |
+| [Q-02](#q-02) | A/B repo and scenario details | Repo built during 0A; scenarios built in 0B | **Repo resolved → D-58** (purpose-built benchmark repo); scenario details open until 0B |
+| [Q-03](#q-03) | Approve the A/B pass bar | Running the A/B test | **Resolved → D-57** (v1 approved, versioned) |
+| [Q-04](#q-04) | Vendor login: subscription vs API key | Any commercial launch | **Part 1 resolved → D-56** (API keys for all Phase 0 experiments); part 2 (product default) open |
 | [Q-05](#q-05) | Message budget defaults | Nothing (the proposal is the 0A default unless the owner objects) | Proposal |
 | [Q-06](#q-06) | How good read-set coverage has to be, and shell-read handling | 0B | Open |
 | [Q-07](#q-07) | Policy when two hard claims race | 0B | Open (proposal below) |
@@ -22,11 +22,12 @@
 | [Q-14](#q-14) | Where humans review and approve | 1 | Open |
 | [Q-15](#q-15) | Retention and privacy for messages and read sets | 1 | Open |
 | [Q-16](#q-16) | Product name | Nothing | Open |
+| [Q-17](#q-17) | Does Phase 1 wait for the real-project validation? | The gate decision | Open, needs owner (at the gate) |
 
 ---
 
 ### Q-01
-**Implementation stack.**
+**Implementation stack.** **Resolved 2026-10-01 → D-55: TypeScript.** The text below is kept as the record of the options.
 - **Why it matters:** it decides the repo skeleton, which SDKs we can use natively, and how `harnessd` ships.
 - **Recommendation:** TypeScript on Node for the server, daemon, adapters and CLI, with Postgres. The research supports this:
   - The Claude Agent SDK is **TypeScript-first**. Python gets only 10 hook callbacks and fewer control methods (F-01).
@@ -40,7 +41,7 @@
 - **Blocks:** any 0A code ([PLAN.md §12](../PLAN.md#12-what-must-happen-before-and-during-phase-0a)).
 
 ### Q-02
-**A/B repo and scenarios.**
+**A/B repo and scenarios.** **Repo resolved 2026-10-01 → D-58:** a purpose-built benchmark repo for the controlled test, then a real existing project as a separate test. Scenario details are still built in 0B. The text below is kept as the record of the options.
 - **What's needed:** a real, small-to-medium repo with a working test suite, a backend API, a frontend consumer, a DB schema and a shared types file, so that SC-1 to SC-4 in [validation.md](validation.md#scenarios-real-coupling-planted-on-purpose) can be planted naturally.
 - **Options:**
   - one of the owner's own projects (best realism, if the coupling exists);
@@ -48,12 +49,14 @@
 - **Timing:** choose the repo during 0A. Build the scenarios, baseline recorder, playbook and rubric in 0B (roadmap 0B item 9).
 
 ### Q-03
-**Approve the A/B pass bar:** approve or edit [validation.md §5](validation.md#5-pass-bar-proposal-pending-owner-approval-q-03) **as written**. P1–P3 and G1–G4 are defined there, and this page deliberately doesn't paraphrase them.
+**Resolved 2026-10-01 → D-57:** bar v1 approved as proposed, versioned, never weakened after seeing results. The original question:
+
+**Approve the A/B pass bar:** approve or edit [validation.md §5](validation.md#5-pass-bar-v1-approved-2026-10-01-d-57) **as written**. P1–P3 and G1–G4 are defined there, and this page deliberately doesn't paraphrase them.
 - **Needs the owner's approval** before the first A/B run.
 - **Recommendation:** fix the bar before the first run. Changing it after seeing results weakens the test. It's the owner's call, and any change gets recorded with its reason.
 
 ### Q-04
-**Vendor login: subscription vs API key.**
+**Vendor login: subscription vs API key.** **Part 1 resolved 2026-10-01 → D-56:** all Phase 0 experiments (spike, 0A, 0B, both A/B arms) use API keys, and the prototype never depends on subscription login. **Part 2 is still open:** the product's default before any commercial launch, and the questions to the vendors below.
 - **The question:** can a product's daemon drive Claude Code and Codex on a user's machine under that user's consumer subscription, or must it require API keys?
 - **Why it matters:** cost model, onboarding, and the terms risk TH-11.
 - **What the research found (2026-10-01; not legal advice).** Details are in [vendor-capabilities.md](research/vendor-capabilities.md#vendor-terms-not-legal-advice), F-60 to F-71.
@@ -162,3 +165,12 @@
 
 ### Q-16
 **Product name.** "Harness" is a working name.
+
+### Q-17
+**Does Phase 1 wait for the real-project validation?**
+- **Context:** D-58 runs the A/B test on the purpose-built benchmark repo first, then validates on a real existing project "as a separate test" (S4).
+- **The question:** is the go/no-go for Phase 1 made on the controlled result alone, or only after the real-project test as well?
+- **Options:**
+  - gate on the controlled test, and run the real-project test in parallel with early Phase 1;
+  - gate on both.
+- **Blocks:** the gate decision. The owner decides at the gate.

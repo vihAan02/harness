@@ -1,6 +1,6 @@
 # Validation: the A/B test and the security tests
 
-> **Status:** design spec. The **pass bar in §5 is a PROPOSAL** and needs the owner's approval ([Q-03](open-questions.md#q-03)) before the A/B test runs. [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. The **pass bar in §5 is version 1, approved by the owner on 2026-10-01** (D-57). It's versioned and can't be weakened after results are seen. The A/B test runs on a **purpose-built benchmark repo**, then a real project is tested separately (D-58). [PLAN.md](../PLAN.md) wins on any conflict.
 
 ## 1. Why this exists (D-05, H-01, R-9)
 
@@ -19,9 +19,10 @@ The harness has to produce a **materially better outcome** than that before Phas
 
 ## 2. When
 
-- **During 0A:** the harness arm's metrics capture is built, reading from the event log. The A/B repo is chosen ([Q-02](open-questions.md#q-02)).
+- **During 0A:** the harness arm's metrics capture is built, reading from the event log. The benchmark repo's base application is built (D-58, roadmap 0A item 10).
 - **During 0B:** the scenarios, baseline recorder, coordinator playbook and scoring rubric are built.
-- **The full test:** runs at the **end of 0B**, after security tests T-1, T-1b and T-2 pass (§7), and after the owner has approved the pass bar ([Q-03](open-questions.md#q-03)).
+- **The full test:** runs at the **end of 0B**, after security tests T-1, T-1b and T-2 pass (§7), judged against pass bar v1 (D-57) unless a later version was recorded before the runs started.
+- **Afterwards, as a separate test:** real-project validation (D-58, [below](#real-project-validation-d-58)). Whether Phase 1 waits for it is [Q-17](open-questions.md#q-17).
 - **The decision:** the gate result goes to the owner, who decides whether Phase 1 starts and records it as a D-ID. If the result is a clear fail, the thesis is adjusted before Phase 1 (S1).
 
 ## 3. Design
@@ -58,8 +59,35 @@ The harness has to produce a **materially better outcome** than that before Phas
 
 **Permission prompts:** both arms use permission mode `dontAsk` with the **same explicit allow list** (Proposal), so nothing ever prompts. Calls outside the list are denied and logged in both arms (M5b: denied tool calls). That keeps the interactive baseline and the SDK-driven harness arm equivalent, because no human approval path is needed before Phase 1.
 
+### Benchmark repo (D-58)
+A **dedicated repo built for this experiment** (S4). It isn't one of the owner's projects; those come later in the real-project test.
+
+**It must be realistic enough to expose real coordination problems:**
+- a small but complete application: a backend HTTP API, a frontend or client that consumes it, a database with a schema and migrations, a shared types/interfaces module, and a real test suite (unit, API contract and integration tests);
+- enough surrounding code that agents have to read before they edit, so stale context can actually happen;
+- written fresh for the experiment, so models can't have memorized it.
+
+**It must be small enough to run repeatedly:**
+- one-command setup from a lockfile, with no network needed after install;
+- no external services; the database runs embedded or in-process (Proposal);
+- a full test run in about a minute or less (Proposal);
+- deterministic seeds and fixtures.
+
+**How scenarios are planted:**
+- each scenario is a **tagged base commit** plus **two human-written task cards** with declared scopes (D-08);
+- each scenario has **hidden integration checks** that detect its planted failure (a broken contract, a duplicate helper, queries against the old schema). They live outside the repo and agents never see them;
+- every run starts from a fresh clone at the scenario tag, identical for both arms.
+
+**Timing:** the base application is built in 0A (roadmap 0A item 10); the scenario tags, task cards, hidden checks, playbook and rubric in 0B (roadmap 0B item 9).
+
+### Real-project validation (D-58)
+After the controlled test, the harness is tested separately on **a real existing project**, chosen by the owner.
+- Same arms, same metrics (§4), same fixed configuration.
+- Dependency changes there aren't planted, so P1's "planted dependency changes" is replaced by changes identified from the task pair before the runs. The pass-bar version for this test, including that substitution, is recorded **before** its first run (D-57).
+- Whether Phase 1 waits for this test is [Q-17](open-questions.md#q-17).
+
 ### Scenarios: real coupling, planted on purpose
-Run on a real, small-to-medium repo with a working test suite. Which repo is [Q-02](open-questions.md#q-02).
+Run on the purpose-built benchmark repo ([above](#benchmark-repo-d-58)).
 
 | ID | Scenario | Planted coupling | What failure looks like |
 |---|---|---|---|
@@ -103,7 +131,19 @@ These are the ten metrics S3 requires, each with a concrete definition.
 - M2 and M6 need judgment. Use a written rubric, with an LLM judge plus a human spot-check on at least 20% of runs.
 - The rubric is fixed before the first run.
 
-## 5. Pass bar (PROPOSAL, pending owner approval, Q-03)
+## 5. Pass bar v1 (approved 2026-10-01, D-57)
+
+**Version history:**
+
+| Version | Date | Status | Reason |
+|---|---|---|---|
+| v1 | 2026-10-01 | **In force.** Approved by the owner as proposed (S4) | Initial bar |
+
+**Versioning rules (D-57):**
+- A run is judged against the version in force when it started. A new version applies only to runs that start after it's recorded.
+- **Never weaken the bar after seeing results.** Results already seen are never re-judged under a weaker bar, and the bar is never loosened to rescue a result.
+- Tightening, or adding a criterion, is allowed at any time.
+- Loosening for future runs needs a reason that doesn't depend on rescuing a result, plus the owner's sign-off. It's recorded here as a new version.
 
 Comparisons are against the baseline over all runs of the **coupled scenarios (SC-1 to SC-4)** unless stated otherwise.
 - **Count metrics** (M2, M3, M5, M6, M9, and messages) use **totals across runs**. **Time and token metrics** (M1, M8, M10) use **medians** per scenario, then the median across scenarios.
@@ -132,7 +172,7 @@ Comparisons are against the baseline over all runs of the **coupled scenarios (S
 - **Inconclusive:** effects point the right way, but run-to-run variance hides them. **Recommend** adding runs under the same bar before deciding.
 - **Fail:** the primary rule isn't met, or any guardrail fails. **Recommend** adjusting the thesis or design before Phase 1, rather than adding features to rescue the result (R-8).
 
-The owner can change the bar at any time; it's their gate. Changing it *after* seeing results weakens the test, so the docs record when and why.
+The owner can change the bar; it's their gate. Every change is a new version under the rules above, and the results report says which version each run was judged against.
 
 **Why these numbers:**
 - **The emphasis is on outcomes S2 and S3 named:** duplicated changes, conflicts, broken contracts, human babysitting. Speed is a guardrail, not the goal.

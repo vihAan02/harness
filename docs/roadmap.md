@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** plan. Nothing here has been started.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). Item 0, the adapter spike, is in progress. Nothing else has been started.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -13,10 +13,10 @@
 
 **Shape:** 1 human · 1 machine · 2 Claude Code agents · 1 repo · 2 worktrees · 1 coordination server, running locally.
 
-**Before starting, and what's due during 0A:** see the canonical list in [PLAN.md §12](../PLAN.md#12-what-must-happen-before-and-during-phase-0a). In short: the stack (Q-01) and the owner's go-ahead before any code; the auth mode (Q-04) before item 0, because the spike runs real agent sessions.
+**Before starting, and what's due during 0A:** see the canonical list in [PLAN.md §12](../PLAN.md#12-what-must-happen-before-and-during-phase-0a). The stack (TypeScript, D-55), the auth mode (API keys, D-56) and the go-ahead (D-59) are done. **After item 0, stop and report the spike results to the owner before item 1** (D-59).
 
 **Build, in order:**
-0. **Adapter spike** (throwaway, in a scratch directory outside the product tree; covered by the 0A go-ahead, D-44). It checks the vendor facts the design leans on hardest, against the pinned Claude Code / Agent SDK versions:
+0. **Adapter spike** (throwaway, in `spikes/0a-adapter/`, outside the product packages; D-44, D-59). It answers the ten questions in S4, recording each as VERIFIED, CONTRADICTED, PARTIAL or UNVERIFIED with exact versions, in [research/spike-0a.md](research/spike-0a.md). It also checks the vendor facts the design leans on hardest:
    - streaming-input delivery at tool boundaries, and `origin` labeling (F-02);
    - `settingSources: []` really keeps repo hooks and MCP servers out (F-14);
    - which channel carries harness permissions and sandbox `denyRead` into the session so they reach the sandbox (F-12);
@@ -87,7 +87,7 @@
    - `harness status`;
    - `harness log`;
    - the setup-command approval prompt.
-10. **Metrics capture** for the A/B test's harness arm: timings, message counts, estimated coordination tokens, usage, interventions ([validation.md §4](validation.md#4-metrics)). Choose the A/B repo (Q-02).
+10. **Metrics capture** for the A/B test's harness arm: timings, message counts, estimated coordination tokens, usage, interventions ([validation.md §4](validation.md#4-metrics)). **Build the benchmark repo's base application** (D-58, [validation.md §3](validation.md#benchmark-repo-d-58)).
 11. **A 0A demo script** that exercises every exit criterion below.
 
 **Exit criteria (from S3).** The harness reliably shows:
@@ -142,11 +142,11 @@
 7. **`compilePermissions` adds read confinement:** file-tool deny rules plus sandbox `denyRead` outside the worktree and allowlist, good enough to pass T-1.
 8. **Security tests** T-1 (hostile message), T-1b (guardrail tampering) and T-2 (stale lease, using fault injection) ([validation.md §7](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test)).
 9. **A/B setup:**
-   - scenarios SC-0 to SC-4 in the chosen repo;
+   - scenarios SC-0 to SC-4 planted in the benchmark repo: scenario tags, task cards and hidden integration checks (D-58);
    - the baseline recorder and launch config;
    - the coordinator playbook;
    - the scoring rubric.
-10. **Run the A/B test,** once the owner has approved the pass bar (Q-03). Write `docs/results/<date>-ab-gate.md`.
+10. **Run the A/B test** against pass bar v1 (D-57), or a later version recorded before the runs start. Write `docs/results/<date>-ab-gate.md`.
 
 **Exit criteria:**
 - [ ] The S3 example works end to end:
@@ -161,6 +161,7 @@
 ## Gate: is coordination worth it?
 
 The owner reviews the A/B results and records go or no-go as a new D-ID.
+- **Then, as a separate test:** real-project validation on an existing project the owner chooses (D-58). Whether Phase 1 waits for it is [Q-17](open-questions.md#q-17).
 - **On a fail:** the recommendation is to adjust the thesis or design, not add features to rescue it.
 - **On inconclusive:** the recommendation is more runs under the same bar.
 
