@@ -1,0 +1,185 @@
+# Agent adapters
+
+> **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
+>
+> F-IDs refer to [research/vendor-capabilities.md](research/vendor-capabilities.md), checked 2026-10-01 against Claude Code 2.1.286 / Agent SDK TS 0.3.286 and Codex CLI/SDK 0.159.3. **Re-verify before coding.** Both vendors change these surfaces monthly.
+
+## 1. Why adapters exist (D-17, R-4)
+
+Claude Code, Codex, Cursor-style environments and future agents all differ in:
+- lifecycle APIs;
+- sandbox models;
+- hooks;
+- session-resume rules;
+- permissions;
+- how messages can be injected.
+
+**The rule:** all of that lives behind one interface, and **vendor-specific behaviour never leaks** into the coordination server, `harnessd`'s core, or the protocol.
+
+**Rollout:**
+- `ClaudeAdapter`: Phase 0A.
+- `CodexAdapter`: Phase 1.
+- Others later.
+
+## 2. Interface (spec, not code)
+
+```ts
+interface AgentAdapter {
+  readonly vendor: string;                       // "claude" | "codex" | …
+  capabilities(version: VendorVersion): Capabilities;
+
+  startSession(spec: SessionSpec): Promise<SessionHandle>;
+  resumeSession(ref: VendorSessionRef, spec: SessionSpec): Promise<SessionHandle>;
+  injectMessage(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
+  stopSession(h: SessionHandle, mode: "graceful" | "kill"): Promise<void>;
+  getStatus(h: SessionHandle): Promise<SessionStatus>;   // working | idle | waiting | errored | ended
+
+  compilePermissions(policy: EffectivePolicy, worktree: string): VendorPolicyBundle; // pure; no side effects
+  setupHooks(spec: SessionSpec, sink: HarnessHookSink): VendorHookBundle;           // read capture, notices, stop gate
+
+  observations(h: SessionHandle): AsyncIterable<Observation>;  // normalized stream (see §3)
+}
+
+// Required by S3:
+interface Capabilities {
+  canCaptureReads: boolean;     // can observe file reads at all
+  canDenyToolCalls: boolean;    // a pre-tool deny exists
+  canInjectTurn: boolean;       // can deliver input to a live/idle session without restarting it
+  canResume: boolean;
+  supportsMCP: boolean;         // can consume the harness tool shim via MCP
+  supportsHooks: boolean;
+  // Proposed additions (detail the six flags can't express):
+  readCaptureFidelity: "tool-observed" | "command-parsed" | "none";
+  canInjectBetweenTools: boolean;   // delivery inside a running turn at a tool boundary
+  canSandboxReads: boolean;         // OS-level read confinement available
+  hooksFailClosed: { preToolUse: boolean; postToolUse: boolean; stop: boolean }; // per event; Claude SDK: true/false/false (F-05)
+  authModes: Array<"api-key" | "subscription" | "cloud-provider">;
+}
+```
+
+**SessionSpec** carries:
+- the worktree path;
+- the task (text and scope);
+- the agent principal;
+- the port block;
+- secret *references*, already resolved by `harnessd` into an explicit env;
+- the harness tool shim;
+- the standing instructions (envelope rules);
+- the effective policy;
+- the auth mode chosen by the user ([Q-04](open-questions.md#q-04), D-48).
+
+**Degradation rule:** when a capability is `false` or weaker, the adapter says so, and `harnessd`:
+- **lowers the confidence label** on what it derives. For example, read sets from parsed commands are labeled `low`.
+- **or refuses the run** if the current policy requires the missing capability. For example, a policy that needs read confinement on a vendor that can't sandbox reads.
+
+It **never pretends** (security §5).
+
+## 3. Normalized observations
+
+Adapters translate vendor events into one stream that `harnessd` consumes:
+
+| Observation | Used for |
+|---|---|
+| `turn.started` / `turn.ended {reason}` | Turn-boundary delivery, presence, A/B timing |
+| `tool.called {category: read\|search\|edit\|write\|shell\|mcp\|other, paths?, command?}` | Observed claims, read sets, coverage metric (H-03) |
+| `read.observed {path, range?, source, confidence}` | Read sets (0B) |
+| `edit.observed {path}` | Observed soft claims (0A) |
+| `usage {input, output, cached, cumulative: bool}` | A/B token metric M8, budgets |
+| `error {kind: rate_limit\|billing\|auth\|sandbox\|other, message}` | Pause and alert; never retry in a loop (F-65) |
+| `delivery {message_id, landed: between_tools\|new_turn\|stop_hook}` | Message latency metric |
+
+## 4. Capability matrix (as of 2026-10-01)
+
+| Capability | Claude Code via Agent SDK (TS) | Codex via `codex exec` / TS SDK | Codex via app-server / Python SDK |
+|---|---|---|---|
+| `canCaptureReads` | **Yes**: `PostToolUse` on Read/Grep/LSP, absolute `file_path` (F-07). Gaps: @-mentions, shell reads, reads whose hook failed open (F-08, D-47). Repeated reads still fire the hook but return no content, so hash from disk. Instruction files are injected and recorded by `harnessd` (D-45) | **Partial**: no read tool; reads only appear inside shell command strings (F-39) | **Partial**: best-effort parsed `commandActions` `{type: read, path}` (F-34, F-39) |
+| `readCaptureFidelity` | tool-observed (+ command-parsed for Bash) | command-parsed (harness parses strings) | command-parsed (vendor-parsed) |
+| `canDenyToolCalls` | **Yes**: `PreToolUse` deny. In-process SDK callbacks fail **closed**; shell/HTTP hooks fail **open** (F-05, F-06) | **Yes**: `PreToolUse` deny (hooks GA), fail **open**; a guardrail, not a boundary (F-35) | Yes (hooks), plus approval requests answered by the host (F-34) |
+| `canInjectTurn` | **Yes**: streaming input; a pushed message lands **between tool calls** in a running turn, or starts a new turn if idle (F-02) | **Between turns only**: one process per turn; follow-up = `exec resume <thread> "<msg>"` (F-31, F-33) | **Yes**: `turn/steer`, `thread/inject_items`, `ExternalMessage` (tool-level authority) (F-34). Labelled experimental. |
+| `canInjectBetweenTools` | Yes (streaming input; also `PostToolUse`/`PostToolBatch` `additionalContext`, 10,000-char cap) (F-02, F-05) | Via hooks only: `PostToolUse` `additionalContext` (~2,500-token cap) (F-35) | Yes (`turn/steer`) |
+| `canResume` | Yes: `resume`/`sessionId`/`forkSession` (F-04) | Yes: `exec resume` (F-31) | Yes: `thread/resume` (F-34) |
+| `supportsMCP` | Yes: in-process SDK MCP server for harness tools (F-15) | Yes: MCP client via `[mcp_servers]` (F-40) | Yes |
+| `supportsHooks` | Yes: 33 events in TS (F-05) | Yes: 12 events, **hash-trusted**; generated hooks are skipped unless trusted or managed (F-35, F-36). Never use the trust-bypass flag (D-45) | Yes |
+| Stop gate | `Stop` `decision: block`, `stop_hook_active`, max 8 in a row (F-09) | `Stop` `decision: block` continues with the reason as a new prompt (F-35) | Same |
+| `canSandboxReads` | Bash only, via sandbox `denyRead` / `blockReadsOutsideWorkingDirectories`; file tools via Read deny rules (F-12, F-13) | Permission profiles (beta) with deny-read; **incompatible with `--sandbox`**; default read access is the whole filesystem (F-38) | Same |
+| Usage reporting | Per-turn `usage` + cumulative `modelUsage` (estimates) (F-16) | `turn.completed.usage` = running totals (F-43) | `thread/tokenUsage/updated` (F-34) |
+| Auth modes | API key / cloud providers; subscription is a terms grey zone (F-60 to F-67) | API key or ChatGPT login (F-68 to F-71) | API key, or ChatGPT login for local/non-commercial use only: app-server **ChatGPT** auth is "never permitted for commercial or hosted services" (F-70) |
+| Built-in peer messaging to disable | Cross-session messaging (`SendMessage`/`ListAgents`, inbox socket, on by default); agent teams (experimental) (F-17, F-18) | Multi-agent collab tools are subagents within one session (n/a) | n/a |
+
+## 5. `ClaudeAdapter` (Phase 0A): how each method maps
+
+The adapter is implemented on the **Agent SDK (TypeScript)**. Python lacks many hook events and control methods (F-01), and raw `claude -p` stream-json is only partly documented as a protocol (F-23).
+
+| Method | Implementation (proposal) |
+|---|---|
+| `startSession` | `query({ prompt: <harness-controlled AsyncIterable>, options })`. The options are listed below the table. |
+| `injectMessage` | Push an `SDKUserMessage` with `origin: {kind: 'peer'}` (or `'coordinator'` for system notices) and a `uuid`. It lands at the next tool boundary or starts a new turn (F-02). Use `shouldQuery: false` for low-priority context that shouldn't cost a model call. Track `user_message_uuid(s)` for the delivery receipt. |
+| `resumeSession` | `resume: <sessionId>`, re-passing **every** option as a precaution. For the CLI, `--settings`, `--mcp-config` and similar flags demonstrably aren't restored on resume (F-23). Never resume one session from two processes (F-04). |
+| `stopSession` | Graceful: `interrupt()`, then reconcile `still_queued` so queued messages aren't double-delivered (F-03), then `close()`. Kill: `close()`, which kills the subprocess (F-03). |
+| `getStatus` | From the message stream: turn active or result received, pending tool, errors. |
+| `compilePermissions` | **0A:** explicit allow list (including the shim tools); write confinement; network allowlist; **0B adds:** `Read`/`Edit` deny rules for paths outside the worktree and allowlist (`//absolute` paths, F-11), and sandbox `denyRead`; **both:** sandbox write-deny on the shared Git dir (hooks and config are protected by default; refs and objects need an explicit deny, with paths verified in the 0A spike) (F-13, F-57, D-50); `bashEditDiffEnabled: true` (F-07). |
+| `setupHooks` | **In-process SDK callbacks** (F-05): `PostToolUse` (edit capture in 0A; read capture and notices in 0B), `PostToolBatch` (batched notices), `PreToolUse` (defense-in-depth denies; fails closed on timeout), `Stop` (keep-alive gate). PostToolUse and Stop callbacks fail **open** on timeout, so a missed-hook monitor backs them up (D-47). Shell/HTTP hooks aren't used. |
+
+**`startSession` options:**
+- `cwd` = the worktree;
+- `sessionId` assigned by `harnessd`;
+- `permissionMode: 'dontAsk'` with an explicit allow list (Proposal). It's set explicitly, because an omitted mode can start in auto (F-11). Nothing prompts; out-of-list calls are denied and logged. A human approval path isn't needed before Phase 1;
+- `settingSources: []`, so the **repo's hooks, MCP servers and plugins don't run** (D-45, F-14);
+- `systemPrompt: {type: 'preset', preset: 'claude_code', append: <harness standing instructions + repo CLAUDE.md/AGENTS.md text loaded by harnessd as context>}`;
+- `mcpServers: {harness: createSdkMcpServer(...)}`, the tool shim, with `alwaysLoad: true` so tool search doesn't defer it (F-15);
+- `hooks:` in-process callbacks (see `setupHooks`);
+- `sandbox: {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, …}` (F-13);
+- `env:` an **explicit** env, since it replaces the inherited one (F-22). It contains:
+  - a minimal base (`PATH`, `HOME`, and the auth variable for the user's chosen mode, F-67);
+  - the ports;
+  - the allowlisted secret references (D-52);
+  - `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, because auto memory is shared across worktrees of one repo (F-14);
+- `disallowedTools: ['SendMessage', 'ListAgents']`, so peer traffic only flows through the harness (D-46, F-17);
+- **harness-owned settings** (permissions; sandbox `denyRead` from 0B; `crossSessionInbound: refuse`; `bashEditDiffEnabled`), passed through the SDK's flag-settings channel. Which option that is, and whether its deny rules reach the sandbox when `settingSources: []` is set (F-12), is verified in the 0A spike;
+- agent teams left disabled;
+- `permissionMode` **never `auto`**, for the A/B test as well: auto-mode classifier calls are excluded from usage totals, which would skew M8 (F-11, F-16).
+
+**Alternative transport.** For a non-TS `harnessd`, or as a fallback, use `claude -p --restricted --settings <harness file>` (v2.1.248+). It loads only managed settings plus `--settings`, confines file tools to the working directories, and refuses bypass mode (F-14). Every option has to be re-passed on each resume (F-23).
+
+**Things the ClaudeAdapter must handle:**
+- **Hash reads from disk in the hook,** not from `tool_response`. A repeated read returns a "file_unchanged" stub (F-08).
+- **Don't use a per-agent `CLAUDE_CONFIG_DIR` in subscription mode.** It re-keys the macOS Keychain and breaks login (F-22). Use `CLAUDE_CODE_DISABLE_AUTO_MEMORY` for isolation instead.
+- **Phrase notices as facts.** Imperative "system command" wording in injected context can trigger the model's prompt-injection defenses (F-10).
+- **Stop-gate cap:** respect the 8-continuation limit (F-09). After the cap, escalate to the human rather than looping.
+- **Detect billing and rate-limit errors** (e.g. the "Third-party apps now draw from your extra usage" 400, and `api_retry` billing/rate-limit events). Pause and alert; don't retry in a loop (F-65; the `api_retry` detail is ◐).
+- **Don't rely on Claude Code's own stale-edit guard.** It was relaxed in v2.1.208+, and it only ever covered the agent's own directory, not peers' worktrees (F-20). Stale-context detection is the harness's job (D-22).
+
+## 6. `CodexAdapter` (Phase 1): the likely shape
+
+**Two transports, chosen by capability need:**
+1. **`codex exec --json` / TS SDK.**
+   - Not labelled experimental, but the protocol changes often, so pin the version (F-30).
+   - Delivery between turns only.
+   - Read capture by parsing command strings.
+   - Approvals are forced to `never` in exec unless `approvals_reviewer=auto_review` (F-32). So enforcement must come from the sandbox, permission profiles and rules; hooks are only a secondary layer (D-47, F-35).
+2. **App-server (JSON-RPC) / Python SDK.** Mid-turn `turn/steer`, `ExternalMessage` with tool-level authority (which suits peer messages, since they can't impersonate the user), host-answered approvals, and parsed read actions. But it's **labelled experimental and not for production** (F-34).
+
+**Decide in Phase 1** by re-checking app-server stability. Pin the version and generate TypeScript types from `codex app-server generate-ts` either way.
+
+**Must-dos already known:**
+- **Approval policy:** never emit `untrusted` (retired) or `on-failure` (deprecated) (F-37).
+- **Removed and conflicting flags:** never emit `--full-auto` (removed in 0.147.0, though the docs still mention it). Don't pass `--worktree`, because `harnessd` owns worktrees (F-31, D-50).
+- **Python SDK default:** it uses `auto_review` approvals, an extra reviewer model that doesn't surface approvals to the host. Set the mode explicitly (F-34).
+- **Repo Claude config:** don't let Codex import it. The app-server can import Claude Code hooks and MCP config (F-42, D-45).
+- **Read confinement:** use a **permission profile** with deny-read for sibling worktrees and secrets, and **don't pass `--sandbox`**, which disables profiles (F-38).
+- **Hooks and repo config (D-45):**
+  - Supply harness hooks as **managed** or **hash-trusted** hooks in a per-agent `CODEX_HOME`. Untrusted generated hooks are silently skipped (F-36).
+  - **Never** pass `--dangerously-bypass-hook-trust`: if the project were trusted, it would also run the repo's own `.codex/hooks.json`.
+  - Keep the project's `.codex` layer untrusted, and deliver repo instructions with `-c developer_instructions`, since untrusted projects skip AGENTS.md (F-41).
+  - Exact behavior to verify in Phase 1.
+- **Commits:** `workspace-write` keeps `.git` read-only, so agents in linked worktrees probably can't commit. `harnessd` owns commits and checkpoints (D-50; inference in F-38, test it).
+- **Stale context is entirely on the harness:** there's no stale-read check, and `apply_patch` falls back to whitespace-insensitive matching (F-44).
+- **Token usage:** compute per-turn usage from successive running totals (F-43).
+- **Auth:** API key by default. Never copy `auth.json`. ChatGPT-login mode is local-only, if allowed at all (F-68 to F-70, [Q-04](open-questions.md#q-04)).
+
+## 7. Adding a future vendor
+
+1. Implement the interface. Fill `capabilities()` honestly per version.
+2. Add the vendor's facts to `vendor-capabilities.md` with F-IDs and dates.
+3. Add a row to the matrix above.
+4. Run security tests T-1 and T-2 with that vendor before it's allowed in a project.

@@ -1,0 +1,27 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets — never commit (D-36)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.toml
+
+# Dependencies / builds (stack TBD, Q-01)
+node_modules/
+dist/
+build/
+coverage/
+target/
+__pycache__/
+.venv/
+
+# Local harness state (lives in ~/.harness, but guard against accidental copies)
+.harness/
+
+# A/B raw run artifacts (results summaries in docs/results/ are committed)
+runs/
