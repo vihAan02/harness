@@ -3,6 +3,8 @@
 > **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
 >
 > F-IDs refer to [research/vendor-capabilities.md](research/vendor-capabilities.md), checked 2026-10-01 against Claude Code 2.1.286 / Agent SDK TS 0.3.286 and Codex CLI/SDK 0.159.3. **Re-verify before coding.** Both vendors change these surfaces monthly.
+>
+> **The Claude side was then tested empirically** against Claude Code 2.1.287 / Agent SDK TS 0.3.287 in the 0A spike ([research/spike-0a.md](research/spike-0a.md), SP-xx). The `ClaudeAdapter` mapping in §5 reflects those results and decisions D-60 to D-70.
 
 ## 1. Why adapters exist (D-17, R-4)
 
@@ -52,7 +54,7 @@ interface Capabilities {
   readCaptureFidelity: "tool-observed" | "command-parsed" | "none";
   canInjectBetweenTools: boolean;   // delivery inside a running turn at a tool boundary
   canSandboxReads: boolean;         // OS-level read confinement available
-  hooksFailClosed: { preToolUse: boolean; postToolUse: boolean; stop: boolean }; // per event; Claude SDK: true/false/false (F-05)
+  hooksFailClosed: { preToolUse: boolean; postToolUse: boolean; stop: boolean }; // per event; Claude SDK: PreToolUse on timeout only (a throwing callback fails open, SP-10)/false/false
   authModes: Array<"api-key" | "subscription" | "cloud-provider">;
 }
 ```
@@ -94,14 +96,14 @@ Adapters translate vendor events into one stream that `harnessd` consumes:
 |---|---|---|---|
 | `canCaptureReads` | **Yes**: `PostToolUse` on Read/Grep/LSP, absolute `file_path` (F-07). Gaps: @-mentions, shell reads, reads whose hook failed open (F-08, D-47). Repeated reads still fire the hook but return no content, so hash from disk. Instruction files are injected and recorded by `harnessd` (D-45) | **Partial**: no read tool; reads only appear inside shell command strings (F-39) | **Partial**: best-effort parsed `commandActions` `{type: read, path}` (F-34, F-39) |
 | `readCaptureFidelity` | tool-observed (+ command-parsed for Bash) | command-parsed (harness parses strings) | command-parsed (vendor-parsed) |
-| `canDenyToolCalls` | **Yes**: `PreToolUse` deny. In-process SDK callbacks fail **closed**; shell/HTTP hooks fail **open** (F-05, F-06) | **Yes**: `PreToolUse` deny (hooks GA), fail **open**; a guardrail, not a boundary (F-35) | Yes (hooks), plus approval requests answered by the host (F-34) |
-| `canInjectTurn` | **Yes**: streaming input; a pushed message lands **between tool calls** in a running turn, or starts a new turn if idle (F-02) | **Between turns only**: one process per turn; follow-up = `exec resume <thread> "<msg>"` (F-31, F-33) | **Yes**: `turn/steer`, `thread/inject_items`, `ExternalMessage` (tool-level authority) (F-34). Labelled experimental. |
+| `canDenyToolCalls` | **Yes**: `PreToolUse` deny. In-process SDK callbacks fail **closed on timeout only**; a callback that throws fails **open**, so wrap it (SP-10, D-62). Shell/HTTP hooks fail **open** (F-05, F-06) | **Yes**: `PreToolUse` deny (hooks GA), fail **open**; a guardrail, not a boundary (F-35) | Yes (hooks), plus approval requests answered by the host (F-34) |
+| `canInjectTurn` | **Yes**: streaming input; a pushed message lands **at the next tool boundary** in a running turn, or starts a new turn if idle; `command_lifecycle` receipts. `origin` isn't model-visible, and text is expanded unless `client_composed` (F-02, SP-02, D-63) | **Between turns only**: one process per turn; follow-up = `exec resume <thread> "<msg>"` (F-31, F-33) | **Yes**: `turn/steer`, `thread/inject_items`, `ExternalMessage` (tool-level authority) (F-34). Labelled experimental. |
 | `canInjectBetweenTools` | Yes (streaming input; also `PostToolUse`/`PostToolBatch` `additionalContext`, 10,000-char cap) (F-02, F-05) | Via hooks only: `PostToolUse` `additionalContext` (~2,500-token cap) (F-35) | Yes (`turn/steer`) |
 | `canResume` | Yes: `resume`/`sessionId`/`forkSession` (F-04) | Yes: `exec resume` (F-31) | Yes: `thread/resume` (F-34) |
 | `supportsMCP` | Yes: in-process SDK MCP server for harness tools (F-15) | Yes: MCP client via `[mcp_servers]` (F-40) | Yes |
 | `supportsHooks` | Yes: 33 events in TS (F-05) | Yes: 12 events, **hash-trusted**; generated hooks are skipped unless trusted or managed (F-35, F-36). Never use the trust-bypass flag (D-45) | Yes |
 | Stop gate | `Stop` `decision: block`, `stop_hook_active`, max 8 in a row (F-09) | `Stop` `decision: block` continues with the reason as a new prompt (F-35) | Same |
-| `canSandboxReads` | Bash only, via sandbox `denyRead` / `blockReadsOutsideWorkingDirectories`; file tools via Read deny rules (F-12, F-13) | Permission profiles (beta) with deny-read; **incompatible with `--sandbox`**; default read access is the whole filesystem (F-38) | Same |
+| `canSandboxReads` | **Yes, via one channel:** `Read(//…)` deny rules in the SDK's `settings` (flag) layer cover file tools, `@`-expansion **and** shell reads at the OS level. Sandbox `denyRead` alone covers shell reads only (F-12, SP-13, D-61) | Permission profiles (beta) with deny-read; **incompatible with `--sandbox`**; default read access is the whole filesystem (F-38) | Same |
 | Usage reporting | Per-turn `usage` + cumulative `modelUsage` (estimates) (F-16) | `turn.completed.usage` = running totals (F-43) | `thread/tokenUsage/updated` (F-34) |
 | Auth modes | API key / cloud providers; subscription is a terms grey zone (F-60 to F-67) | API key or ChatGPT login (F-68 to F-71) | API key, or ChatGPT login for local/non-commercial use only: app-server **ChatGPT** auth is "never permitted for commercial or hosted services" (F-70) |
 | Built-in peer messaging to disable | Cross-session messaging (`SendMessage`/`ListAgents`, inbox socket, on by default); agent teams (experimental) (F-17, F-18) | Multi-agent collab tools are subagents within one session (n/a) | n/a |
@@ -110,32 +112,36 @@ Adapters translate vendor events into one stream that `harnessd` consumes:
 
 The adapter is implemented on the **Agent SDK (TypeScript)**. Python lacks many hook events and control methods (F-01), and raw `claude -p` stream-json is only partly documented as a protocol (F-23).
 
-| Method | Implementation (proposal) |
+| Method | Implementation (proposal, updated by the spike) |
 |---|---|
 | `startSession` | `query({ prompt: <harness-controlled AsyncIterable>, options })`. The options are listed below the table. |
-| `injectMessage` | Push an `SDKUserMessage` with `origin: {kind: 'peer'}` (or `'coordinator'` for system notices) and a `uuid`. It lands at the next tool boundary or starts a new turn (F-02). Use `shouldQuery: false` for low-priority context that shouldn't cost a model call. Track `user_message_uuid(s)` for the delivery receipt. |
-| `resumeSession` | `resume: <sessionId>`, re-passing **every** option as a precaution. For the CLI, `--settings`, `--mcp-config` and similar flags demonstrably aren't restored on resume (F-23). Never resume one session from two processes (F-04). |
-| `stopSession` | Graceful: `interrupt()`, then reconcile `still_queued` so queued messages aren't double-delivered (F-03), then `close()`. Kill: `close()`, which kills the subprocess (F-03). |
-| `getStatus` | From the message stream: turn active or result received, pending tool, errors. |
-| `compilePermissions` | **0A:** explicit allow list (including the shim tools); write confinement; network allowlist; **0B adds:** `Read`/`Edit` deny rules for paths outside the worktree and allowlist (`//absolute` paths, F-11), and sandbox `denyRead`; **both:** sandbox write-deny on the shared Git dir (hooks and config are protected by default; refs and objects need an explicit deny, with paths verified in the 0A spike) (F-13, F-57, D-50); `bashEditDiffEnabled: true` (F-07). |
-| `setupHooks` | **In-process SDK callbacks** (F-05): `PostToolUse` (edit capture in 0A; read capture and notices in 0B), `PostToolBatch` (batched notices), `PreToolUse` (defense-in-depth denies; fails closed on timeout), `Stop` (keep-alive gate). PostToolUse and Stop callbacks fail **open** on timeout, so a missed-hook monitor backs them up (D-47). Shell/HTTP hooks aren't used. |
+| `injectMessage` | Push an `SDKUserMessage` with **`client_composed: true`** (always; otherwise `@path` and `/commands` in the text are executed, SP-02), the envelope text, a `uuid`, and `origin` (`peer` or `coordinator`; host metadata only, not model-visible). Default priority lands at the next tool boundary or starts a new turn; `priority: 'later'` waits for turn end; never `'now'` for peer traffic. The delivery receipt is the `command_lifecycle` `started` frame for that `uuid` (D-63). |
+| `resumeSession` | `resume: <sessionId>` with the **same per-agent `CLAUDE_CONFIG_DIR`** (resume fails otherwise) and the session's **own worktree** (the CLI would resume into another `cwd`), re-passing every option (SP-07, D-65). A tool call killed mid-flight comes back as "interrupted, outcome unknown"; reconcile the worktree diff before continuing (D-70). Never resume one session from two processes (F-04). |
+| `stopSession` | Graceful: `interrupt()` (the turn ends with `terminal_reason: aborted_tools`), reconcile `still_queued` (F-03), then `close()`. Kill: `close()`, which kills the subprocess and any in-flight tool (SP-01, SP-07). |
+| `getStatus` | `session_state_changed` (`running` / `idle` / `requires_action`; needs `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`); `idle` is the turn end (D-67). Plus the last `result` (`is_error`, `terminal_reason`), `api_retry` frames, and child-PID liveness (SP-09). |
+| `compilePermissions` | **0A (D-60):** scoped allows `Edit(//<worktree>/**)`, `Write(//<worktree>/**)` (never bare `Edit`/`Write`), plus `Read`, `Grep`, `Glob`, `Bash` and the shim tools; the same `Edit` rule in flag settings; sandbox `filesystem.denyWrite` on the shared Git dir's `config`, `hooks`, `refs`, `objects`, `packed-refs`, `info`, `worktrees`, `HEAD`, `index`, `logs`; `allowUnsandboxedCommands: false`; `credentials.envVars` deny for the auth variable (D-64); `network.allowLocalBinding: true` when the agent has a port block (D-68); `bashEditDiffEnabled: true` (F-07). **0B adds (D-61):** flag-settings `Read(//…)` deny rules for sibling worktrees, the main checkout, the harness state dir and secret paths. |
+| `setupHooks` | **In-process SDK callbacks** (F-05): a **dead-man `PreToolUse`** registered in every session, short timeout, body wrapped so any exception returns `deny` (D-62); `PostToolUse` (edit capture in 0A via file paths and `bashEditDiff`; read capture and notices in 0B), `PostToolBatch` (batched notices), `Stop` (keep-alive gate, 0B). PostToolUse and Stop fail **open**, so worktree diffs (D-70) and a missed-hook monitor (0B) back them up. Shell/HTTP hooks aren't used. `canUseTool` isn't used for gating: it has no timeout (a hang stalled the session), and under sandbox auto-allow Bash never reaches it (SP-10). |
 
 **`startSession` options:**
 - `cwd` = the worktree;
 - `sessionId` assigned by `harnessd`;
-- `permissionMode: 'dontAsk'` with an explicit allow list (Proposal). It's set explicitly, because an omitted mode can start in auto (F-11). Nothing prompts; out-of-list calls are denied and logged. A human approval path isn't needed before Phase 1;
+- `permissionMode: 'dontAsk'` with the scoped allow list from `compilePermissions` (D-60). It's set explicitly, because an omitted mode can start in auto (F-11). Nothing prompts; out-of-list calls are denied and logged. A human approval path isn't needed before Phase 1;
+- `tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash']` (Proposal, D-66): an explicit base set, so self-scheduling, worktree, network and background-subagent tools aren't offered (about 49 KB less per request, SP-09);
 - `settingSources: []`, so the **repo's hooks, MCP servers and plugins don't run** (D-45, F-14);
 - `systemPrompt: {type: 'preset', preset: 'claude_code', append: <harness standing instructions + repo CLAUDE.md/AGENTS.md text loaded by harnessd as context>}`;
 - `mcpServers: {harness: createSdkMcpServer(...)}`, the tool shim, with `alwaysLoad: true` so tool search doesn't defer it (F-15);
 - `hooks:` in-process callbacks (see `setupHooks`);
-- `sandbox: {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, …}` (F-13);
+- `sandbox: {enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, filesystem: {denyWrite: <shared .git paths>}, credentials: {envVars: [{name: <auth var>, mode: 'deny'}]}, network: {allowLocalBinding: <has ports>}}` (F-13, D-60, D-64, D-68). `allowUnsandboxedCommands: false` is load-bearing: with `true`, `dangerouslyDisableSandbox` ran a command unsandboxed (SP-05);
 - `env:` an **explicit** env, since it replaces the inherited one (F-22). It contains:
   - a minimal base (`PATH`, `HOME`, and the auth variable for the user's chosen mode, F-67);
   - the ports;
   - the allowlisted secret references (D-52);
   - `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, because auto memory is shared across worktrees of one repo (F-14);
+  - a **per-agent `CLAUDE_CONFIG_DIR`** owned by `harnessd` (D-65; API-key mode only);
+  - `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` for the turn-end signal (D-67);
+  - **no secrets in any option value**: options become command-line arguments visible in `ps` (SP-01);
 - `disallowedTools: ['SendMessage', 'ListAgents']`, so peer traffic only flows through the harness (D-46, F-17);
-- **harness-owned settings** (permissions; sandbox `denyRead` from 0B; `crossSessionInbound: refuse`; `bashEditDiffEnabled`), passed through the SDK's flag-settings channel. Which option that is, and whether its deny rules reach the sandbox when `settingSources: []` is set (F-12), is verified in the 0A spike;
+- **harness-owned settings** (permission rules; `crossSessionInbound: refuse`; `bashEditDiffEnabled`), passed through the SDK's **`settings` option** (the flag-settings layer). Verified: its deny rules reach the OS sandbox even with `settingSources: []` (SP-13). The SDK's `managedSettings` also work but are dropped on machines with an IT-managed tier, so they're not relied on;
 - agent teams left disabled;
 - `permissionMode` **never `auto`**, for the A/B test as well: auto-mode classifier calls are excluded from usage totals, which would skew M8 (F-11, F-16).
 
@@ -143,10 +149,16 @@ The adapter is implemented on the **Agent SDK (TypeScript)**. Python lacks many 
 
 **Things the ClaudeAdapter must handle:**
 - **Hash reads from disk in the hook,** not from `tool_response`. A repeated read returns a "file_unchanged" stub (F-08).
-- **Don't use a per-agent `CLAUDE_CONFIG_DIR` in subscription mode.** It re-keys the macOS Keychain and breaks login (F-22). Use `CLAUDE_CODE_DISABLE_AUTO_MEMORY` for isolation instead.
+- **`CLAUDE_CONFIG_DIR`:** per agent in API-key mode (D-65). Only in subscription mode (not used in Phase 0) does it re-key the macOS Keychain and break login (F-22).
+- **Treat a result as an error when `is_error` is true,** whatever the `subtype`: a billing error comes back as `subtype: "success"`, `is_error: true`, `terminal_reason: "api_error"`, `api_error_status: 400` (SP-09).
+- **Supervise against your own crash:** record each child PID; on `harnessd` start, kill orphans from a previous run and reconcile the worktree diff before resuming (D-62).
+- **Verify the hardening at session start:** `init.apiKeySource` is the expected source, no MCP servers or repo skills are listed, and a probe Bash command can't see the auth variable (D-56, D-64).
 - **Phrase notices as facts.** Imperative "system command" wording in injected context can trigger the model's prompt-injection defenses (F-10).
 - **Stop-gate cap:** respect the 8-continuation limit (F-09). After the cap, escalate to the human rather than looping.
-- **Detect billing and rate-limit errors** (e.g. the "Third-party apps now draw from your extra usage" 400, and `api_retry` billing/rate-limit events). Pause and alert; don't retry in a loop (F-65; the `api_retry` detail is ◐).
+- **Detect billing and rate-limit errors.** Pause and alert; don't retry in a loop (F-65).
+  - **Rate limits and overload:** `api_retry` frames carry `attempt`, `max_retries` (10), `retry_delay_ms` and `error_status`. They were observed for 429, 529 and 401 (SP-09).
+  - **Billing:** a billing 400 is not retried. It shows up as an assistant `error: "billing_error"` plus an `is_error` result.
+  - **Real error texts are still to confirm** (U-6).
 - **Don't rely on Claude Code's own stale-edit guard.** It was relaxed in v2.1.208+, and it only ever covered the agent's own directory, not peers' worktrees (F-20). Stale-context detection is the harness's job (D-22).
 
 ## 6. `CodexAdapter` (Phase 1): the likely shape

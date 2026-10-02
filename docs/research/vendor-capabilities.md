@@ -6,6 +6,7 @@
 >   - Seven parallel research passes against primary sources: official docs, source code, registries, terms pages.
 >   - Then **two independent checkers** re-opened the primary sources for every load-bearing claim. One covered Claude Code and the Agent SDK; the other covered Codex, infrastructure and vendor terms.
 >   - Corrections from the checkers, and from a later citation-accuracy review, are folded in below.
+> - **Empirical re-check:** the Claude facts the design leans on were re-tested against Claude Code 2.1.287 / Agent SDK 0.3.287 in the 0A spike ([spike-0a.md](spike-0a.md)). See the *Spike* lines under each F-ID, and C-14 to C-19.
 > - **What an F-ID is:** a researched claim with a source and a confidence mark. Trust the mark: `?` and `◐` items are **not** verified facts. They're kept here so the evidence for them stays in one place.
 > - **Re-verify before writing code that depends on any of this.** Both agent vendors changed these surfaces several times in 2026.
 >
@@ -21,7 +22,7 @@
 
 ## Contradictions and qualifications of S1/S2/S3
 
-Each item lists which source it affects. Nothing in S1–S3 was silently rewritten; [PLAN.md §11](../../PLAN.md#11-what-the-research-changed-or-qualified) records how each one is handled.
+Each item lists which source it affects. C-14 to C-19 were found by the 0A spike ([spike-0a.md](spike-0a.md)), not by desk research. Nothing in S1–S3 was silently rewritten; [PLAN.md §11](../../PLAN.md#11-what-the-research-changed-or-qualified) records how each one is handled.
 
 | # | Earlier assumption | What the research found | F-IDs |
 |---|---|---|---|
@@ -38,6 +39,12 @@ Each item lists which source it affects. Nothing in S1–S3 was silently rewritt
 | C-11 | Implicit: the vendor's own "file modified since read" guard limits stale edits | **No longer true.** Claude Code relaxed it (v2.1.208+). Codex appears to have none (F-44 ◐), and `apply_patch` falls back to whitespace-insensitive context matching. And by construction, a per-worktree guard can't see changes in another worktree. | F-20, F-44 |
 | C-12 | Implicit: a worktree is an isolated sandbox for an agent | **Not by default.** Worktrees share `.git` hooks, config and refs. Headless Claude sessions run **repo-committed hooks** and MCP servers by default. Codex's default sandbox can read the whole filesystem. | F-13, F-14, F-38, F-57 |
 | C-13 | Implicit: agent-to-agent messaging is something we add | **Claude Code ships its own** cross-session messaging (on by default) and agent teams. Left alone, they would let peer traffic bypass the harness's typed, budgeted, enveloped channel. | F-17, F-18 |
+| C-14 | Plan (agent-adapters §5): `origin: {kind: 'peer'}` labels peer messages for the model | **Found by the spike:** `origin` changes nothing the model sees. Mid-turn the CLI frames every injection as "The user sent a new message". The harness envelope is the only model-visible provenance (D-63). | SP-02 |
+| C-15 | Implicit: injected text is inert | **Found by the spike:** without `client_composed: true`, injected `@<path>` reads a file (even outside the worktree) into context, and `/clear` runs and wipes the conversation (D-63). | SP-02 |
+| C-16 | F-05 as read in D-47/TH-15: in-process PreToolUse fails closed | **Found by the spike:** only on **timeout**. A callback that throws lets the tool run. And if `harnessd` dies, the orphan keeps working unless a PreToolUse callback is registered (D-62). | SP-10 |
+| C-17 | agent-adapters §5: the sandbox + `dontAsk` + allow list confine writes | **Found by the spike:** the sandbox covers Bash only. Bare `Write`/`Edit` allows let file tools write anywhere the OS user can, including peer worktrees: 17 of 51 escapes succeeded vs 0 of 51 with scoped rules (D-60). | SP-05 |
+| C-18 | D-48: passing the API key through env is safe | **Found by the spike:** the key is in the agent shell's environment, readable by any repo script, unless `sandbox.credentials.envVars` denies it (D-64). | SP-08 |
+| C-19 | F-22 read as "no per-agent `CLAUDE_CONFIG_DIR`" | **Found by the spike:** that caveat is subscription-only. In API-key mode a per-agent dir is the strongest isolation available (D-65). | SP-08, SP-11 |
 
 ---
 
@@ -59,6 +66,8 @@ Sources: [quickstart](https://code.claude.com/docs/en/agent-sdk/quickstart), [np
 
 Sources: [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript), [streaming vs single](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode), [agent loop](https://code.claude.com/docs/en/agent-sdk/agent-loop). *Impact: 0A delivery (D-26).*
 
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED for delivery timing (next tool boundary mid-turn, new turn when idle, merged when close together), with additions and one contradiction: `priority` `later`/`now` exist; `command_lifecycle` frames are the receipt; **`origin` is not model-visible** (C-14); injected text is expanded unless `client_composed: true` (C-15). (SP-02)
+
 **F-03 ✔✔ `interrupt()` doesn't cancel queued messages.**
 - In TS it returns `{still_queued, cancelled?}`.
 - Messages that aren't cancelled still run, so re-sending them duplicates them.
@@ -76,6 +85,8 @@ Source: [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript).
 
 Sources: [sessions](https://code.claude.com/docs/en/agent-sdk/sessions), [CLI sessions](https://code.claude.com/docs/en/sessions).
 
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: harness-chosen IDs, the transcript path, resume from another process. A killed tool call is closed as "interrupted, outcome unknown". Resume needs the same `CLAUDE_CONFIG_DIR`, and it **does** resume into a different `cwd`. (SP-07)
+
 **F-05 ✔✔ Hooks: exactly 33 events, same JSON in the CLI and the TS SDK.**
 - **Deny:** `PreToolUse` `permissionDecision: deny` (or exit 2). The reason is shown to Claude.
 - **Context:** `additionalContext` on PreToolUse, PostToolUse, PostToolBatch, UserPromptSubmit, SessionStart, Stop and others. It arrives as a system reminder, **capped at 10,000 characters**.
@@ -89,6 +100,8 @@ Sources: [sessions](https://code.claude.com/docs/en/agent-sdk/sessions), [CLI se
 - **Precedence:** deny wins even in `bypassPermissions`. A hook `allow` doesn't override deny or ask rules.
 
 Sources: [hooks](https://code.claude.com/docs/en/hooks), [SDK hooks](https://code.claude.com/docs/en/agent-sdk/hooks).
+
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* PARTIAL: PreToolUse timeout fails closed, and PostToolUse/Stop fail open as stated. But a PreToolUse callback that **throws fails open** (C-16). The Stop cap of 8 was confirmed. (SP-10)
 
 **F-06 ✔✔ Command, HTTP and MCP-tool hooks fail open.**
 - These all let the call proceed: exit 1 without valid JSON, a timeout, a missing script (127), or an HTTP non-2xx or connection failure.
@@ -107,6 +120,8 @@ Source: [hooks](https://code.claude.com/docs/en/hooks). *Impact: D-47.*
 
 Sources: [hooks](https://code.claude.com/docs/en/hooks), [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript).
 
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: absolute paths. `bashEditDiff` arrives in `tool_response` with `files[]`/`changedFiles` in `dontAsk` mode when `bashEditDiffEnabled` is set via the SDK's `settings` (flag) channel. Background-process writes are missed. (SP-03)
+
 **F-08 ✔✔ Gaps in read capture.**
 - **Repeated reads:** an identical repeated Read of an unchanged file returns `file_unchanged` with **no content** (`source: 'seeded'` for CLAUDE.md and memory). The dedup is controlled per session by a remote flag, per GitHub issue #88118 (2°).
 - **Not seen by Read hooks:** @-mentioned files and IDE context; instructions files (use `InstructionsLoaded`, which doesn't fire for AGENTS.md loaded through the "Project instructions" setting); and shell reads (the command string only).
@@ -115,12 +130,16 @@ Sources: [hooks](https://code.claude.com/docs/en/hooks), [TS reference](https://
 
 Sources: [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript), [tools reference](https://code.claude.com/docs/en/tools-reference), [issue #88118](https://github.com/anthropics/claude-code/issues/88118). *Impact: hash reads from disk; read sets are best-effort (D-23).*
 
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: the repeated-read stub `file_unchanged`. `@`-mentions fire no tool hook. Grep `content` mode returns empty structured `filenames`. (SP-04)
+
 **F-09 ✔✔ Stop hook.**
 - `decision: "block"` plus a `reason` keeps the agent working.
 - The input carries `stop_hook_active`.
 - **Capped at 8 consecutive continuations** (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`; 0 disables the cap). The cap applies to Stop and SubagentStop.
 
 Source: [hooks](https://code.claude.com/docs/en/hooks).
+
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: `block` continues, capped at 8 consecutive. (SP-10)
 
 **F-10 ✔✔ Mid-turn context.**
 - PostToolUse / PostToolBatch `additionalContext` is read on the next model request.
@@ -152,6 +171,8 @@ Sources: [permissions](https://code.claude.com/docs/en/permissions), [SDK permis
 
 Sources: [permissions](https://code.claude.com/docs/en/permissions), [sandboxing](https://code.claude.com/docs/en/sandboxing).
 
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: `Read(//…)` deny rules passed through the SDK `settings` option reach the OS sandbox even with `settingSources: []`. They block file tools, shell reads (including Python) and `@`-expansion. Sandbox `denyRead` alone covers shell reads only. (SP-13)
+
 **F-13 ✔✔ The sandbox covers Bash, and only Bash.**
 - **Platforms:** macOS (Seatbelt), Linux and WSL2 (bubblewrap + socat).
 - **Scope:** Bash and its child processes. File tools use permission rules instead.
@@ -162,6 +183,8 @@ Sources: [permissions](https://code.claude.com/docs/en/permissions), [sandboxing
 - **Set** `failIfUnavailable: true` and `allowUnsandboxedCommands: false`.
 
 Source: [sandboxing](https://code.claude.com/docs/en/sandboxing).
+
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: Bash is confined to the cwd, and reads and network are open or closed as stated (outbound internet blocked by default). In a linked worktree the shared `.git` `refs/`, `objects/`, `worktrees/` and `info/` are writable by default, while `config` and `hooks/` aren't. Local port binding needs `allowLocalBinding`. **The sandbox doesn't confine the file tools** (C-17). (SP-05, SP-08)
 
 **F-14 ✔✔ What a session loads by default.**
 - **SDK `settingSources` and headless trust:** by default, `settingSources` loads user, project and local settings, **including the repo's hooks, `.mcp.json` servers and CLAUDE.md**.
@@ -175,6 +198,8 @@ Source: [sandboxing](https://code.claude.com/docs/en/sandboxing).
   - refuses bypass mode.
 
 Sources: [SDK + Claude Code features](https://code.claude.com/docs/en/agent-sdk/claude-code-features), [hooks](https://code.claude.com/docs/en/hooks), [headless](https://code.claude.com/docs/en/headless). *Impact: D-45; TH-13.*
+
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED, and worse than stated: under default sources an **untrusted** folder's hooks (7 events), `.mcp.json` server, **`apiKeyHelper`**, env, skills, agents, commands and instructions all ran or loaded. `settingSources: []` stops all of it. Built-in plugins still load. (SP-06)
 
 **F-15 ✔✔ In-process custom tools.**
 - `tool()` + `createSdkMcpServer()` run inside the host process.
@@ -190,6 +215,8 @@ Sources: [custom tools](https://code.claude.com/docs/en/agent-sdk/custom-tools),
 
 Source: [cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking). *Impact: A/B metric M8.*
 
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: a turn's `usage` equals the sum of API-reported usage; cost is a list-price estimate. Note: a billing error yields `is_error: true` with `subtype: "success"`. (SP-09)
+
 **F-17 ✔✔ Built-in cross-session messaging** (v2.1.224+, on by default).
 - `SendMessage` / `ListAgents` and a per-session inbox socket (`CLAUDE_CODE_MESSAGING_SOCKET`); `-p` sessions bind it too.
 - Messages are delivered between tool calls, or start a turn if the session is idle.
@@ -198,6 +225,8 @@ Source: [cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
 - Messages are labeled as not from the user.
 
 Source: [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging). *Impact: D-46.*
+
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED: the inbox socket is bound and its path and token are exported to the agent's shell, but sandboxed Bash can't connect to it. Separate `CLAUDE_CONFIG_DIR`s make peers undiscoverable; `refuse` blocks delivery; disallowing the tools removes them. (SP-08, SP-11)
 
 **F-18 ✔ Agent teams.**
 - Experimental, interactive only, one lead, one machine.
@@ -225,6 +254,8 @@ Sources: [CHANGELOG](https://raw.githubusercontent.com/anthropics/claude-code/ma
 - **A per-agent `CLAUDE_CONFIG_DIR` re-keys the macOS Keychain entry**, which breaks subscription login.
 
 Sources: [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript), [authentication](https://code.claude.com/docs/en/authentication).
+
+*Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED that `env` replaces the environment. With API keys (D-56), a per-agent `CLAUDE_CONFIG_DIR` works and isolates sessions (D-65). The Keychain caveat applies to subscription mode only. **The auth variable is visible to the agent's shell** unless `sandbox.credentials.envVars` denies it (C-18). (SP-08)
 
 **F-23 ✔✔ Raw `claude -p` stream-json** works for multi-message sessions, but the control protocol has **no standalone spec**. Resume doesn't restore `--settings`, `--mcp-config`, `--add-dir` or `--fallback-model`. Prefer the TS SDK.
 

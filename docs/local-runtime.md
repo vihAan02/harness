@@ -33,7 +33,8 @@
   device.key                     # device signing key (Phase 1; 0600)
   secrets.toml                   # secret references → values or OS-keychain items (0600; D-36)
   worktrees/<project>/<task-id>/ # git worktrees, outside the main checkout
-  sessions/<agent-session>.json  # adapter state: vendor session/thread id for resume
+  sessions/<agent-session>.json  # adapter state: vendor session/thread id, worktree, child PID + start time
+  vendor/<agent>/claude-config/  # per-agent CLAUDE_CONFIG_DIR (API-key mode, D-65); part of the resume key
   logs/                          # harnessd logs (no secret values, no file contents)
 ```
 
@@ -74,7 +75,7 @@ Worktrees live **outside** the main checkout, so tools that scan the repo don't 
 `harness.yaml` sits at the repo root. It's committed, so it's shared with teammates, which makes it **untrusted input** (D-52):
 - **`setup.command` and `test.command` run only after approval.**
   - The local human approves a hash of the command plus the declared manifests, on first use and on every change.
-  - The approval is only a tripwire, because the command runs repo-controlled code such as lifecycle scripts. **The sandbox is the real boundary:** commands run sandboxed with no secrets by default, read confinement and a network allowlist (e.g. the package registry). They never run as bare `harnessd`.
+  - The approval is only a tripwire, because the command runs repo-controlled code such as lifecycle scripts. **The sandbox is the real boundary:** commands run sandboxed with no secrets by default, read confinement and a network allowlist (e.g. the package registry). They never run as bare `harnessd`. **The mechanism is Anthropic's sandbox runtime** (`srt`, pinned) with a config `harnessd` generates per worktree: writes only in the worktree, the shared `.git` write-denied, secrets and sibling worktrees read-denied, a network allowlist and an explicit env. It refuses to run on an invalid config (D-69, SP-12).
   - The exact sandbox mechanism is chosen in the 0A spike.
 - **`env.refs` can't widen secrets.** They're intersected with a per-project allowlist in `~/.harness/config.toml`, so a commit can't widen which secrets reach agents.
 - **Numeric fields** (`ports`, `limits`) can only lower local limits.
@@ -107,6 +108,8 @@ limits:                            # repo values can only LOWER local limits (D-
 
 **0A, ports:**
 - Each agent gets a block, for example agent 1 → 3100–3109 and agent 2 → 3110–3119.
+  - Blocks stay **outside the OS ephemeral range**, because every Claude Code process binds an ephemeral loopback port for its own sandbox proxy (SP-08).
+  - The session's sandbox gets `network.allowLocalBinding: true`; without it the agent can't bind its ports at all (D-68).
 - `harnessd` sets `PORT` to the first port of the block, plus `HARNESS_PORT_BASE` and `HARNESS_PORT_COUNT`.
 - The adapter's system prompt tells the agent to use them. Nobody should be hoping everyone uses port 3000 nicely.
 
@@ -126,6 +129,7 @@ limits:                            # repo values can only LOWER local limits (D-
   - written into worktree files;
   - included in messages or events;
   - sent to the coordination server.
+- **The vendor's own auth variable is different.** It must reach the vendor process but **not** the agent's shell. The adapter denies it to Bash children with `sandbox.credentials.envVars` and checks that with a probe at session start (D-64, SP-08).
 - **Honest limitation:** an agent can read any secret in its own environment and could echo it. So:
   - only give agents the secrets they need, preferably test or dev credentials;
   - use the vendor sandbox's network limits where possible;

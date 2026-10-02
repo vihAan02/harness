@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). Item 0, the adapter spike, is in progress. Nothing else has been started.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70). Items 1 onward wait for the owner's review of those results.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -30,6 +30,8 @@
    - usage reporting (F-16).
    
    **Output:** updated F-IDs, a go/no-go note for each assumption, and any decisions to supersede.
+   
+   **Done 2026-10-01** against Claude Code 2.1.287 / SDK 0.3.287: [research/spike-0a.md](research/spike-0a.md). The core mechanisms held; six configuration and hook assumptions failed and were replaced (D-60 to D-70). The real-model checks U-1 to U-3 wait for an API key ([Q-18](open-questions.md#q-18)).
 1. **Repo skeleton** for the chosen stack. The likely shape is one repo with packages:
    - `server` (coordination server);
    - `daemon` (`harnessd`);
@@ -47,21 +49,25 @@
 4. **`harnessd` v0:**
    - local config and allowlist;
    - worktree lifecycle: create from an explicit base SHA on `harness/task/<task-id>`, tear down;
+   - a per-agent `CLAUDE_CONFIG_DIR` (D-65);
+   - child-PID tracking, with orphans killed and edits reconciled on start (D-62);
    - `harnessd`-owned Git commits when a task is done (D-50, D-54);
-   - setup command with **local hash approval**, run inside the sandbox (D-52);
+   - setup command with **local hash approval**, run under `srt` with a generated config (D-52, D-69);
    - `env.refs` ∩ local allowlist;
-   - per-agent port blocks;
+   - per-agent port blocks outside the OS ephemeral range, with loopback binding allowed (D-68);
    - presence heartbeats.
 5. **`AgentAdapter` interface + `ClaudeAdapter`** (Agent SDK, TypeScript):
-   - start, resume, `injectMessage` (streaming input: next tool boundary, or a new turn if idle, F-02), stop, status;
+   - start, resume, `injectMessage` (streaming input: next tool boundary, or a new turn if idle; always `client_composed`; `command_lifecycle` receipts, D-63), stop, status (`session_state_changed`, D-67);
    - capability flags; usage reporting; a version check (D-49).
    
    **`compilePermissions` (minimal):**
-   - write confinement to the worktree;
-   - shared-`.git` write deny;
-   - sandbox on, with `failIfUnavailable` and no unsandboxed escape.
+   - write confinement through path-scoped allow rules, never bare `Edit`/`Write` (D-60);
+   - shared-`.git` write deny on the verified path list (D-60);
+   - sandbox on, with `failIfUnavailable` and no unsandboxed escape;
+   - credential variables denied to the agent's shell (D-64);
+   - an explicit minimal `tools` list (D-66, Proposal).
    
-   **`setupHooks`:** in-process callbacks for **edit capture** only.
+   **`setupHooks`:** in-process callbacks for **edit capture** (file paths + `bashEditDiff`), plus the **dead-man PreToolUse** (D-62).
    
    **The session must:**
    - not load repo hooks, MCP servers or plugins (`settingSources: []`, D-45);
@@ -74,7 +80,7 @@
 6. **Agent-facing tool shim** (the thin layer, D-15): `harness_status`, `ask`, `answer`, `report_done` ([protocol.md §6](protocol.md#6-agent-facing-tool-shim)).
 7. **Claims:**
    - prospective claims from task scope;
-   - observed claims from edit hooks plus worktree diffs;
+   - observed claims from edit hooks plus periodic worktree diffs, which catch background writes the hooks miss (D-70);
    - overlap detection → `overlap.detected` → `claim_conflict` messages.
 8. **Typed messages:**
    - `question` / `answer` / `claim_conflict` routing;

@@ -189,6 +189,10 @@ If an agent never calls these tools, the harness still works from its observatio
 
 ## 8. Peer-message envelope
 
+> **Spike result (D-63, SP-02):**
+> - **The envelope is the only provenance the model sees.** The SDK `origin` field is host metadata. Mid-turn, the CLI frames every injected message as "The user sent a new message while you were working", so the envelope text has to say the content is from a peer agent and untrusted on its own.
+> - **Delivery is verbatim.** Every injection is sent with `client_composed: true`, so `@path` and `/commands` in a message body are never expanded or run.
+
 `harnessd` renders every message into the text an agent sees.
 - **With the SDK,** it's sent as a user message with an explicit `origin` (F-02): `peer` for agents and remote humans, `coordinator` for harness notices, `human` for the local owner.
 - **Phrased as facts,** not imperative "system" commands. The vendor docs warn that imperative injected text can trigger prompt-injection defenses (F-10).

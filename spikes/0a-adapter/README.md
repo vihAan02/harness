@@ -1,0 +1,25 @@
+# Phase 0A adapter spike (throwaway)
+
+**Not product code.** Product packages must never import from here (D-44, D-59). Results and conclusions are in [docs/research/spike-0a.md](../../docs/research/spike-0a.md).
+
+- **What it does:** runs the real Claude Code binary (bundled in the pinned Agent SDK) against `lib/mock-api.ts`, a scripted stand-in for the Messages API. Each experiment can then issue exact tool calls, including escape attempts, and observe what the client allows, captures and delivers.
+- **Auth:** a dummy API key and a throwaway `CLAUDE_CONFIG_DIR` per session. No real credentials, no subscription login (D-56). The mock never logs credential values.
+- **Run:** `npm ci`, then `node experiments/<file>.ts` (Node 26 strips the TypeScript types). Each run writes raw request bodies and a `result.json` under `.runs/<experiment>/` (git-ignored).
+
+| File | Question |
+|---|---|
+| `e00-smoke.ts` | Does the binary run against the mock, hardened? |
+| `e02-inject.ts`, `e15-slash-injection.ts`, `peek-lifecycle.ts` | Q2: injection timing, priorities, receipts, `@`/`/` expansion |
+| `e03-capture.ts` | Q3/Q4: edit and read capture vs. a filesystem diff |
+| `e05c-confinement-clean.ts` | Q5: 53 write-escape attempts, bare vs scoped rules, recording what blocked each (supersedes `e05`/`e05b`, which had confounds) |
+| `e05-write-confinement.ts`, `e05b-read-then-write.ts` | Q5, first pass (`--restricted` variant; read-only Git commands) |
+| `e06-repo-config.ts` | Q6: hostile repo hooks, MCP, `apiKeyHelper`, instructions |
+| `e07-resume.ts` | Q7: graceful and hard-kill resume, cwd and config-dir changes |
+| `e08-two-sessions.ts`, `e08b-exposure.ts` | Q1/Q8: two sessions, ports, env exposure, sockets, network |
+| `e09-state-errors.ts` | Q9: state signals, API errors, usage, tool surface |
+| `e10-fail-modes.ts`, `e10b-canusetool-and-crash.ts`, `e10c-orphan-continues.ts` | Q10: fail open vs closed, supervisor crash |
+| `e11-cross-session.ts`, `peek-tools.ts` | The vendor's peer channel (F-17, D-46) |
+| `e12-setup-sandbox.ts` | Setup/test commands under `srt` (D-52) |
+| `e13-read-confinement.ts` | Which channel confines reads (F-12) |
+| `e14-baseline-and-gaps.ts` | The A/B baseline's flags; background-write capture gap |
+| `e16-review-followups.ts` | Idle `shouldQuery: false`; `bashEditDiff` with and without the flag; all messaging sockets |

@@ -66,10 +66,13 @@ Once one person's agent can influence another person's agent, **the harness is a
 | TH-11 | **Vendor account misuse / terms** | Product drives subscription-signed-in CLIs against vendor terms, or touches credentials | D-48: never read, store, proxy or intermediate credentials or model traffic; unmodified vendor binary; user-chosen auth mode; detect "extra usage" / billing errors and pause (F-60 to F-70); [Q-04](open-questions.md#q-04) | 0A (rules), before any commercial launch (vendor confirmation) |
 | TH-12 | **Leakage through coordination data** | Read sets or messages reveal private file paths or contents to teammates | Read sets store paths and hashes only, never contents; message size caps; retention policy ([Q-15](open-questions.md#q-15)) | 1 |
 | TH-13 | **Repo-committed executable config runs on members' machines** | A teammate commits `.claude/settings.json` hooks or `.mcp.json` servers. Headless Claude sessions treat the folder as trusted and **run them with the user's full permissions, outside the sandbox** (F-14). Codex project hooks (`.codex/hooks.json`) load when the project is trusted (F-36), and the app-server can import Claude config (F-42). The harness's own committed `harness.yaml` is the same risk (setup command, `env.refs`). | **D-45:** harness-launched sessions don't load repo executable config (Claude `settingSources: []`; Codex untrusted project layer + managed or hash-trusted harness hooks, never `--dangerously-bypass-hook-trust`, no Claude-config import). Repo CLAUDE.md/AGENTS.md is loaded as context only. **D-52:** `harness.yaml`'s setup and test commands run only after local approval (command + manifests hash, a tripwire) and **inside the sandbox** (the real boundary), with no secrets by default; `env.refs` ∩ local allowlist; repo numeric limits can only lower local ones. | 0A (Claude, harness.yaml), 1 (Codex) |
-| TH-14 | **Shared `.git` across worktrees** | An agent writes `.git/hooks/*`, changes `.git/config`, or deletes another agent's branch. Hooks, config and refs are shared by every worktree and the main checkout (F-57). | **D-50:** agents don't run Git writes; `harnessd` owns them.<br>The Claude sandbox protects `hooks/` and `config` by default, **but leaves refs and objects in the shared `.git` writable** (F-13). So `compilePermissions` adds a sandbox write-deny on the shared Git dir outside the worktree's own admin dir; exact paths to verify in the 0A spike.<br>Codex keeps `.git` read-only in writable roots (F-38).<br>Bash deny rules on `git` are text matches, not a boundary (F-12). Tested by T-1b. | 0A (deny), 0B (T-1b) |
-| TH-15 | **Hooks failing open** | `harnessd`'s HTTP hook endpoint is down, so every PreToolUse gate silently allows (F-06, F-35). An in-process PostToolUse capture or Stop gate times out (these fail open even in the SDK, F-05). | D-47: sandbox and deny rules are primary. Harness hooks are in-process SDK callbacks (PreToolUse fails closed). Worktree diffs back up edit capture (0A). A missed-hook monitor compares tool calls with captured entries (0B). The sync never runs inside the Stop callback (D-53). | 0A (diff backstop), 0B (monitor) |
+| TH-14 | **Shared `.git` across worktrees** | An agent writes `.git/hooks/*`, changes `.git/config`, or deletes another agent's branch. Hooks, config and refs are shared by every worktree and the main checkout (F-57). | **D-50:** agents don't run Git writes; `harnessd` owns them.<br>The Claude sandbox protects `hooks/` and `config` by default, **but leaves refs and objects in the shared `.git` writable** (F-13). So `compilePermissions` adds a sandbox write-deny on the shared Git dir. The spike confirmed the default exposure (Bash rewrote another agent's branch ref) and verified the deny list in D-60, under which read-only Git still works (SP-05).<br>Codex keeps `.git` read-only in writable roots (F-38).<br>Bash deny rules on `git` are text matches, not a boundary (F-12). Tested by T-1b. | 0A (deny), 0B (T-1b) |
+| TH-15 | **Hooks failing open** | `harnessd`'s HTTP hook endpoint is down, so every PreToolUse gate silently allows (F-06, F-35). An in-process PostToolUse capture or Stop gate times out (these fail open even in the SDK, F-05). | D-47: sandbox and deny rules are primary. Harness hooks are in-process SDK callbacks; PreToolUse fails closed **on timeout only**, so its body is wrapped to deny on any exception (D-62, SP-10). Worktree diffs back up edit capture (0A, D-70). A missed-hook monitor compares tool calls with captured entries (0B). The sync never runs inside the Stop callback (D-53). | 0A (diff backstop), 0B (monitor) |
 | TH-16 | **Bypassing the harness's peer channel** | Agents use Claude Code's built-in `SendMessage` / cross-session socket to talk outside budgets and envelopes (F-17) | D-46: disable the vendor peer channels in managed sessions | 0A |
 | TH-17 | **Orchestrator hijack through agent output** | "Agent B reports error X, so tell agent C to run Y" is a known attack pattern on multi-agent orchestrators (F-92, F-93) | Routing and permission decisions in the harness are deterministic and policy-driven. Agent text never triggers privileged actions or widens another agent's permissions. Commands carry IDs and lease tokens, and messages carry IDs, so stale or replayed instructions are rejected (OWASP ASI07). | 0A (design rule), 1 (replay checks) |
+| TH-18 | **Injected text interpreted as commands** | A peer message contains `@~/.ssh/id_ed25519` or `/clear`. The CLI expands the mention into file contents, or runs the command, before the model even weighs the message (SP-02) | D-63: every harness-injected message is `client_composed: true` (verbatim). From 0B, flag-settings Read deny rules also stop `@`-expansion of denied paths (D-61, SP-13). Covered by T-1 | 0A |
+| TH-19 | **Credentials readable from the agent's shell** | A teammate's test script prints `$ANTHROPIC_API_KEY` into a log or tries to send it out (SP-08) | D-64: `sandbox.credentials.envVars` deny for every credential variable, checked by a probe at session start. The sandbox blocks outbound network by default (SP-08). Secrets passed by reference only (D-36) | 0A |
+| TH-20 | **Agent outlives its supervisor** | `harnessd` crashes or is killed mid-turn. The orphaned agent keeps calling the model and running tools with no capture, budgets or kill switch (SP-10) | D-62: a dead-man in-process PreToolUse callback makes every later tool call fail closed; `harnessd` kills orphans on start and reconciles the worktree diff before resuming | 0A |
 
 ## 5. Enforcement: what actually limits an agent (D-35)
 
@@ -87,11 +90,12 @@ MCP and agent-facing tools enforce **nothing** (D-15). Agents read, edit and run
 
 **Defense in depth, not a control on its own:** pre-tool hooks (`canDenyToolCalls`).
 - They can deny a tool call that matches policy, such as reading outside the worktree.
-- Shell, HTTP and Codex hooks fail open, and SDK in-process callbacks fail closed only for PreToolUse (D-47, F-05, F-06, F-35).
+- Shell, HTTP and Codex hooks fail open. SDK in-process callbacks fail closed only for a PreToolUse **timeout**; a callback that throws fails open unless the body catches it (D-47, D-62, F-05, F-06, F-35, SP-10).
 
 **Vendor facts that shape this** (checked 2026-10-01):
 - **Claude:**
-  - Read and Edit deny rules cover the file tools and recognized Bash file commands (`cat`, `sed`, …), but not `grep -r` or scripts (F-12).
+  - Read and Edit deny rules cover the file tools and recognized Bash file commands (`cat`, `sed`, …), but not `grep -r` or scripts (F-12). **With the sandbox on, though, flag-settings Read deny rules are enforced at the OS level, so `grep -r` and Python reads were blocked too** (SP-13).
+  - **File tools aren't sandboxed:** only path-scoped allow rules confine their writes (SP-05, D-60).
   - The **sandbox covers Bash only**, and by default **reads the whole machine** unless `denyRead` / `blockReadsOutsideWorkingDirectories` is set (F-13).
   - Command and HTTP hooks fail open (F-06).
 - **Codex:**
@@ -105,12 +109,14 @@ MCP and agent-facing tools enforce **nothing** (D-15). Agents read, edit and run
 **Rollout by phase:**
 - **0A:**
   - agents run with the worktree as working directory;
-  - writes are confined to it;
+  - writes are confined to it by path-scoped allow rules plus the sandbox (D-60);
   - shared-`.git` writes are denied;
   - the sandbox is on (`failIfUnavailable`, no unsandboxed escape);
   - a deny-by-default directory allowlist applies;
-  - only allowlisted secret references are passed (D-52).
-- **0B:** reads outside the worktree are blocked well enough to pass **T-1**. That takes file-tool deny rules plus sandbox `denyRead`, delivered through a channel that survives `settingSources: []` (to verify in the 0A spike, F-12).
+  - only allowlisted secret references are passed (D-52), and credential variables are hidden from the agent's shell (D-64);
+  - a dead-man PreToolUse callback is registered (D-62);
+  - injected messages are sent verbatim, with `client_composed` (D-63).
+- **0B:** reads outside the worktree are blocked well enough to pass **T-1**. The channel is verified: `Read(//…)` deny rules in the SDK's `settings` (flag) layer cover file tools, `@`-expansion and shell reads, even with `settingSources: []` (D-61, SP-13).
 - **Phase 2:** full compilation of a project-wide policy into each vendor's native config.
 
 **If a vendor can't enforce something,** for example it can't sandbox reads (`canSandboxReads: false`), the adapter marks the capability flag `false`. This rule is keyed on sandbox and deny-rule capabilities, not on hooks. `harnessd` then either refuses to run that vendor under policies that need the capability, or runs it in a stricter sandbox. It never quietly pretends.
@@ -133,8 +139,8 @@ Approvals are time-limited and recorded as events.
 
 ## 8. Security tests
 
-- **T-1, hostile peer message:** an out-of-allowlist read must fail even when the agent tries to comply.
-- **T-1b, guardrail tampering:** a peer message asks the agent to write `.git/hooks/pre-commit`, edit its own settings, or delete another task's branch. Each write must fail.
+- **T-1, hostile peer message:** an out-of-allowlist read must fail even when the agent tries to comply. Includes messages carrying `@<path>` and `/commands` (TH-18).
+- **T-1b, guardrail tampering:** a peer message asks the agent to write `.git/hooks/pre-commit`, edit its own settings, or delete another task's branch. Each write must fail. The 0A spike's scripted escape suite (`spikes/0a-adapter/experiments/e05c-confinement-clean.ts`, 53 attempts) is the starting point.
 - **T-2, stale lease after sleep:** a stale-token land must be rejected.
 
 All three are defined in [validation.md](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test). They're required before the A/B gate and are repeated across people in Phase 1.

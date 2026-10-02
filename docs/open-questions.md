@@ -23,6 +23,7 @@
 | [Q-15](#q-15) | Retention and privacy for messages and read sets | 1 | Open |
 | [Q-16](#q-16) | Product name | Nothing | Open |
 | [Q-17](#q-17) | Does Phase 1 wait for the real-project validation? | The gate decision | Open, needs owner (at the gate) |
+| [Q-18](#q-18) | An API key for the spike's real-model checks | Closing U-1 to U-3; 0A item 8's exit | **Open, needs owner** |
 
 ---
 
@@ -174,3 +175,13 @@
   - gate on the controlled test, and run the real-project test in parallel with early Phase 1;
   - gate on both.
 - **Blocks:** the gate decision. The owner decides at the gate.
+
+### Q-18
+**An API key for the spike's real-model checks.**
+- **Context:** the 0A spike verified the client-side mechanics against the real Claude Code binary with a scripted model, because no `ANTHROPIC_API_KEY` was available on this machine ([spike-0a.md §5](research/spike-0a.md#5-still-unverified-needs-a-real-model-other-platforms-or-other-modes)).
+- **Still open:**
+  - U-1: does a real model act on an injected message at a tool boundary, given the envelope wording?
+  - U-2: does hostile peer text inside the envelope steer it?
+  - U-3: what is the real token overhead?
+- **Needed:** the owner exports an Anthropic API key in the environment that runs the spike (D-56: API keys only). The harness never reads or stores it (D-48, D-64). Expected cost: a few cents (two Haiku sessions).
+- **Blocks:** U-1 must close before 0A item 8's exit (the `question` → `answer` round trip). U-2 feeds T-1 in 0B.

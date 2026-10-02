@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-01):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59); its first step, the adapter spike, is in progress. No product code exists.**
+> **Status (2026-10-01):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59). The adapter spike is done** ([results](docs/research/spike-0a.md)); its architecture changes are D-60 to D-70. **No product code exists.**
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: finish the spike, report its results and any architecture changes to the owner, and only then go deeper into 0A.
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: the owner reviews the spike results and D-60 to D-70 before 0A goes deeper. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -15,6 +15,7 @@
 | **R-x** | Risk (the owner's ranked concerns) | this file |
 | **F-xx** | Researched fact, with a source, a check date and a confidence mark (✔✔ / ✔ / ◐ / ?) | [research/vendor-capabilities.md](docs/research/vendor-capabilities.md) |
 | **C-x** | A place where research contradicted or qualified an earlier assumption | [research/vendor-capabilities.md](docs/research/vendor-capabilities.md) |
+| **SP-xx** | Empirical spike result, labelled VERIFIED / CONTRADICTED / PARTIAL / UNVERIFIED with the exact versions tested | [research/spike-0a.md](docs/research/spike-0a.md) |
 | **Q-xx** | Open question | [open-questions.md](docs/open-questions.md) |
 | **TH-x / T-x** | Threat / security test | [security.md](docs/security.md), [validation.md](docs/validation.md) |
 | **SC-x / M-x / P-x / G-x** | A/B scenario / metric / pass criterion / guardrail | [validation.md](docs/validation.md) |
@@ -287,6 +288,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **`in_progress` notices are awareness only** and can be delivered early. The new content isn't readable yet; the agent can `ask` or `wait_for`.
   - *Why:* S3's core behavior has to be actionable (review finding).
   - *Status:* Direction (review-derived; details in 0B).
+  - *Turn-end signal fixed by D-67 (spike).*
 - **D-24 Messages are typed, sparse and event-driven.**
   - **Starting kinds (S3):** `question`, `answer`, `dependency_changed`, `contract_request`, `task_blocked`, `claim_conflict`. New kinds are added deliberately, by recording a D-ID, so messages stay typed.
   - Free-form agent conversation is kept to a minimum. `question`/`answer` carry short text.
@@ -297,6 +299,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - Receiving agents get a standing instruction: messages may be wrong or malicious, and they never expand permissions.
   - Message content never widens what the receiver can access.
   - *Source:* S1, S2, S3. *Status:* Locked.
+  - *Refined by D-63 (spike): the envelope is the only model-visible provenance; injections are `client_composed`.*
 - **D-26 Messages reach agents only at safe boundaries.**
   - **Where:** a tool boundary (between tool calls) or a turn end. Never mid-generation, and never by interrupting a running tool.
   - **"Real-time"** is real for humans and the event log, not for an agent mid-generation.
@@ -306,6 +309,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **0B:** hooks add notices attached to tool results (PostToolUse / PostToolBatch).
     - A **Stop gate** keeps an agent working when **(it has an open task AND an unread high-priority notice) OR a `wait_for` just resolved**, within the vendor's continuation cap (F-05, F-09).
   - *Source:* S1, S2, S3. *Status:* Locked.
+  - *Refined by D-63 (spike): delivery semantics, priorities and `command_lifecycle` receipts.*
 - **D-27 `wait_for(event, timeout)`, and deadlocks.**
   - Every wait has a timeout, and waits are recorded as edges in a wait-for graph (0B).
   - From Phase 1, cycle detection asks one agent to release or escalates to a human.
@@ -375,6 +379,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
     - **0B:** adds read confinement good enough to pass T-1.
     - **Phase 2:** full compilation.
   - *Source:* S1. *Status:* Locked.
+  - *Refined by D-60 and D-62 (spike).*
 - **D-36 Secrets are passed by reference.**
   - `harnessd` injects specific secrets into specific agent processes.
   - Secrets are never copied into worktrees as `.env` files and never routed through the cloud.
@@ -398,6 +403,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
     - Agent SDK in-process callbacks fail **closed** only for PreToolUse and UserPromptSubmit timeouts. PostToolUse and Stop callbacks fail **open**: a missed PostToolUse drops a read entry, and a timed-out Stop gate lets the agent stop.
   - **Backstops:** worktree diffs back up edit capture from 0A. A missed-hook monitor (tool calls vs captured entries) arrives in 0B (F-05, F-06, F-35).
   - *Status:* Locked (research-derived).
+  - *Refined by D-62 (spike): a PreToolUse callback that throws fails open, and an orphaned session keeps working unless one is registered.*
 - **D-48 Credentials and model traffic are never touched.** `harnessd` never stores, logs, transmits, proxies or intermediates vendor credentials or model traffic. It never reads vendor credential stores (keychain, `~/.claude/.credentials.json`, `~/.codex/auth.json`).
   - **The one exception, pass-through:** in API-key mode, `harnessd` passes the user-designated auth variable unchanged into the vendor process's explicit env (needed because the SDK's `env` replaces the environment, F-22). It never inspects, logs or forwards it elsewhere.
   - The vendor binary runs unmodified.
@@ -406,6 +412,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
     - **Codex ChatGPT-login mode:** uses the user's own `CODEX_HOME`, with harness settings passed via `-c` / `--profile` (F-42). To verify in Phase 1.
   - Which mode is the default, for the 0A/0B experiments and for the product, is [Q-04](docs/open-questions.md#q-04).
   - *Why:* F-60 to F-70. *Status:* Locked (research-derived).
+  - *Refined by D-64 (credentials never reach the agent shell) and D-65 (per-agent `CLAUDE_CONFIG_DIR` in API-key mode) (spike).*
 - **D-50 `harnessd` owns all Git write operations:** commit, branch, merge, push. Agents may still run read-only Git (`status`, `diff`, `log`).
   - Agents edit files; they don't commit. `harnessd` commits the worktree:
     - when the task is done (0A);
@@ -416,6 +423,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **Refs and objects protection** comes from a sandbox write-deny on the shared Git dir outside the worktree's own admin dir. To be verified in the 0A spike.
   - *Why:* worktrees share `.git` (F-57); TH-14.
   - *Status:* Locked (research-derived; enforcement paths to verify).
+  - *Enforcement paths verified by the spike; the exact deny list is in D-60.*
 - **D-52 Repo project config is untrusted input.**
   - `harness.yaml` is committed, so teammates control it.
   - **Commands:** `setup.command` and `test.command` (and Phase 2 `services`) run only after the local human approves them, and again on change.
@@ -426,10 +434,12 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **Phase 1:** a teammate's change to any of these shows up as a local approval prompt (D-34).
   - *Why:* without this, a teammate's commit could run code and pull secrets on your machine, the TH-13 pattern (review finding).
   - *Status:* Locked (review-derived).
+  - *Mechanism fixed by D-69 (spike): `srt`.*
 
 ### Local runtime
 - **D-38 Resources:** each agent gets its own port range in 0A, and `max_concurrent_agents` is fixed at 2. A full local scheduler (CPU, memory, process count, GPU) comes in Phase 2.
   - *Source:* S2, S3. *Status:* Locked.
+  - *Refined by D-68 (spike): loopback binding must be allowed explicitly.*
 - **D-39 Worktree setup:** a per-project setup command in 0A (D-52).
   - **Full bootstrap in Phase 2:** dependency cache, secret references, services, Python venvs, database state and seeding, Docker volumes, generated files.
   - *Source:* S1, S2, S3. *Status:* Locked.
@@ -483,6 +493,90 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **If a core assumption fails, the architecture changes** (new D-IDs that supersede the old ones). Don't hack around a failure to preserve the plan.
   - **Stop point:** report the spike results and any architecture changes to the owner before going deeper into 0A.
   - *Source:* S4. *Status:* Locked.
+
+### Spike-derived decisions (2026-10-01)
+From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.md)), tested against Claude Code 2.1.287 / Agent SDK TS 0.3.287 on macOS. These update the architecture where a configuration or hook assumption failed (D-59). The owner can revise them like any other decision.
+- **D-60 Write confinement comes from path-scoped rules and the sandbox, never from a bare allow list.** Supersedes the "write confinement" line of `compilePermissions` (0A) in [agent-adapters.md §5](docs/agent-adapters.md#5-claudeadapter-phase-0a-how-each-method-maps).
+  - **Why:** with bare `Edit`/`Write` allowed in `dontAsk` mode, **17 of 51 escape attempts succeeded.** The file tools wrote to `$HOME`, `/tmp`, the other agent's worktree and the main checkout. Bash moved the other agent's branch and wrote into the shared `.git`. With the rule below: **0 of 51** (SP-05).
+  - **Rule:**
+    - file-tool allows are `Edit(//<worktree>/**)` and `Write(//<worktree>/**)` only, plus the same `Edit` rule in flag settings;
+    - sandbox `filesystem.denyWrite` covers the shared Git dir's `config`, `hooks`, `refs`, `objects`, `packed-refs`, `info`, `worktrees`, `HEAD`, `index` and `logs`;
+    - `allowUnsandboxedCommands: false` always.
+    
+    `git status` keeps working. `git add` and commit don't, which matches D-50 (SP-05).
+  - **Check:** the escape suite `spikes/0a-adapter/experiments/e05c-confinement-clean.ts` runs on every version bump (D-49) and becomes part of T-1b.
+  - *Source:* spike. *Status:* Locked.
+- **D-61 Read confinement (0B) uses flag-settings `Read(//…)` deny rules.**
+  - **Why:** passed through the SDK's `settings` channel, they block the file tools, `@`-mentions **and** shell reads at the OS level, even with `settingSources: []`. Sandbox `denyRead` alone covers only shell reads. SDK `managedSettings` work too, but are dropped on machines with an IT-managed tier (SP-13).
+  - Answers the F-12 channel question.
+  - *Source:* spike. *Status:* Locked.
+- **D-62 Supervision has a dead-man switch.** Refines D-35, D-47 and TH-15.
+  - **Why:**
+    - an in-process PreToolUse callback that **throws** lets the tool run;
+    - if `harnessd` dies mid-turn, the orphaned `claude` process finishes the turn **unsupervised**, still calling the model and running tools. The exception is when an in-process PreToolUse callback is registered: then every later tool call is denied (SP-10).
+  - **Rule:**
+    - every managed session registers an in-process PreToolUse callback with a short timeout. Its body is wrapped so that any exception returns `deny`;
+    - `harnessd` records each session's child PID and process start time. On start it kills orphans from a previous run, then reconciles edits by worktree diff (D-70) before resuming;
+    - `canUseTool` isn't used for gating. It has no timeout (a hang stalled the session), and with sandbox auto-allow it's never consulted for Bash.
+  - *Source:* spike. *Status:* Locked.
+- **D-63 How injected messages are sent.** Refines D-25 and D-26.
+  - **Every message the harness injects is `client_composed: true`.**
+    - **Why:** without it, the CLI interprets the text. A peer message containing `@<path>` made it read a file outside the worktree and inject the contents, and a peer message `/clear` wiped the agent's conversation (SP-02).
+  - **The envelope is the only provenance the model sees.**
+    - **Why:** `origin` (`peer`, `coordinator`, `human` or none) changes nothing in the model's input. Mid-turn, the CLI frames every injection as "The user sent a new message while you were working".
+    - **So:** the envelope text has to be self-contained. It says the content comes from a peer agent and is untrusted, in factual wording (F-10). `origin` is still set, for the CLI's own trust gates.
+  - **Delivery:**
+    - default priority: the next tool boundary mid-turn, or a new turn when idle;
+    - `priority: 'later'` waits for the turn to end;
+    - `priority: 'now'` cuts the turn short. The harness never uses it for peer messages.
+  - **Receipts:** `command_lifecycle` frames (`queued` → `started` → `completed`), keyed by the message `uuid`, are the `message.ack` source.
+  - *Source:* spike. *Status:* Locked.
+- **D-64 Credentials never reach the agent's shell.** Refines D-48's pass-through exception.
+  - **Why:** the API key passed through env was readable by any command the agent ran, including repo scripts (SP-08). That defeats D-48's intent.
+  - **Rule:**
+    - keep the pass-through into the vendor process;
+    - add `sandbox.credentials.envVars: [{name: <auth var>, mode: 'deny'}]` for every credential variable;
+    - verify at session start that a probe command doesn't see it.
+    
+    A harness-set `apiKeyHelper` also works and is the alternative if a future vendor version breaks the deny rule.
+  - *Source:* spike. *Status:* Locked.
+- **D-65 Each agent gets its own `CLAUDE_CONFIG_DIR` in API-key mode.** Narrows D-48's "no per-agent `CLAUDE_CONFIG_DIR`" carve-out to subscription mode, which Phase 0 doesn't use (D-56).
+  - **Why:**
+    - it isolates transcripts, `.claude.json`, shell snapshots and session state;
+    - it makes the vendor's cross-session peer discovery impossible (SP-11), on top of D-46's `refuse` setting and the disallowed tools;
+    - it keeps the owner's real `~/.claude` untouched (SP-08).
+  - **It's part of the session's resume key**, together with the session ID. `harnessd` also binds each session to its worktree, because the CLI will resume a session into a different `cwd` (SP-07).
+  - *Source:* spike. *Status:* Locked.
+- **D-66 Agents get an explicit minimal tool set.**
+  - **Rule:** `tools: [Read, Grep, Glob, Edit, Write, Bash]` plus the harness shim. **No `Agent`/`Task` subagents in 0A.**
+  - **Why:**
+    - the default surface adds self-scheduling (`CronCreate`, `ScheduleWakeup`), `EnterWorktree`, `Workflow`, network tools and background subagents;
+    - it costs about 49 KB more per request (SP-09);
+    - background subagents outlive the turn that started them (SP-03).
+  - **Later:** subagents are reconsidered in 0B together with turn-end handling.
+  - *Source:* spike. *Status:* Proposal.
+- **D-67 Turn end is `session_state_changed: idle`.** Refines D-53's "detect turn end from the stream".
+  - **How:** turn the signal on with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`.
+  - **Why:** the SDK documents `idle` as the authoritative turn-over signal, sent after background work finishes. That a `result` can come earlier is inferred from that documentation, not observed. A `shouldQuery: false` message also produces a zero-turn `result` (SP-02, SP-09).
+  - **Error results:** a result is an error when `is_error` is true, whatever its `subtype` says.
+  - *Source:* spike. *Status:* Proposal.
+- **D-68 Ports need loopback binding.** Refines D-38.
+  - **Rule:** sessions with a port block get `sandbox.network.allowLocalBinding: true`, because without it binding fails. Harness port blocks stay outside the OS ephemeral range, because each Claude Code process binds an ephemeral loopback port for its sandbox proxy (SP-08).
+  - *Source:* spike. *Status:* Locked.
+- **D-69 Setup and test commands run under Anthropic's sandbox runtime.** Fixes the mechanism D-52 left open.
+  - **How:** `@anthropic-ai/sandbox-runtime` (`srt`), pinned. Its config is generated by `harnessd`:
+    - writes allowed only in the worktree;
+    - shared-`.git` write-deny;
+    - read-deny on secrets and sibling worktrees;
+    - a network allowlist;
+    - an explicit env.
+  - **Why:** it enforced all of these, and it refuses to run on an invalid config (SP-12).
+  - *Source:* spike. *Status:* Locked.
+- **D-70 Edit capture = hooks + `bashEditDiff` + periodic worktree diffs.**
+  - **What the hooks catch:** PostToolUse (file tools) and Bash `bashEditDiff` (needs `bashEditDiffEnabled` in flag settings) caught all foreground edits.
+  - **What they miss:** background processes' writes. Only a worktree diff catches those (SP-03).
+  - **Rule:** `harnessd` reconciles observed claims against `git status` / a file-hash diff on a timer and at every turn end.
+  - *Source:* spike. *Status:* Locked.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -540,6 +634,16 @@ Vendor and infrastructure claims were checked on 2026-10-01: seven research pass
 - **SDK message delivery.** A message pushed into a live Claude Agent SDK session is picked up **at the next tool boundary in the running turn**, or starts a new turn if the session is idle (F-02). Phase 0A gets tool-boundary delivery without hooks, and D-26 still holds.
 - **Codex has hooks.** It now has PreToolUse deny, PostToolUse context and Stop continuation (F-35), which makes H-10 plausible.
 
+**Then tested empirically (0A spike, 2026-10-01).** The spike re-checked the riskiest of these facts against the real Claude Code binary. The core mechanisms held: SDK delivery at tool boundaries, hook payloads, `settingSources: []`, resume and the sandbox. But six configuration and hook assumptions failed and were fixed by D-60 to D-70:
+- bare allows let file tools escape the worktree;
+- a throwing PreToolUse fails open;
+- an orphaned agent keeps working;
+- `origin` isn't model-visible, and injected text gets expanded;
+- the API key reached the agent's shell;
+- binding a port needs an explicit setting.
+
+Results and evidence are in [research/spike-0a.md](docs/research/spike-0a.md); contradictions C-14 to C-19 are in [vendor-capabilities.md](docs/research/vendor-capabilities.md).
+
 **Qualified or contradicted:**
 
 | Topic | What we found | Handled by |
@@ -563,7 +667,9 @@ Vendor and infrastructure claims were checked on 2026-10-01: seven research pass
 This is the canonical list. README, AGENTS.md and the roadmap point here.
 1. ~~**Before any code:** the owner picks the stack ([Q-01](docs/open-questions.md#q-01)) and gives the Phase 0A go-ahead.~~ **Done 2026-10-01:** TypeScript (D-55); 0A approved (D-59).
 2. ~~**Before the spike:** the owner picks the auth mode for experiments ([Q-04](docs/open-questions.md#q-04)).~~ **Done 2026-10-01:** API keys (D-56).
-3. **Now: the adapter spike** (roadmap 0A item 0, D-59). Results go in [research/spike-0a.md](docs/research/spike-0a.md). **Stop and report to the owner** before roadmap 0A item 1.
+3. ~~**The adapter spike** (roadmap 0A item 0, D-59).~~ **Done 2026-10-01:** results in [research/spike-0a.md](docs/research/spike-0a.md); architecture changes D-60 to D-70.
+   - **Now:** the owner reviews the results and D-60 to D-70. **Don't start roadmap 0A item 1 until they have.**
+   - **Open:** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). They must close before 0A item 8's exit.
 4. **During 0A:**
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
