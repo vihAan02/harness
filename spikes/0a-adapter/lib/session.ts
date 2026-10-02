@@ -83,6 +83,69 @@ export function hardenedOptions(p: {
   };
 }
 
+/** Shared-.git entries the sandbox write-denies (D-60, SP-05). */
+export const GIT_DENY_WRITE = ['config', 'hooks', 'refs', 'objects', 'packed-refs', 'info', 'worktrees', 'HEAD', 'index', 'logs'];
+
+/**
+ * The CORRECTED session config the spike arrived at (D-45, D-46, D-60 to D-68). `hardenedOptions`
+ * above is the pre-spike proposal that the experiments attack; this is what ClaudeAdapter starts from.
+ * `auth.baseUrl` is set only for the mock; real runs talk to the Anthropic API.
+ */
+export function correctedOptions(p: {
+  cwd: string; configDir: string; gitCommonDir: string; auth: { apiKey: string; baseUrl?: string };
+  denyRead?: string[]; shimTools?: string[]; mcpServers?: Options['mcpServers']; append?: string;
+  hooks?: any; env?: Record<string, string>; overrides?: Partial<Options>;
+}): Options {
+  const wt = p.cwd;
+  return {
+    cwd: wt,
+    model: MODEL,
+    permissionMode: 'dontAsk',
+    tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'], // D-66
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', `Edit(/${wt}/**)`, `Write(/${wt}/**)`, ...(p.shimTools ?? [])], // D-60: never bare Edit/Write
+    disallowedTools: ['SendMessage', 'ListAgents'], // D-46
+    settingSources: [], // D-45
+    systemPrompt: { type: 'preset', preset: 'claude_code', append: p.append ?? '' },
+    mcpServers: p.mcpServers,
+    env: {
+      PATH: '/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin',
+      HOME: process.env.HOME!,
+      TMPDIR: process.env.TMPDIR ?? '/tmp',
+      ANTHROPIC_API_KEY: p.auth.apiKey, // D-48 pass-through, hidden from the agent's shell below (D-64)
+      ...(p.auth.baseUrl ? { ANTHROPIC_BASE_URL: p.auth.baseUrl } : {}),
+      CLAUDE_CONFIG_DIR: p.configDir, // D-65
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1', // D-67
+      ...p.env,
+    },
+    sandbox: {
+      enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: true,
+      filesystem: { denyWrite: GIT_DENY_WRITE.map((x) => `${p.gitCommonDir}/${x}`) }, // D-60
+      credentials: { envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' }] }, // D-64
+    } as any,
+    settings: {
+      permissions: { allow: [`Edit(/${wt}/**)`], deny: (p.denyRead ?? []).map((d) => `Read(/${d}/**)`) }, // D-60, D-61
+      bashEditDiffEnabled: true,
+      crossSessionInbound: 'refuse',
+    } as any,
+    hooks: p.hooks,
+    ...p.overrides,
+  };
+}
+
+/** D-62: a PreToolUse callback that can't fail open. A throw inside `observe` denies the call. */
+export function deadManPreToolUse(observe: (input: any) => void): HookCallbackMatcher {
+  return {
+    timeout: 5,
+    hooks: [async (input: any) => {
+      try { observe(input); return {}; } catch {
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'harness supervisor error' } };
+      }
+    }],
+  } as HookCallbackMatcher;
+}
+
 export type Run = {
   messages: (SDKMessage & { _t: number })[]; init?: any; results: any[]; error?: string; stderr: string[];
   q?: ReturnType<typeof query>;

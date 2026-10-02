@@ -137,7 +137,7 @@ An observed claim lasts until the task is done or landed, or until the file no l
 
 ### Coverage instrumentation (for H-03)
 - `harnessd` logs every tool call by kind. A rough coverage score is (files read through native tools) / (native-tool reads + shell-heuristic reads + unparsed shell commands that might have read files).
-- It also counts **tool calls with no captured hook event**, which catches fail-open hooks (D-47).
+- It also counts **tool calls with no captured hook event**, which catches fail-open hooks (D-47). Calls are counted from the session stream's `tool_use` blocks. Calls a deny rule rejected are excluded, because they never reach any hook (SP-15, C-20).
 - Both are reported in 0B. They're diagnostics, not pass criteria.
 
 ---

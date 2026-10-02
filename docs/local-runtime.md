@@ -76,7 +76,6 @@ Worktrees live **outside** the main checkout, so tools that scan the repo don't 
 - **`setup.command` and `test.command` run only after approval.**
   - The local human approves a hash of the command plus the declared manifests, on first use and on every change.
   - The approval is only a tripwire, because the command runs repo-controlled code such as lifecycle scripts. **The sandbox is the real boundary:** commands run sandboxed with no secrets by default, read confinement and a network allowlist (e.g. the package registry). They never run as bare `harnessd`. **The mechanism is Anthropic's sandbox runtime** (`srt`, pinned) with a config `harnessd` generates per worktree: writes only in the worktree, the shared `.git` write-denied, secrets and sibling worktrees read-denied, a network allowlist and an explicit env. It refuses to run on an invalid config (D-69, SP-12).
-  - The exact sandbox mechanism is chosen in the 0A spike.
 - **`env.refs` can't widen secrets.** They're intersected with a per-project allowlist in `~/.harness/config.toml`, so a commit can't widen which secrets reach agents.
 - **Numeric fields** (`ports`, `limits`) can only lower local limits.
 - **In Phase 1,** a teammate's change to any of these shows up as an approval prompt (D-34).

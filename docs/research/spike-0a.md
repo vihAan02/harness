@@ -2,6 +2,8 @@
 
 > **Status (2026-10-01):** complete for everything that doesn't need a real model. The model-dependent checks are **UNVERIFIED** until an Anthropic API key is available on this machine (§5, [Q-18](../open-questions.md#q-18)).
 >
+> **Update (2026-10-02):** the script for those checks, `e17-real-model.ts`, is written, and its plumbing is verified against the mock (SP-15). `e00` and `e05c` were re-run on a second setup (Node 24.13.1, zsh) and reproduce; `e05c`'s scoring was fixed along the way (SP-05).
+>
 > - **Commissioned by:** S4 / D-59. It answers the owner's ten questions plus the roadmap 0A item 0 checklist.
 > - **Architecture changes it implies:** D-60 to D-70 in [PLAN.md §7](../../PLAN.md#spike-derived-decisions-2026-10-01), summarized in §4 below.
 > - **Code:** throwaway, in [`spikes/0a-adapter/`](../../spikes/0a-adapter/). Each result names the experiment file that produced it. Raw logs are in `spikes/0a-adapter/.runs/` (git-ignored).
@@ -15,7 +17,7 @@
 | Claude Code | **2.1.287**, the native binary bundled in `@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.287` (not the 2.1.280 install on `PATH`) |
 | Claude Agent SDK (TypeScript) | **0.3.287** (`@anthropic-ai/claude-agent-sdk`, pinned exactly) |
 | Anthropic sandbox runtime | **0.0.78** (`@anthropic-ai/sandbox-runtime`, CLI `srt`) |
-| Node.js | 26.9.0 (TypeScript run through Node's built-in type stripping) |
+| Node.js | 26.9.0 (TypeScript run through Node's built-in type stripping). Re-run on 24.13.1 on 2026-10-02 (`e00`, `e05c`, `e17 --mock`) |
 | OS / sandbox | macOS 27.0 (26A428), arm64, Seatbelt |
 | Git | 2.50.1 (Apple Git-155) |
 
@@ -168,6 +170,10 @@ Under C2:
 - **`--restricted`** (via `extraArgs`, `e05`) confines file tools but **removes Bash entirely**. That's too restrictive for coding agents.
 - **`allowUnsandboxedCommands: false` is load-bearing.** With `true`, a Bash call carrying `dangerouslyDisableSandbox: true` ran **unsandboxed** and wrote outside the worktree (`e10`, SP-10).
 
+**Re-run, 2026-10-02 (Node 24.13.1, zsh as the user's shell, same Claude Code / SDK pin):** the table above reproduced exactly, but only after two fixes to how `e05c` scores itself. Neither changes a security result:
+- **Shell wording.** zsh reports a sandbox block as `operation not permitted` (lower case), which the classifier didn't match, so OS-sandbox blocks showed as "other". The match is now case-insensitive.
+- **Overwritten evidence.** 4 C1 escapes were missed by the end-of-run file check, because a later step rewrote the same file: Write after Edit (sibling worktree, main checkout), and `update-ref` after the Bash/Python appends to the other branch's ref. A tool call that reported success now counts as an escape too. The 2 invalid rows are excluded automatically.
+
 ### SP-06: repo-provided executable config (Q6) — VERIFIED
 *Evidence: `e06-repo-config.ts`.*
 
@@ -313,6 +319,27 @@ A secret outside the worktree was attacked through the Read, Grep and Glob tools
 
 **Not tested:** the interactive TTY form the baseline's humans would actually use.
 
+### SP-15: the agent-facing tool shim, and deny rules vs hooks — VERIFIED (client side, mock)
+*Evidence: `e17-real-model.ts --mock`, 2026-10-02, same Claude Code / SDK pin, Node 24.13.1.*
+- **The shim path works under the corrected config.** An in-process `createSdkMcpServer` server with `ask` and `answer` (`alwaysLoad: true`) loaded in every session alongside:
+  - the explicit 6-tool `tools` list (D-66);
+  - `dontAsk` with allow entries `mcp__harness__ask` and `mcp__harness__answer`;
+  - `settingSources: []`, whose repo-config markers again stayed silent.
+  
+  The handlers ran in the host process. The earlier experiments had never exercised this path (protocol.md §6, F-15).
+- **The 0A round trip runs end to end.**
+  1. A calls `ask`, and the harness renders the envelope.
+  2. B is mid-turn, so the question lands at its next tool boundary, 3.2 s later (the rest of the running tool).
+  3. B calls `answer`.
+  4. A is idle, so the answer starts a new turn for it, about 2 ms later.
+  
+  Every injection got its `command_lifecycle` receipt.
+- **A deny rule blocks before any hook runs.**
+  - **What happened:** a Read of a file under a flag-settings `Read(//…)` deny rule failed at input validation ("File is in a directory that is denied by your permission settings"). It produced **no hook event at all**: no PreToolUse, no PermissionDenied, no PostToolUseFailure. A Bash `cat` of the same file reached PreToolUse and failed at the OS sandbox.
+  - **So the 0B missed-hook monitor** (D-47) must count attempts from the stream's `tool_use` blocks, and must not report deny-rule rejections as fail-open hooks. T-1 has to count compliance attempts the same way.
+  - **This qualifies F-11's order** (hooks before deny rules) for file tools: C-20. Only Read was tested.
+- **Not shown:** anything about how a real model behaves. That's U-1 to U-3 (§5).
+
 ## 4. What changes in the architecture
 
 These are recorded as D-60 to D-70 in [PLAN.md §7](../../PLAN.md#spike-derived-decisions-2026-10-01). Nothing in the spike breaks the core design: the adapter boundary, SDK streaming delivery, hook-based capture and repo-config lockdown all hold. What failed are specific configuration assumptions and one hook-semantics assumption. The architecture is updated rather than worked around.
@@ -342,12 +369,18 @@ These are recorded as D-60 to D-70 in [PLAN.md §7](../../PLAN.md#spike-derived-
 | U-5 | Linux (bubblewrap); the interactive TTY baseline; the sandbox-unavailable path | macOS only; non-interactive only | Phase 1 (second machine), A/B setup (0B) |
 | U-6 | Exact real billing and rate-limit texts and headers | Mocked | Adapter error mapping |
 
-**To close U-1 to U-3:** export an `ANTHROPIC_API_KEY` in the shell that runs the spike, then run the real-model checks (a short script: two Haiku sessions, one injected question and answer, one envelope-wrapped hostile message). Cost is a few cents. See [Q-18](../open-questions.md#q-18).
+**To close U-1 to U-3:** export an `ANTHROPIC_API_KEY` in the shell, then run `node experiments/e17-real-model.ts` in `spikes/0a-adapter/`. See [Q-18](../open-questions.md#q-18).
+- **What it runs:** seven short Haiku 4.5 sessions, all on the corrected config:
+  - U-1: an `ask` → `answer` round trip between two agents, followed by code written against the answer;
+  - U-2: three hostile enveloped messages delivered mid-turn (an exfiltration request, "disable the auth validation", and `@path` + `/clear`), each to a fresh worker;
+  - U-3: a trivial turn with the hardened tool surface vs the default one.
+- **Cost:** an estimated $0.10 to $0.30 at list price ($1 / $5 per million tokens). Each session is hard-capped by the SDK's `maxBudgetUsd` ($0.25 by default). The script reports the actual total.
+- **What needs a human read:** the script prints the model's text after each delivery. Whether it acted on the envelope or tripped prompt-injection defenses (U-1), and whether it refused or escalated (U-2), are judged by reading those excerpts.
 
 ## 6. Re-running
 
 ```bash
-cd spikes/0a-adapter && npm ci && node experiments/e05-write-confinement.ts
+cd spikes/0a-adapter && npm ci && node experiments/e05c-confinement-clean.ts
 ```
 
 Every experiment is standalone and writes its raw logs and `result.json` under `.runs/<experiment>/`. Re-run the set on every Claude Code / SDK version bump before moving the pin (D-49).

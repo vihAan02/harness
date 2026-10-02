@@ -6,7 +6,7 @@
 >   - Seven parallel research passes against primary sources: official docs, source code, registries, terms pages.
 >   - Then **two independent checkers** re-opened the primary sources for every load-bearing claim. One covered Claude Code and the Agent SDK; the other covered Codex, infrastructure and vendor terms.
 >   - Corrections from the checkers, and from a later citation-accuracy review, are folded in below.
-> - **Empirical re-check:** the Claude facts the design leans on were re-tested against Claude Code 2.1.287 / Agent SDK 0.3.287 in the 0A spike ([spike-0a.md](spike-0a.md)). See the *Spike* lines under each F-ID, and C-14 to C-19.
+> - **Empirical re-check:** the Claude facts the design leans on were re-tested against Claude Code 2.1.287 / Agent SDK 0.3.287 in the 0A spike ([spike-0a.md](spike-0a.md)). See the *Spike* lines under each F-ID, and C-14 to C-20.
 > - **What an F-ID is:** a researched claim with a source and a confidence mark. Trust the mark: `?` and `◐` items are **not** verified facts. They're kept here so the evidence for them stays in one place.
 > - **Re-verify before writing code that depends on any of this.** Both agent vendors changed these surfaces several times in 2026.
 >
@@ -22,7 +22,7 @@
 
 ## Contradictions and qualifications of S1/S2/S3
 
-Each item lists which source it affects. C-14 to C-19 were found by the 0A spike ([spike-0a.md](spike-0a.md)), not by desk research. Nothing in S1–S3 was silently rewritten; [PLAN.md §11](../../PLAN.md#11-what-the-research-changed-or-qualified) records how each one is handled.
+Each item lists which source it affects. C-14 to C-20 were found by the 0A spike ([spike-0a.md](spike-0a.md)), not by desk research. Nothing in S1–S3 was silently rewritten; [PLAN.md §11](../../PLAN.md#11-what-the-research-changed-or-qualified) records how each one is handled.
 
 | # | Earlier assumption | What the research found | F-IDs |
 |---|---|---|---|
@@ -45,6 +45,7 @@ Each item lists which source it affects. C-14 to C-19 were found by the 0A spike
 | C-17 | agent-adapters §5: the sandbox + `dontAsk` + allow list confine writes | **Found by the spike:** the sandbox covers Bash only. Bare `Write`/`Edit` allows let file tools write anywhere the OS user can, including peer worktrees: 17 of 51 escapes succeeded vs 0 of 51 with scoped rules (D-60). | SP-05 |
 | C-18 | D-48: passing the API key through env is safe | **Found by the spike:** the key is in the agent shell's environment, readable by any repo script, unless `sandbox.credentials.envVars` denies it (D-64). | SP-08 |
 | C-19 | F-22 read as "no per-agent `CLAUDE_CONFIG_DIR`" | **Found by the spike:** that caveat is subscription-only. In API-key mode a per-agent dir is the strongest isolation available (D-65). | SP-08, SP-11 |
+| C-20 | F-11's order (hooks run before deny rules), relied on by the missed-hook monitor (D-47) | **Found by the spike (2026-10-02):** a Read whose path matches a `Read(//…)` deny rule is rejected at input validation, and **no hook fires** (no PreToolUse, PermissionDenied or PostToolUseFailure). The monitor and T-1 must count attempts from the stream's `tool_use` blocks. Only Read was tested. | SP-15 |
 
 ---
 
@@ -162,6 +163,8 @@ Source: [hooks](https://code.claude.com/docs/en/hooks). *Impact: envelope wordin
 - **Writes to protected paths** (`.claude`, `.git`, `.mcp.json`, shell rc files and others) are never auto-approved, except under bypass.
 
 Sources: [permissions](https://code.claude.com/docs/en/permissions), [SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions), [settings](https://code.claude.com/docs/en/settings).
+
+*Spike, 2026-10-02, Claude Code 2.1.287 / SDK 0.3.287:* PARTIAL for the order. A Read under a flag-settings `Read(//…)` deny rule is rejected at input validation, before any hook, and fires no hook event (C-20). (SP-15)
 
 **F-12 ✔✔ ✖ Read deny rules now apply to recognized Bash file commands**, contrary to a commonly assumed limitation.
 - **Covered:** `cat`, `head`, `tail`, `sed`, `tee`, and redirect targets.

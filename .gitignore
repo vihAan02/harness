@@ -11,7 +11,7 @@
 *.key
 secrets.toml
 
-# Dependencies / builds (stack TBD, Q-01)
+# Dependencies / builds (stack: TypeScript, D-55)
 node_modules/
 dist/
 build/

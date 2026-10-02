@@ -61,7 +61,10 @@ function build(f: ReturnType<typeof makeFixture>, tag: string) {
 }
 
 function classify(text: string) {
-  if (/Operation not permitted|PermissionError|could not lock|Unable to create|cannot open/.test(text)) return 'OS sandbox';
+  // Case-insensitive: zsh says "operation not permitted", bash/sh "Operation not permitted".
+  if (/operation not permitted|PermissionError|could not lock|Unable to create|cannot open/i.test(text)) return 'OS sandbox';
+  // Edit with a non-unique old_string: the attempt never tested confinement (SP-05 excludes these rows).
+  if (/Found \d+ matches of the string to replace/.test(text)) return 'invalid test';
   if (/denied because Claude Code is running in don't ask mode|denied by your permission settings|has been denied/.test(text)) return 'permission rule';
   if (/has not been read yet/.test(text)) return 'read-first guard';
   if (/is outside/.test(text)) return 'restricted mode';
@@ -85,10 +88,14 @@ async function config(name: string, scoped: boolean) {
   let k = 0;
   const rows = T.map((t) => { const rs = results.slice(k, k + t.steps.length); k += t.steps.length; const last = rs.at(-1); return { id: t.id, escape: t.escape, wrote: t.check(), by: last?.err ? classify(last.text) : 'ran', msg: last?.text.slice(0, 110) }; });
   for (const p of [path.join(os.homedir(), `.harness-spike-c-${name}`), path.join(os.tmpdir(), `harness-spike-c-${name}`)]) fs.rmSync(p, { force: true });
-  const esc = rows.filter((r) => r.escape);
-  const summary = { config: name, escapeAttempts: esc.length, escaped: esc.filter((r) => r.wrote).length, blockedBy: esc.filter((r) => !r.wrote).reduce((a: any, r) => ((a[r.by] = (a[r.by] ?? 0) + 1), a), {}) };
+  // A later step can overwrite an earlier step's evidence (Write after Edit on the same file;
+  // `update-ref` after appends to the same ref), so a tool call that reported success counts
+  // as an escape even when the file check no longer sees its marker.
+  const escaped = (r: (typeof rows)[number]) => r.wrote || r.by === 'ran';
+  const esc = rows.filter((r) => r.escape && r.by !== 'invalid test');
+  const summary = { config: name, escapeAttempts: esc.length, escaped: esc.filter(escaped).length, excludedInvalid: rows.filter((r) => r.escape && r.by === 'invalid test').length, blockedBy: esc.filter((r) => !escaped(r)).reduce((a: any, r) => ((a[r.by] = (a[r.by] ?? 0) + 1), a), {}) };
   console.log(`\n===== ${name}: ${JSON.stringify(summary)}`);
-  for (const r of rows) console.log(`${r.wrote ? 'WROTE  ' : 'no-write'} ${r.escape ? 'ESC' : '   '} ${r.id.padEnd(40)} ${r.by.padEnd(16)} ${String(r.msg).slice(0, 90)}`);
+  for (const r of rows) console.log(`${escaped(r) ? 'WROTE  ' : 'no-write'} ${r.escape ? 'ESC' : '   '} ${r.id.padEnd(40)} ${r.by.padEnd(16)} ${String(r.msg).slice(0, 90)}`);
   return { summary, rows };
 }
 const out = [await config('c1-bare-allows', false), await config('c2-scoped', true)];
