@@ -8,6 +8,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@harness/protocol": "0.0.0"
+    "@harness/protocol": "0.0.0",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
   }
 }

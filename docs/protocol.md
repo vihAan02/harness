@@ -117,6 +117,8 @@
 
 Identity is many-person from the start (D-18). There's no `project.user_id`.
 
+**Implemented for 0A** in `packages/server/migrations/0001_data_model_v0.sql` (D-73). The migration is authoritative for column types and constraints. Leases, read entries, waits and `next_fencing_token` arrive with 0B.
+
 ```sql
 -- identity
 human_principals(id, display_name, created_at)

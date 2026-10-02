@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A item 1, the repo skeleton, is built** (`packages/`, D-72).
+> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 and 2 are built:** the repo skeleton (`packages/`, D-72) and data model v0 on Postgres (D-73).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 2, data model v0. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 3, coordination server v0. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -593,6 +593,13 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Architecture rules as tests** (`test/structure.test.ts`): no imports of the spike (D-44); agent-vendor SDKs only in `adapters` (D-17, R-4); workspace dependencies only in the allowed direction, so the server never depends on the daemon or adapters (D-32).
   - *Why:* the fewest moving parts that still type-check end to end (D-55), with no tool the owner has to install beyond Node.
   - *Source:* 0A item 1. *Status:* Proposal.
+- **D-73 Postgres for 0A.**
+  - **Database:** PostgreSQL 18, run locally; Phase 0 needs no hosting ([Q-09](docs/open-questions.md#q-09)). On macOS, Homebrew's `postgresql@18`.
+  - **Driver:** node-postgres (`pg`), used only in `@harness/server`.
+  - **Migrations:** plain numbered SQL files in `packages/server/migrations/`, applied in order under an advisory lock and recorded in `schema_migrations`. No migration framework.
+  - **Tests:** run against a `harness_test` database, with each test file in its own throwaway schema.
+  - **Event appends** go through `appendEvents`, which refuses to run outside a transaction. Without that, the counter row's lock would be released before the insert, breaking D-12's commit ordering.
+  - *Source:* 0A item 2. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -688,7 +695,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - **Open:** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). They must close before 0A item 8's exit. The script is ready (`e17-real-model.ts`, SP-15); it only needs the key exported.
 4. **During 0A:**
    - ~~Item 1, the repo skeleton.~~ **Done 2026-10-02:** `packages/`, with runtime and tooling per D-72 (Proposal). `npm run check` type-checks and runs the tests.
-   - **Next:** item 2, data model v0 ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 2, data model v0.~~ **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql`, plus the event log's append and read (D-73, Proposal).
+   - **Next:** item 3, coordination server v0 ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

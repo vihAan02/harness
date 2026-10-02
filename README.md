@@ -6,11 +6,25 @@ The first wedge: **several humans, each running their own AI coding agents on th
 
 ## Status (2026-10-02)
 
-**Phase 0A is under way. The repo skeleton exists; the coordination features don't yet.**
+**Phase 0A is under way. The repo skeleton and the data model exist; the coordination features don't yet.**
 - The architecture, decisions, risks, roadmap and validation plan are written down.
 - Phase 0A is approved (D-59). Its throwaway adapter spike is done and accepted ([docs/research/spike-0a.md](docs/research/spike-0a.md)), with architecture changes D-60 to D-70 (D-71).
-- The code lives in `packages/` (D-72). With Node 24 or later: `npm install`, then `npm run check`.
+- The code lives in `packages/` (D-72, D-73). See [Running locally](#running-locally).
 - The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
+
+## Running locally
+
+You need Node 24 or later and PostgreSQL 18.
+1. **Install dependencies:** `npm install`.
+2. **Start Postgres.** With Homebrew on macOS (`brew install postgresql@18`), either:
+   - `brew services start postgresql@18`, which also starts it at every login; or
+   - `/opt/homebrew/opt/postgresql@18/bin/pg_ctl -D /opt/homebrew/var/postgresql@18 -l /opt/homebrew/var/postgresql@18/server.log start`, for this session only.
+   
+   If the log says "postmaster became multithreaded during startup", your shell has no locale. Prefix the command with `LC_ALL=en_US.UTF-8`.
+3. **Create the two databases, once:** `createdb harness_dev` and `createdb harness_test`. Homebrew's `postgresql@18` binaries live in `/opt/homebrew/opt/postgresql@18/bin`, which isn't on your `PATH` by default.
+4. **Check:** `npm run check` type-checks everything and runs the tests.
+   - The server tests use `HARNESS_TEST_DATABASE_URL` (default `postgresql://localhost:5432/harness_test`).
+   - Each test file makes its own throwaway schema there and drops it afterwards.
 
 ## The idea in one screen
 

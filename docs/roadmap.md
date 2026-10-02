@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Item 1, the repo skeleton, is done** (D-72). Next: item 2.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 and 2 are done:** the repo skeleton (D-72) and data model v0 (D-73). Next: item 3.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -44,6 +44,8 @@
    - the identity entities, with no single-user shortcuts (D-18);
    - tasks (owner human, assignee agent, scope), sessions, messages, soft claims, budgets;
    - events with a per-project counter-row sequence (D-12).
+   
+   **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql` and the event log's append and read, on PostgreSQL 18 (D-73). Tests cover dense, commit-ordered seqs, including a reader that never sees a gap while writers commit out of order.
 3. **Coordination server v0:**
    - a WebSocket endpoint;
    - internal protocol v0: hello and resume-from-cursor, commands, subscribe;
