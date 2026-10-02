@@ -1,0 +1,21 @@
+{
+  "name": "harness",
+  "private": true,
+  "description": "Harness: a multiplayer coordination layer for humans and AI agents. See PLAN.md.",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "node --test \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  }
+}

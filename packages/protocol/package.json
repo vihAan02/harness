@@ -1,0 +1,10 @@
+{
+  "name": "@harness/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal coordination protocol types, shared end to end (D-14; docs/protocol.md).",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

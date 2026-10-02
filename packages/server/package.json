@@ -1,0 +1,13 @@
+{
+  "name": "@harness/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Coordination server: Postgres + WebSocket, event log with cursors (D-11, D-12; docs/architecture.md).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/protocol": "0.0.0"
+  }
+}

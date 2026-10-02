@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-01):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59). The adapter spike is done** ([results](docs/research/spike-0a.md)); its architecture changes are D-60 to D-70. **No product code exists.**
+> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A item 1, the repo skeleton, is built** (`packages/`, D-72).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: the owner reviews the spike results and D-60 to D-70 before 0A goes deeper. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 2, data model v0. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -25,7 +25,7 @@
 
 ## 1. Context and provenance
 
-Four sources define this plan. Later sources win where they sharpen or override earlier ones.
+Five sources define this plan. Later sources win where they sharpen or override earlier ones.
 
 | | Source | What it contributed |
 |---|---|---|
@@ -33,6 +33,7 @@ Four sources define this plan. Later sources win where they sharpen or override 
 | **S2** | [Owner's ranked concerns](docs/source/2026-10-01-S2-owner-concerns.md) | Made stale context and read-set invalidation central. Added sparse typed messages, `AgentAdapter`, human-led task breakdown, deadlocks, local resource limits, secrets by reference, harder scope cuts, and the real baseline to beat. Became the risk register (§9). |
 | **S3** | [Owner's final adjustments](docs/source/2026-10-01-S3-final-adjustments.md) | Keep the vision ambitious and the sequence disciplined. Added the Phase 0A/0B split, best-effort read sets, three claim levels, MCP as compatibility only, the identity model from day one, the contract-awareness direction, the A/B test as a first-class gate, and the core principles. |
 | **S4** | [Owner's approval and 0A go-ahead](docs/source/2026-10-01-S4-owner-approval-and-0a-go.md) | Approved this plan as the initial source of truth. Answered Q-01 (TypeScript), Q-04 for experiments (API keys), Q-03 (pass bar approved, versioned) and Q-02 (a purpose-built benchmark repo, then a real project as a separate test). Approved Phase 0A, starting with an empirical spike of ten named assumptions (D-55 to D-59). |
+| **S5** | [Owner accepts the spike](docs/source/2026-10-02-S5-owner-accepts-spike.md) | Accepted the spike results and D-60 to D-70, and approved going deeper into 0A from item 1 (D-71). Identified the owner (GitHub `vihAan02`, working with Daniyal Mughal). |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -578,6 +579,21 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Rule:** `harnessd` reconciles observed claims against `git status` / a file-hash diff on a timer and at every turn end.
   - *Source:* spike. *Status:* Locked.
 
+### Owner decisions of 2026-10-02 (S5)
+- **D-71 The spike results and D-60 to D-70 are accepted, and 0A continues from item 1.** This clears the stop point D-59 set after the spike.
+  - The real-model checks U-1 to U-3 stay open ([Q-18](docs/open-questions.md#q-18)). They still have to close before 0A item 8's exit.
+  - The owner is GitHub `vihAan02`, who owns the repo and works on it with Daniyal Mughal.
+  - *Source:* S5. *Status:* Locked.
+- **D-72 Runtime and tooling for 0A.** These are the details D-55 left to 0A item 1.
+  - **Runtime:** Node.js 24 LTS or later (`engines`, `.nvmrc`). The spike also ran on 26.
+  - **Repo layout:** one repo with npm workspaces, `packages/{protocol,server,daemon,adapters,cli}` (roadmap 0A item 1). The spike stays outside the workspace, and product code never imports it.
+  - **No build step in 0A:** code runs from source through Node's built-in type stripping. So TypeScript is limited to erasable syntax (`erasableSyntaxOnly`), and TypeScript 7 only type-checks (`npm run typecheck`).
+  - **Tests:** Node's built-in `node:test` (`npm test`; `npm run check` runs both).
+  - **Shipping `harnessd`:** decided when a second machine first installs it (Phase 1). In 0A it runs from the checkout.
+  - **Architecture rules as tests** (`test/structure.test.ts`): no imports of the spike (D-44); agent-vendor SDKs only in `adapters` (D-17, R-4); workspace dependencies only in the allowed direction, so the server never depends on the daemon or adapters (D-32).
+  - *Why:* the fewest moving parts that still type-check end to end (D-55), with no tool the owner has to install beyond Node.
+  - *Source:* 0A item 1. *Status:* Proposal.
+
 ## 8. Hypotheses (what we're testing, not assuming)
 
 | ID | Hypothesis | Tested by |
@@ -642,7 +658,7 @@ Vendor and infrastructure claims were checked on 2026-10-01: seven research pass
 - the API key reached the agent's shell;
 - binding a port needs an explicit setting.
 
-Results and evidence are in [research/spike-0a.md](docs/research/spike-0a.md); contradictions C-14 to C-19 are in [vendor-capabilities.md](docs/research/vendor-capabilities.md).
+Results and evidence are in [research/spike-0a.md](docs/research/spike-0a.md); contradictions C-14 to C-20 are in [vendor-capabilities.md](docs/research/vendor-capabilities.md).
 
 **Qualified or contradicted:**
 
@@ -668,9 +684,11 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 1. ~~**Before any code:** the owner picks the stack ([Q-01](docs/open-questions.md#q-01)) and gives the Phase 0A go-ahead.~~ **Done 2026-10-01:** TypeScript (D-55); 0A approved (D-59).
 2. ~~**Before the spike:** the owner picks the auth mode for experiments ([Q-04](docs/open-questions.md#q-04)).~~ **Done 2026-10-01:** API keys (D-56).
 3. ~~**The adapter spike** (roadmap 0A item 0, D-59).~~ **Done 2026-10-01:** results in [research/spike-0a.md](docs/research/spike-0a.md); architecture changes D-60 to D-70.
-   - **Now:** the owner reviews the results and D-60 to D-70. **Don't start roadmap 0A item 1 until they have.**
-   - **Open:** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). They must close before 0A item 8's exit.
+   - ~~**The owner reviews the results and D-60 to D-70.**~~ **Done 2026-10-02:** accepted; 0A continues (D-71).
+   - **Open:** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). They must close before 0A item 8's exit. The script is ready (`e17-real-model.ts`, SP-15); it only needs the key exported.
 4. **During 0A:**
+   - ~~Item 1, the repo skeleton.~~ **Done 2026-10-02:** `packages/`, with runtime and tooling per D-72 (Proposal). `npm run check` type-checks and runs the tests.
+   - **Next:** item 2, data model v0 ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
@@ -721,4 +739,4 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 | [docs/roadmap.md](docs/roadmap.md) | Ordered checklists and exit criteria per phase |
 | [docs/open-questions.md](docs/open-questions.md) | What's undecided, and what it blocks |
 | [docs/research/](docs/research/) | Researched facts (F-IDs), the 0A adapter spike results, and the competitive landscape |
-| [docs/source/](docs/source/) | The raw S1 to S4 records. Never edit these. |
+| [docs/source/](docs/source/) | The raw S1 to S5 records. Never edit these. |

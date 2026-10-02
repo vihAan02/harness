@@ -7,11 +7,17 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
 - **The first wedge:** several humans, each with their own agents on their own machines, coordinating on one repo.
 
 ## Current state
+- **The owner:** GitHub `vihAan02`, who owns the repo and works on it with Daniyal Mughal (D-71). Gates marked "owner" need their approval.
 - **Phase:** 0A, approved 2026-10-01 (D-59).
-  - **Done:** the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`. Results are in [docs/research/spike-0a.md](docs/research/spike-0a.md); the architecture changes are D-60 to D-70.
-  - **Next:** **wait for the owner's review before 0A item 1.**
-- **Code:** no product code exists. The spike is throwaway, and product code never imports it.
-- **Stack:** TypeScript (D-55). Experiments use API keys, never subscription login (D-56).
+  - **Done:**
+    - the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`, accepted by the owner (D-71). Results are in [docs/research/spike-0a.md](docs/research/spike-0a.md); the architecture changes are D-60 to D-70.
+    - item 1, the repo skeleton, in `packages/` (D-72).
+  - **Next:** item 2, data model v0.
+- **Code:**
+  - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back.
+  - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
+  - The spike is throwaway, and product code never imports it.
+- **Stack:** TypeScript (D-55) on Node 24+ (D-72). Experiments use API keys, never subscription login (D-56).
 - **Next step, and what must happen first:** see [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a). That's the only canonical copy.
 
 ## Read in this order before doing anything
@@ -55,7 +61,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   
   Never present a hypothesis or an unverified vendor behavior as fact.
 - **Re-verify vendor facts before relying on them in code.** Agent CLIs change fast. If a fact is more than about 60 days old, re-check it and update its F-ID.
-- **`docs/source/` holds raw records of the owner's instructions (S1–S4).** Never edit them.
+- **`docs/source/` holds raw records of the owner's instructions (S1–S5).** Never edit them.
 - **Keep the docs clear, not bureaucratic.** Don't add documents that duplicate others.
 - **Git:** don't commit or push unless the owner asks. Never commit secrets or `.env` files.
 - **Security defaults you must not weaken:**

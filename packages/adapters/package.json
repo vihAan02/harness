@@ -1,0 +1,13 @@
+{
+  "name": "@harness/adapters",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentAdapter and per-vendor adapters; the only place vendor SDKs live (D-17; docs/agent-adapters.md).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/protocol": "0.0.0"
+  }
+}

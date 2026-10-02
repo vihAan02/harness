@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70). Items 1 onward wait for the owner's review of those results.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Item 1, the repo skeleton, is done** (D-72). Next: item 2.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -32,12 +32,14 @@
    **Output:** updated F-IDs, a go/no-go note for each assumption, and any decisions to supersede.
    
    **Done 2026-10-01** against Claude Code 2.1.287 / SDK 0.3.287: [research/spike-0a.md](research/spike-0a.md). The core mechanisms held; six configuration and hook assumptions failed and were replaced (D-60 to D-70). The real-model checks U-1 to U-3 wait for an API key ([Q-18](open-questions.md#q-18)).
-1. **Repo skeleton** for the chosen stack. The likely shape is one repo with packages:
+1. **Repo skeleton** for the chosen stack. One repo with packages:
    - `server` (coordination server);
    - `daemon` (`harnessd`);
    - `adapters` (`AgentAdapter` + `ClaudeAdapter`);
    - `protocol` (shared types);
    - `cli` (`harness`).
+   
+   **Done 2026-10-02:** npm workspaces on Node 24+, run from TypeScript source, with `node:test` and structural tests for the package boundaries (D-72).
 2. **Data model v0** ([protocol.md §5](protocol.md#5-entities-and-storage-sketch)):
    - the identity entities, with no single-user shortcuts (D-18);
    - tasks (owner human, assignee agent, scope), sessions, messages, soft claims, budgets;
@@ -145,7 +147,7 @@
    - `harness claim` CLI for human-taken hard claims;
    - a fault-injection switch for lease renewal (for T-2).
 6. **Remaining message kinds:** `contract_request`, `task_blocked`.
-7. **`compilePermissions` adds read confinement:** file-tool deny rules plus sandbox `denyRead` outside the worktree and allowlist, good enough to pass T-1.
+7. **`compilePermissions` adds read confinement:** flag-settings `Read(//…)` deny rules outside the worktree and allowlist, good enough to pass T-1. They cover the file tools, `@`-expansion and shell reads; sandbox `denyRead` alone covers shell reads only (D-61, SP-13).
 8. **Security tests** T-1 (hostile message), T-1b (guardrail tampering) and T-2 (stale lease, using fault injection) ([validation.md §7](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test)).
 9. **A/B setup:**
    - scenarios SC-0 to SC-4 planted in the benchmark repo: scenario tags, task cards and hidden integration checks (D-58);

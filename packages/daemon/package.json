@@ -1,0 +1,14 @@
+{
+  "name": "@harness/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "harnessd: the per-device execution and security boundary (D-32; docs/local-runtime.md).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@harness/adapters": "0.0.0",
+    "@harness/protocol": "0.0.0"
+  }
+}

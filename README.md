@@ -4,11 +4,13 @@
 
 The first wedge: **several humans, each running their own AI coding agents on their own machines, coordinating on one repository as one AI-augmented engineering team.**
 
-## Status (2026-10-01)
+## Status (2026-10-02)
 
-**Planning only. No product code exists yet.**
+**Phase 0A is under way. The repo skeleton exists; the coordination features don't yet.**
 - The architecture, decisions, risks, roadmap and validation plan are written down.
-- Phase 0A is approved (D-59). Its throwaway adapter spike is done ([docs/research/spike-0a.md](docs/research/spike-0a.md)), with architecture changes D-60 to D-70. The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
+- Phase 0A is approved (D-59). Its throwaway adapter spike is done and accepted ([docs/research/spike-0a.md](docs/research/spike-0a.md)), with architecture changes D-60 to D-70 (D-71).
+- The code lives in `packages/` (D-72). With Node 24 or later: `npm install`, then `npm run check`.
+- The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
 
 ## The idea in one screen
 

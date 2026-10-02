@@ -1,0 +1,20 @@
+{
+  // Type-check only (D-72): code runs from source through Node's type stripping,
+  // so only erasable TypeScript syntax is allowed and nothing is emitted.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true
+  },
+  "include": ["packages/*/src", "packages/*/test", "test"]
+}

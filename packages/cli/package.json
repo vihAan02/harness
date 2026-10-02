@@ -1,0 +1,13 @@
+{
+  "name": "@harness/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The human CLI, `harness` (D-54; docs/architecture.md §2).",
+  "bin": {
+    "harness": "./src/main.ts"
+  },
+  "dependencies": {
+    "@harness/protocol": "0.0.0"
+  }
+}
