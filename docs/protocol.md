@@ -24,15 +24,34 @@
   "client": { "kind": "harnessd" | "cli" | "dashboard", "version": "0.1.0" },
   "device_id": "dev_…",                 // harnessd only
   "principal": "human_…",               // who this client acts for
-  "auth": { "scheme": "local-token" },  // Phase 0; Phase 1: device key + human session (Q-10)
+  "auth": { "scheme": "local-token", "token": "…" },  // Phase 0 (D-74); Phase 1: device key + human session (Q-10)
   "subscribe": [ { "project_id": "prj_…", "after_seq": 1234 } ] }
 
 // server → client
 { "v": 1, "type": "welcome", "server_time": "…", "projects": [ { "project_id": "prj_…", "head_seq": 1240 } ] }
 // then: replay of events 1235..1240, then live events
+
+// later, client → server: more projects, answered with { "type": "subscribed", "projects": [ … ] }, then their replay
+{ "v": 1, "type": "subscribe", "subscribe": [ { "project_id": "prj_…", "after_seq": 0 } ] }
+
+// a command (§4), and its result
+{ "v": 1, "type": "command", "command_id": "<uuid>", "project_id": "prj_…", "name": "agent.create",
+  "args": { "name": "agent/backend-1", "vendor": "claude" },
+  "as_agent": "agent_…" }                // optional: sent for one of this human's agents
+{ "v": 1, "type": "command_result", "command_id": "<uuid>", "ok": true, "seqs": [1241], "result": { … }, "duplicate": false }
+{ "v": 1, "type": "command_result", "command_id": "<uuid>", "ok": false, "error": { "code": "forbidden", "message": "…" } }
+
+// a connection-level problem; after unauthorized or unsupported_version the server closes the socket
+{ "v": 1, "type": "error", "code": "bad_request" | "unsupported_version" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "internal", "message": "…" }
 ```
 
+- **The types** are in `@harness/protocol` (`packages/protocol/src/index.ts`); this section and that file must agree.
 - **Resume:** reconnecting with `after_seq = last processed seq` gives an exact catch-up (§3).
+- **Authority (0A, D-74):**
+  - A connection acts for one human principal, optionally on one of that human's devices.
+  - Commands need membership in the project; viewers are read-only.
+  - `as_agent` must name an agent accountable to that human. The agent's events carry `on_behalf_of` = the human (D-18).
+- **Retries:** a repeated `command_id` returns the original outcome with `duplicate: true`, and never runs the command twice. The same `command_id` with different content is a `conflict`.
 - **Phase 1:** server → daemon **commands** (start an agent, change policy) are signed with the server key. They're verified against local policy and approvals before they take effect (D-32 to D-34). Commands carry IDs and lease tokens, so stale or replayed instructions are rejected (TH-17).
 
 ## 3. Event log and cursors

@@ -29,6 +29,12 @@ export async function inTransaction<T>(pool: pg.Pool, fn: (tx: pg.PoolClient) =>
   }
 }
 
+/** True for a unique-key violation, optionally on one named constraint. */
+export function isUniqueViolation(e: unknown, constraint?: string): boolean {
+  const err = e as { code?: string; constraint?: string } | null;
+  return err?.code === '23505' && (constraint === undefined || err.constraint === constraint);
+}
+
 /** Applies pending migrations and returns their versions. Safe to call from several processes at once. */
 export async function migrate(pool: pg.Pool): Promise<string[]> {
   const client = await pool.connect();

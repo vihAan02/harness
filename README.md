@@ -6,10 +6,10 @@ The first wedge: **several humans, each running their own AI coding agents on th
 
 ## Status (2026-10-02)
 
-**Phase 0A is under way. The repo skeleton and the data model exist; the coordination features don't yet.**
+**Phase 0A is under way. The repo skeleton, the data model and the coordination server exist; harnessd and the agent features don't yet.**
 - The architecture, decisions, risks, roadmap and validation plan are written down.
 - Phase 0A is approved (D-59). Its throwaway adapter spike is done and accepted ([docs/research/spike-0a.md](docs/research/spike-0a.md)), with architecture changes D-60 to D-70 (D-71).
-- The code lives in `packages/` (D-72, D-73). See [Running locally](#running-locally).
+- The code lives in `packages/` (D-72 to D-74). See [Running locally](#running-locally).
 - The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
 
 ## Running locally
@@ -25,6 +25,10 @@ You need Node 24 or later and PostgreSQL 18.
 4. **Check:** `npm run check` type-checks everything and runs the tests.
    - The server tests use `HARNESS_TEST_DATABASE_URL` (default `postgresql://localhost:5432/harness_test`).
    - Each test file makes its own throwaway schema there and drops it afterwards.
+5. **Run the coordination server (optional):**
+   - Set a local token once per shell: `export HARNESS_LOCAL_TOKEN=$(openssl rand -hex 32)`.
+   - Then `npm run server`. It migrates `harness_dev` (or `HARNESS_DATABASE_URL`) and listens on `ws://127.0.0.1:7400` (`HARNESS_PORT` to change).
+   - Every client has to present that token (D-74).
 
 ## The idea in one screen
 

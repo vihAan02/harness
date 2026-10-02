@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 and 2 are built:** the repo skeleton (`packages/`, D-72) and data model v0 on Postgres (D-73).
+> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 3 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73) and the coordination server v0 (D-74).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 3, coordination server v0. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 4, `harnessd` v0. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -600,6 +600,26 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Tests:** run against a `harness_test` database, with each test file in its own throwaway schema.
   - **Event appends** go through `appendEvents`, which refuses to run outside a transaction. Without that, the counter row's lock would be released before the insert, breaking D-12's commit ordering.
   - *Source:* 0A item 2. *Status:* Proposal.
+- **D-74 Coordination server v0: the protocol details 0A item 3 had to fix.** The wire format is in [protocol.md §2](docs/protocol.md#2-connection).
+  - **Local token:**
+    - the server reads `HARNESS_LOCAL_TOKEN` (at least 32 characters), and every `hello` must carry it; compared in constant time;
+    - it keeps other local processes, sandboxed agents included, from talking to the coordination server as the owner;
+    - `harnessd` and the CLI will keep it in `~/.harness` (items 4 and 9).
+  - **Loopback only:** the server binds `127.0.0.1`, port 7400 by default. Nothing listens beyond the machine in Phase 0 (D-32).
+  - **Authority:**
+    - a connection acts for one human principal, which must be a project member to subscribe or send commands;
+    - `viewer` members are read-only;
+    - `as_agent` only for agents accountable to that human (D-18).
+  - **Idempotent commands:**
+    - each accepted command's outcome is stored under its `command_id` in the same transaction as its state change;
+    - the id is claimed before the handler runs, so a concurrent retry waits and then gets the stored outcome;
+    - reusing an id for different content is a `conflict`.
+  - **Fan-out:**
+    - each subscription is pumped from its cursor, in seq order, at least once;
+    - one payload-free `NOTIFY` per command transaction wakes it;
+    - a dedicated listener reconnects and catches up, and a 5-second poll is the safety net (D-11, F-54, F-55).
+  - **Commands:** only `agent.create` is implemented so far. The others arrive with their roadmap items (claims 7, messages 8, lifecycle 9), so item 3 doesn't build their semantics early.
+  - *Source:* 0A item 3. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -696,7 +716,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 4. **During 0A:**
    - ~~Item 1, the repo skeleton.~~ **Done 2026-10-02:** `packages/`, with runtime and tooling per D-72 (Proposal). `npm run check` type-checks and runs the tests.
    - ~~Item 2, data model v0.~~ **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql`, plus the event log's append and read (D-73, Proposal).
-   - **Next:** item 3, coordination server v0 ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 3, coordination server v0.~~ **Done 2026-10-02:** the WebSocket server, idempotent commands and NOTIFY fan-out (D-74, Proposal). `npm run server` runs it.
+   - **Next:** item 4, `harnessd` v0 ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

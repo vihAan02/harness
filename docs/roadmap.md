@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 and 2 are done:** the repo skeleton (D-72) and data model v0 (D-73). Next: item 3.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 3 are done:** the repo skeleton (D-72), data model v0 (D-73) and coordination server v0 (D-74). Next: item 4.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -50,6 +50,14 @@
    - a WebSocket endpoint;
    - internal protocol v0: hello and resume-from-cursor, commands, subscribe;
    - the events table as the record, with a coalesced, payload-free `NOTIFY` as the wake-up (D-11).
+   
+   **Done 2026-10-02:** `packages/server/src/server.ts`, run with `npm run server` (D-74). It has:
+   - local-token `hello`, loopback only;
+   - replay from the cursor, then live events;
+   - idempotent commands (`agent.create` so far);
+   - a listener that reconnects and catches up, plus a poll safety net.
+   
+   Tests cover each of these, including concurrent retries and a lost listener connection.
 4. **`harnessd` v0:**
    - local config and allowlist;
    - worktree lifecycle: create from an explicit base SHA on `harness/task/<task-id>`, tear down;

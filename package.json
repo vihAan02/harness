@@ -12,7 +12,8 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "node --test \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "server": "node packages/server/src/main.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
