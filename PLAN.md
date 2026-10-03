@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 11 are built, and the 0A exit criteria are met with a scripted model (`npm run demo`, D-84):** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key), the human CLI with the task lifecycle (D-81), metrics capture (D-82), the benchmark repo's base app (D-83) and the demo (D-84). **Still open for 0A:** the real-model checks (U-1, [Q-18](docs/open-questions.md#q-18)), and an owner's review before 0B (D-44). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with the real-model check U-1 deferred until an API key exists ([Q-18](docs/open-questions.md#q-18)). The model endpoint is configurable, with no provider hardcoded; DeepSeek `deepseek-flash` comes first for development and benchmarking (D-87). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch (D-86): provider integration, then 0B items 1 and 2 and the land part of item 5, until the S3 example passes end to end with the scripted model.
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -25,7 +25,7 @@
 
 ## 1. Context and provenance
 
-Six sources define this plan. Later sources win where they sharpen or override earlier ones.
+These sources define this plan. Later sources win where they sharpen or override earlier ones.
 
 | | Source | What it contributed |
 |---|---|---|
@@ -37,6 +37,7 @@ Six sources define this plan. Later sources win where they sharpen or override e
 | **S6** | [Owner's picks for item 4](docs/source/2026-10-02-S6-owner-item4-picks.md) | Approved four choices for `harnessd` v0: TOML/YAML config, `harness approve` now, presence-only heartbeat events, a foreground daemon (D-75). |
 | **S7** | [Owner's choice of the benchmark repo](docs/source/2026-10-03-S7-owner-bench-repo.md) | The benchmark app lives in its own repo, github.com/vihAan02/harness-bench, built in TypeScript on Node 24 with Node's built-in SQLite (D-83). |
 | **S8** | [Owner records a co-owner](docs/source/2026-10-03-S8-owner-coowner.md) | Daniyal Mughal (GitHub `DaniyalMughal1`) is a co-owner. Either owner can approve an owner gate, and Daniyal continues from the handoff (D-85). |
+| **S9** | [Co-owner approves 0B and sets the provider direction](docs/source/2026-10-03-S9-coowner-0b-go-and-providers.md) | Approved Phase 0B with U-1 deferred, Postgres 18 beside 17 on port 5433, and a configurable model provider with DeepSeek first (D-86, D-87). Resolved Q-06 and Q-07 (D-88, D-89). Set this stretch's stop point: the S3 example with the scripted model. |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -479,7 +480,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - *Source:* S4. *Status:* Locked.
 - **D-56 Phase 0 experiments use API keys.** The spike, 0A, 0B and both A/B arms authenticate with an Anthropic API key (later an OpenAI API key for Codex). The prototype never depends on consumer subscription login. Resolves part 1 of [Q-04](docs/open-questions.md#q-04); part 2 (the product's default before any commercial launch) stays open.
   - *How it's enforced:* every session gets an explicit env with the key (D-48 pass-through); the adapter checks the session's reported auth source and refuses to run if it isn't the API key.
-  - *Source:* S4. *Status:* Locked.
+  - *Source:* S4. *Status:* Locked. *Refined by D-87: the key may come from any Anthropic-compatible pay-as-you-go API provider, never a subscription login.*
 - **D-57 The A/B pass bar is approved as version 1, and it's versioned.** Supersedes D-05's "awaiting approval".
   - Bar v1 is [validation.md §5](docs/validation.md#5-pass-bar-v1-approved-2026-10-01-d-57) exactly as proposed. Resolves [Q-03](docs/open-questions.md#q-03).
   - **Versioning rules:** each version has a number, a date and a reason. A run is always judged against the version in force when it started. A new version applies only to runs that start after it's recorded.
@@ -543,7 +544,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - verify at session start that a probe command doesn't see it.
     
     A harness-set `apiKeyHelper` also works and is the alternative if a future vendor version breaks the deny rule.
-  - *Source:* spike. *Status:* Locked.
+  - *Source:* spike. *Status:* Locked. *Extended by D-87: every auth variable the vendor reads (`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`) is denied, whichever one a session uses.*
 - **D-65 Each agent gets its own `CLAUDE_CONFIG_DIR` in API-key mode.** Narrows D-48's "no per-agent `CLAUDE_CONFIG_DIR`" carve-out to subscription mode, which Phase 0 doesn't use (D-56).
   - **Why:**
     - it isolates transcripts, `.claude.json`, shell snapshots and session state;
@@ -584,7 +585,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 
 ### Owner decisions of 2026-10-02 (S5)
 - **D-71 The spike results and D-60 to D-70 are accepted, and 0A continues from item 1.** This clears the stop point D-59 set after the spike.
-  - The real-model checks U-1 to U-3 stay open ([Q-18](docs/open-questions.md#q-18)). They still have to close before 0A item 8's exit.
+  - The real-model checks U-1 to U-3 stay open ([Q-18](docs/open-questions.md#q-18)). They still have to close before 0A item 8's exit. *This line is superseded by D-86: U-1 is deferred until an API key exists, and 0B starts without it.*
   - The owner is GitHub `vihAan02`, who owns the repo and works on it with Daniyal Mughal.
   - *Source:* S5. *Status:* Locked. *The owner line is superseded by D-85 (Daniyal Mughal is a co-owner).*
 - **D-72 Runtime and tooling for 0A.** These are the details D-55 left to 0A item 1.
@@ -668,7 +669,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Sessions in harnessd:**
     - the first message is the task, from the local owner, in a `[harness task]` envelope (protocol.md §8);
     - the repo's `CLAUDE.md` and `AGENTS.md` go into the system prompt as labelled context, after the harness's own instructions, as regular files of at most 32 KB (D-45);
-    - the API key comes from harnessd's own `ANTHROPIC_API_KEY` and is passed through untouched (D-48, D-56). `config.toml` may set `[agents] model` and `max_budget_usd`;
+    - the API key comes from harnessd's own `ANTHROPIC_API_KEY` and is passed through untouched (D-48, D-56). `config.toml` may set `[agents] model` and `max_budget_usd`. *Refined by D-87: a configured provider names the variable that holds its key, and its endpoint and models;*
     - the vendor CLI's stderr goes to `~/.harness/logs/session-<id>.log`.
   - **`session.report`** (protocol.md §4) is how harnessd tells the server about sessions. It's sent as the agent, from the device, so the events are the agent's on behalf of its human (D-18).
     - The first report creates the session, and only for the task's assignee.
@@ -717,7 +718,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - The local owner's text isn't quoted.
     - Harness notices carry their own fact text.
   - **Paths never carry control characters.** Changed-file paths and `about_paths` end up in other agents' notices, where a newline in a file name could forge a line. The server refuses them, and harnessd leaves such files out of its reports and logs them.
-  - **Still open:** item 8's exit also needs U-1, the real-model check ([Q-18](docs/open-questions.md#q-18)). The mechanics are tested end to end with the scripted model.
+  - **Still open:** item 8's exit also needs U-1, the real-model check ([Q-18](docs/open-questions.md#q-18)). The mechanics are tested end to end with the scripted model. *Deferred by D-86 until an API key exists.*
   - *Source:* 0A item 8. *Status:* Proposal.
 - **D-81 The human CLI and the task lifecycle in harnessd (0A item 9).** Implements D-54.
   - **The CLI** (`harness`) reads the same `~/.harness` config and token as harnessd. Each command replays the project's log into a view, then sends its command. It has:
@@ -796,6 +797,39 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Owner gates:** a gate the docs mark "owner" needs the approval of either one. That covers phase go-aheads (D-44), answers to open questions, and approvals of pass bars and Proposals.
   - **Continuity:** Daniyal continues the work from [HANDOFF.md](HANDOFF.md).
   - *Source:* S8. *Status:* Locked.
+
+### Co-owner decisions of 2026-10-03 (S9)
+- **D-86 Phase 0B is approved; U-1 is deferred.** The 0A review gate (D-44) is cleared by a co-owner (D-85).
+  - **U-1 is deferred** until an API key is provided. This supersedes D-71's line that U-1 to U-3 must close before 0A item 8's exit: item 8 counts as done with U-1 deferred. When a key arrives, U-1 to U-3 run per configured model (D-87); an Anthropic verdict still needs an Anthropic key. U-2 still feeds T-1, and U-3 the M8 baseline.
+  - **Postgres:** PostgreSQL 18 stays the store (D-73). On the co-owner's machine it runs beside an existing PostgreSQL 17, on port 5433, selected with `HARNESS_DATABASE_URL` and `HARNESS_TEST_DATABASE_URL`.
+  - **This stretch's stop point:** provider integration, then 0B items 1 and 2 and the land part of item 5, until the S3 example (roadmap 0B exit criterion 1) passes end to end with the scripted model. Then report to an owner, who decides what comes next.
+  - **Git:** work is committed locally on a feature branch and pushed only when an owner asks.
+  - *Source:* S9. *Status:* Locked.
+- **D-87 The model endpoint is configurable; no provider is hardcoded.**
+  - **What's configurable:** an Anthropic-compatible endpoint, by base URL, auth scheme (`x-api-key` or bearer), the *name* of the environment variable holding its key, the model, and the background model. Example settings for particular providers live only in README and config examples, never in product code.
+  - **Priority for Phase 0:**
+    1. DeepSeek `deepseek-flash`, for cheap, repeatable development and benchmarking;
+    2. a fixed free OpenRouter model, for $0 smoke tests, if it supports every tool call the harness needs;
+    3. Kimi, if integration is easy;
+    4. Anthropic Haiku 4.5 later, as a comparison and baseline.
+  - **Refines D-56 and D-77:** sessions authenticate with an API key or provider token from a pay-as-you-go API account, never a subscription login. The adapter's auth-source check stays, and must hold for every configured provider.
+  - **Refines D-48's pass-through:** harnessd reads the user-named variable from its own environment and passes the value unchanged into the vendor's auth variable. It never logs, stores or forwards it, and it never proxies model traffic.
+  - **Extends D-64:** every auth variable the vendor reads is denied to the agent's shell, whichever one a session uses.
+  - **The A/B test** uses one fixed model and provider configuration in both arms, never a router that picks models, and the model is recorded per session so the runs can prove it.
+  - *Why:* the cheapest model that reliably drives the harness's agent and tool-calling paths keeps the experiments affordable. Configuration instead of code keeps vendor behaviour behind `AgentAdapter` (principle 10).
+  - *Source:* S9. *Status:* Locked. How it's built is recorded separately, as a Proposal.
+- **D-88 Read-set coverage and shell reads.** Resolves [Q-06](docs/open-questions.md#q-06).
+  - **0B measures coverage** (H-03).
+  - **A notice is never suppressed** because coverage is low; its confidence is labelled instead.
+  - **Shell reads are parsed best-effort,** simple forms only: `cat`, `head`, `tail`, `less`, `sed -n`, `grep`, `rg`.
+  - **Vendors without read hooks still get notices,** from edits and diffs.
+  - *Source:* S9. *Status:* Locked.
+- **D-89 When two hard claims race.** Resolves [Q-07](docs/open-questions.md#q-07).
+  - **First come, first served;** the loser gets `claim_conflict`.
+  - **Human override:** a human can take a path with `harness claim --force`. That revokes the agent's lease, by issuing a newer fencing token, and notifies the agent.
+  - **No priorities in 0B.** How claims interact with deadlock resolution stays with D-27 (detection is Phase 1).
+  - It's built with the lease commands, after this stretch (D-86).
+  - *Source:* S9. *Status:* Locked.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -888,7 +922,7 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 2. ~~**Before the spike:** the owner picks the auth mode for experiments ([Q-04](docs/open-questions.md#q-04)).~~ **Done 2026-10-01:** API keys (D-56).
 3. ~~**The adapter spike** (roadmap 0A item 0, D-59).~~ **Done 2026-10-01:** results in [research/spike-0a.md](docs/research/spike-0a.md); architecture changes D-60 to D-70.
    - ~~**The owner reviews the results and D-60 to D-70.**~~ **Done 2026-10-02:** accepted; 0A continues (D-71).
-   - **Open:** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). They must close before 0A item 8's exit. The script is ready (`e17-real-model.ts`, SP-15); it only needs the key exported.
+   - **Deferred (D-86):** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). The script is ready (`e17-real-model.ts`, SP-15); it only needs a key and, for a non-Anthropic model, the provider settings (D-87).
 4. **During 0A:**
    - ~~Item 1, the repo skeleton.~~ **Done 2026-10-02:** `packages/`, with runtime and tooling per D-72 (Proposal). `npm run check` type-checks and runs the tests.
    - ~~Item 2, data model v0.~~ **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql`, plus the event log's append and read (D-73, Proposal).
@@ -901,12 +935,11 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 9, the human CLI and lifecycle.~~ **Done 2026-10-03:** `harness agent/task/status/log`, and harnessd starts, stops and commits agents as tasks move (D-81, Proposal).
    - ~~Item 10, metrics capture and the benchmark repo's base app.~~ **Done 2026-10-03:** `harness metrics` (D-82, Proposal), and Shelf in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
    - ~~Item 11, the 0A demo script.~~ **Done 2026-10-03:** `npm run demo` meets every exit criterion with the scripted model (D-84, Proposal).
-5. **To close 0A:**
-   - **The real-model checks** need an API key ([Q-18](docs/open-questions.md#q-18)): `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and `npm run demo -- --real` for the whole loop with real agents.
-   - **An owner (vihAan02 or Daniyal Mughal, D-85) reviews 0A and gives the 0B go-ahead** (D-44).
-   - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
-   - ~~Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).~~ **Done 2026-10-03:** [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
-6. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
+5. ~~**To close 0A:**~~ **Done 2026-10-03:** a co-owner reviewed 0A and approved 0B, with U-1 deferred (D-86). Budgets ([Q-05](docs/open-questions.md#q-05)) keep the proposal as the default. The benchmark repo is built (D-83).
+   - **Still to run when a key exists:** `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and the demos with `--real` for the whole loop with real agents.
+6. **During 0B** (approved, D-86):
+   - **This stretch:** provider integration (D-87); item 1, read capture and the missed-hook monitor; item 2, invalidation and sync; the land part of item 5. **Stop point:** the S3 example passes end to end with the scripted model; then an owner decides what's next.
+   - **Later in 0B:** hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
 7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
 ## 13. Glossary
@@ -954,4 +987,4 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 | [docs/roadmap.md](docs/roadmap.md) | Ordered checklists and exit criteria per phase |
 | [docs/open-questions.md](docs/open-questions.md) | What's undecided, and what it blocks |
 | [docs/research/](docs/research/) | Researched facts (F-IDs), the 0A adapter spike results, and the competitive landscape |
-| [docs/source/](docs/source/) | The raw S1 to S8 records. Never edit these. |
+| [docs/source/](docs/source/) | The raw S1 to S9 records. Never edit these. |

@@ -65,7 +65,7 @@ An observed claim lasts until the task is done or landed, or until the file no l
   - **0B:** this happens in the local land step.
   - **Phase 1:** it's a required `harness/claims` status check on the PR or merge group ([protocol.md §9](protocol.md#9-fencing-check-in-phase-1-proposal)).
 - **Optional early warning:** a PreToolUse hook can *warn* (not deny) when an agent edits a path hard-claimed by another task.
-- **Conflict policy when two hard-claim requests race:** first acquisition wins, and the second gets `claim_conflict`. Escalation rules are [Q-07](open-questions.md#q-07).
+- **Conflict policy when two hard-claim requests race:** first acquisition wins, and the second gets `claim_conflict`. Escalation rules are D-89 (resolving [Q-07](open-questions.md#q-07)): a human can override with `harness claim --force`, which revokes the agent's lease with a newer fencing token; no priorities in 0B.
 - **Hard claims are optional.** Most work should get by with soft claims plus stale-context protection.
 
 ---
@@ -108,7 +108,7 @@ An observed claim lasts until the task is done or landed, or until the file no l
 **Vendor coverage differs:**
 - **Claude Code:** read hooks give tool-observed reads.
 - **Codex:** has no read tool, so its reads are command-parsed at best (F-39).
-- **Proposal (Q-06):** agents on vendors with weaker read capture get correspondingly lower-confidence notices, never silence.
+- **Decided (D-88, resolving Q-06):** agents on vendors with weaker read capture get correspondingly lower-confidence notices, never silence. Shell reads are parsed best-effort, simple forms only.
 
 ### When invalidation fires
 

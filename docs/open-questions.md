@@ -11,8 +11,8 @@
 | [Q-03](#q-03) | Approve the A/B pass bar | Running the A/B test | **Resolved → D-57** (v1 approved, versioned) |
 | [Q-04](#q-04) | Vendor login: subscription vs API key | Any commercial launch | **Part 1 resolved → D-56** (API keys for all Phase 0 experiments); part 2 (product default) open |
 | [Q-05](#q-05) | Message budget defaults | Nothing (the proposal is the 0A default unless the owner objects) | Proposal |
-| [Q-06](#q-06) | How good read-set coverage has to be, and shell-read handling | 0B | Open |
-| [Q-07](#q-07) | Policy when two hard claims race | 0B | Open (proposal below) |
+| [Q-06](#q-06) | How good read-set coverage has to be, and shell-read handling | 0B | **Resolved → D-88** (the proposal, as written) |
+| [Q-07](#q-07) | Policy when two hard claims race | 0B | **Resolved → D-89** (first come, first served, plus a human override) |
 | [Q-08](#q-08) | Where tests run before landing or opening a PR | 1 | 0B answered by D-51; Phase 1 open |
 | [Q-09](#q-09) | Where the coordination server is hosted in Phase 1 | 1 | Open |
 | [Q-10](#q-10) | Identity, sign-in and signing keys | 1 | Open |
@@ -23,7 +23,7 @@
 | [Q-15](#q-15) | Retention and privacy for messages and read sets | 1 | Open |
 | [Q-16](#q-16) | Product name | Nothing | Open |
 | [Q-17](#q-17) | Does Phase 1 wait for the real-project validation? | The gate decision | Open, needs owner (at the gate) |
-| [Q-18](#q-18) | An API key for the spike's real-model checks | Closing U-1 to U-3; 0A item 8's exit | **Open, needs owner** |
+| [Q-18](#q-18) | An API key for the real-model checks | Closing U-1 to U-3 | **Deferred → D-86** until a key is provided; providers per D-87 |
 
 ---
 
@@ -108,12 +108,14 @@
   - How hard should we try to parse shell reads (`cat`, `sed`, `rg`, scripts)?
   - Should a vendor without read hooks still get stale-context notices, from edits plus diffs only?
 - **Proposal:** 0B measures coverage (H-03). A notice is never suppressed because coverage is low; its confidence is labeled instead.
+- **Resolved → D-88 (2026-10-03, S9):** the proposal, with shell reads parsed best-effort in simple forms (`cat`, `head`, `tail`, `less`, `sed -n`, `grep`, `rg`), and notices from edits and diffs for vendors without read hooks.
 
 ### Q-07
 **What happens when two hard claims race.**
 - **Proposal:** first come, first served, and the loser gets `claim_conflict`.
 - **Open:** do humans get a manual override? Do claims have priorities? How does this interact with deadlock resolution (D-27)?
 - **Blocks:** 0B.
+- **Resolved → D-89 (2026-10-03, S9):** first come, first served; a human can override with `harness claim --force`, which revokes the agent's lease with a newer fencing token and notifies it; no priorities in 0B; deadlock interaction stays with D-27.
 
 ### Q-08
 **Where tests run before landing or opening a PR.**
@@ -187,3 +189,4 @@
 - **Ready (2026-10-02):** with the key exported, run `node experiments/e17-real-model.ts` in `spikes/0a-adapter/`. It runs seven short Haiku 4.5 sessions, estimated at $0.10 to $0.30, each capped at $0.25 by the SDK. Its plumbing is verified against the mock (SP-15). Details: [spike-0a.md §5](research/spike-0a.md#5-still-unverified-needs-a-real-model-other-platforms-or-other-modes).
 - **Also with the key (2026-10-03):** `npm run demo -- --real` runs the same round trip through the built product, with two real agents on the benchmark app (D-84).
 - **Blocks:** U-1 must close before 0A item 8's exit (the `question` → `answer` round trip). U-2 feeds T-1 in 0B.
+- **Deferred → D-86 (2026-10-03, S9):** 0B starts without U-1. When a key exists, the checks run per configured model (D-87): a DeepSeek key answers U-1 to U-3 for DeepSeek, and an Anthropic verdict still needs an Anthropic key. Which key to get, and where it goes, is in README "Choosing a model provider".

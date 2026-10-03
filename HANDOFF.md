@@ -1,4 +1,47 @@
-# Handoff: harness, Phase 0A (state as of 2026-10-03)
+# Handoff: harness, Phase 0A → 0B (state as of 2026-10-03)
+
+## Latest update (2026-10-03, Daniyal's session) — read this first
+This section is kept current as work lands. The rest of the file below is the original 0A handoff from vihAan02, still accurate unless this section says otherwise.
+
+**Where the work is:** local branch `0b/stale-context` in `~/Desktop/harness-ai`, branched from `main` @ `1a94660`. Commits are local only; nothing is pushed until an owner asks (D-86).
+
+**Decisions made (S9, recorded in PLAN.md):**
+- **D-86:** Phase 0B approved by Daniyal. U-1 (real-model check) deferred until a key exists. This stretch stops when the S3 example passes with the scripted model.
+- **D-87:** the model endpoint is configurable; nothing provider-specific in code. Priority: DeepSeek `deepseek-flash` → a fixed free OpenRouter model for smoke tests → Kimi → Haiku 4.5 as a comparison. The A/B uses one fixed model+config in both arms.
+- **D-88:** Q-06 resolved as proposed (measure coverage; never suppress; best-effort shell reads).
+- **D-89:** Q-07 resolved: first come first served, plus `harness claim --force` for humans (built later with the lease commands).
+- New facts F-24 to F-29, F-58, F-72 to F-77 and contradiction C-21 in `docs/research/vendor-capabilities.md`.
+
+**Environment on Daniyal's Mac (verified 2026-10-03):**
+- macOS on Apple silicon, Node 26.9.0, npm 11.19.1, Git (Apple).
+- PostgreSQL 18.6 (Homebrew `postgresql@18`) on **port 5433**, beside the PostgreSQL 17 on 5432 that holds other projects' databases. Data dir `/opt/homebrew/var/postgresql@18` (`port = 5433` set in its `postgresql.conf`). Databases `harness_dev` and `harness_test`.
+- Start it after a reboot: `LC_ALL=en_US.UTF-8 /opt/homebrew/opt/postgresql@18/bin/pg_ctl -D /opt/homebrew/var/postgresql@18 -l /opt/homebrew/var/postgresql@18/server.log start`
+- Every shell that runs tests or the demo needs:
+  ```bash
+  export HARNESS_DATABASE_URL=postgresql://localhost:5433/harness_dev
+  export HARNESS_TEST_DATABASE_URL=postgresql://localhost:5433/harness_test
+  ```
+  Without them the tests silently use port 5432 (PostgreSQL 17).
+- harness-bench is cloned at `~/Desktop/harness-bench` (`main` @ `8c6ea60`).
+
+**Baselines on `main` @ `1a94660` before any change (2026-10-03):**
+- `npm run check`: 125 tests, 124 pass, 1 skipped (intentional), ~19 s.
+- `npm run demo`: all six 0A exit criteria met, ~14 s.
+- spike `node experiments/e17-real-model.ts --mock`: clean, apiKeySource `ANTHROPIC_API_KEY`.
+- harness-bench `npm run check`: 18 of 18 pass.
+
+**Progress on this stretch:**
+- [x] M0 environment and baselines.
+- [x] M1 governance records (S9, D-86 to D-89, F-IDs).
+- [ ] M2 provider integration (configurable Anthropic-compatible endpoints).
+- [ ] M3 0B item 1: read capture and the missed-hook monitor.
+- [ ] M4 0B item 2: invalidation and sync.
+- [ ] M5 the land step (part of item 5).
+- [ ] M6 the S3 exit test, demo and docs.
+
+---
+
+# Original 0A handoff (vihAan02, 2026-10-03)
 
 > Written for Daniyal Mughal (GitHub `DaniyalMughal1`), who continues the work from here. It's a snapshot: where it disagrees with `PLAN.md`, `PLAN.md` wins.
 
@@ -105,7 +148,7 @@
   - Commit under your own identity. Everything so far was authored as `vihAan02`.
   - End commit messages with: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
 - **Decisions:** a new D-ID supersedes an old one; never silently edit an existing decision.
-- **Records:** `docs/source/` (S1 to S8) holds raw records of the owners' instructions. Never edit them.
+- **Records:** `docs/source/` (S1 to S9) holds raw records of the owners' instructions. Never edit them.
 - **Vendor facts:** keep them as F-IDs in `docs/research/vendor-capabilities.md`, and re-verify anything older than about 60 days. Most were checked on 2026-10-01.
 - **Pinned vendor versions (D-49):** ClaudeAdapter refuses any Agent SDK other than 0.3.287 (CLI 2.1.287). To move the pin:
   1. re-run the spike's experiments on the new version (`spikes/0a-adapter/README.md`) and the adapter tests;
