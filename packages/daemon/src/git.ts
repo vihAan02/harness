@@ -41,7 +41,7 @@ export async function removeWorktree(repo: string, worktree: string, taskId: str
 export async function commitAll(worktree: string, message: string, author: { name: string; email: string }): Promise<string | null> {
   await git(worktree, 'add', '-A');
   if (!(await git(worktree, 'diff', '--cached', '--name-only'))) return null;
-  await git(worktree, '-c', 'user.name=harnessd', '-c', 'user.email=harnessd@harness.invalid',
+  await git(worktree, '-c', 'user.name=harnessd', '-c', 'user.email=harnessd@harness.invalid', '-c', 'commit.gpgsign=false',
     'commit', '-q', '--no-verify', '--author', `${author.name} <${author.email}>`, '-m', message);
   return git(worktree, 'rev-parse', 'HEAD');
 }
