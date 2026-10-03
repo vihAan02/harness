@@ -41,6 +41,16 @@ async function requireAgent(ctx: HandlerContext, agentId: unknown): Promise<stri
   return agentId;
 }
 
+/**
+ * An agent works on one task at a time: messages, budgets and its config dir all assume it (D-80). So a
+ * task can't be given to an agent that has one in progress or blocked.
+ */
+async function requireFree(ctx: HandlerContext, agentId: string): Promise<void> {
+  const busy = (await ctx.tx.query<{ id: string }>(
+    "SELECT id FROM tasks WHERE project_id = $1 AND assignee_agent_id = $2 AND status IN ('in_progress', 'blocked') LIMIT 1", [ctx.projectId, agentId])).rows[0];
+  if (busy) throw new CommandError('conflict', `that agent is already working on ${busy.id}; finish or abandon it first`);
+}
+
 export type TaskRow = { id: string; status: string; assignee_agent_id: string | null; owner_human_id: string; scope: string[]; title: string };
 
 export async function lockTask(ctx: HandlerContext, taskId: unknown): Promise<TaskRow> {
@@ -61,6 +71,7 @@ export async function createTask(ctx: HandlerContext, args: Record<string, unkno
   const priority = args.priority ?? 0;
   if (!Number.isSafeInteger(priority) || (priority as number) < 0 || (priority as number) > 100) throw new CommandError('bad_request', 'priority must be 0 to 100');
   const assignee = args.assignee_agent_id === undefined ? null : await requireAgent(ctx, args.assignee_agent_id);
+  if (assignee) await requireFree(ctx, assignee);
   const id = `T-${(await ctx.tx.query<{ n: string }>("SELECT nextval('task_numbers') AS n")).rows[0]!.n}`;
   await ctx.tx.query(
     `INSERT INTO tasks (id, project_id, title, text, scope, priority, owner_human_id, assignee_agent_id, status)
@@ -82,6 +93,7 @@ export async function assignTask(ctx: HandlerContext, args: Record<string, unkno
   const task = await lockTask(ctx, args.task_id);
   const agent = await requireAgent(ctx, args.assignee_agent_id);
   if (task.status !== 'open') throw new CommandError('conflict', `${task.id} is ${task.status}; only open tasks can be assigned in 0A`);
+  await requireFree(ctx, agent);
   await ctx.tx.query("UPDATE tasks SET assignee_agent_id = $2, status = 'in_progress' WHERE id = $1", [task.id, agent]);
   return { result: null, events: [{ kind: 'task.assigned', data: { task_id: task.id, assignee_agent_id: agent } }] };
 }

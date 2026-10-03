@@ -40,15 +40,25 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
   if (model !== undefined && !MODEL_ID.test(model)) throw new CommandError('bad_request', 'model is malformed');
   const provider = args.provider === undefined ? undefined : short(args.provider, 'provider', 40);
   if (provider !== undefined && !PROVIDER.test(provider)) throw new CommandError('bad_request', 'provider is malformed');
-  let tools: { tool_calls: Record<string, number>; denied_calls: number } | undefined;
+  let tools: Record<string, unknown> | undefined;
   if (args.tools !== undefined) {
-    const t = args.tools as { calls?: unknown; denied?: unknown };
+    const t = args.tools as { calls?: unknown; denied?: unknown; hooks?: unknown; reads?: unknown };
     const calls = t?.calls as Record<string, unknown> | undefined;
     const ok = typeof calls === 'object' && calls !== null && Object.keys(calls).length <= 100
       && Object.entries(calls).every(([k, v]) => /^[A-Za-z0-9_.:-]{1,100}$/.test(k) && Number.isSafeInteger(v) && (v as number) >= 0)
       && Number.isSafeInteger(t.denied) && (t.denied as number) >= 0;
     if (!ok) throw new CommandError('bad_request', 'tools must be { calls: { <tool>: count }, denied: count }');
     tools = { tool_calls: calls as Record<string, number>, denied_calls: t.denied as number };
+    // Capture coverage (H-03, D-88): calls a hook saw, missed or never reached; reads by source, and unparsed shell reads.
+    const counts = (v: unknown, keys: string[], name: string) => {
+      const o = v as Record<string, unknown>;
+      if (typeof o !== 'object' || o === null || !keys.every((k) => Number.isSafeInteger(o[k]) && (o[k] as number) >= 0)) {
+        throw new CommandError('bad_request', `tools.${name} needs ${keys.join(', ')} as counts`);
+      }
+      return Object.fromEntries(keys.map((k) => [k, o[k] as number]));
+    };
+    if (t.hooks !== undefined) tools.hook_coverage = counts(t.hooks, ['observed', 'missed', 'rejected'], 'hooks');
+    if (t.reads !== undefined) tools.read_coverage = counts(t.reads, ['read_tool', 'search_hit', 'shell_heuristic', 'edit_base', 'instructions', 'unparsed_shell'], 'reads');
   }
   let usage: Record<string, unknown> | undefined;
   if (args.usage !== undefined) {
