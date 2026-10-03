@@ -13,8 +13,13 @@ export type TaskMetrics = {
 export type RunMetrics = {
   project: string;
   window: { start: string | null; end: string | null; complete: boolean };
-  /** M1 (0A form): from the first assignment until every assigned task is done and committed, or abandoned. Land and tests are added in 0B. */
+  /**
+   * M1: from the first assignment until every assigned task is finished. Once the run has used the land step
+   * (0B), finished means landed with its tests green, or abandoned; before that (the 0A form), done and committed.
+   */
   completionMs: number | null;
+  /** M1's form: 'landed' when the run used the land step, else 'committed'. */
+  completionForm: 'landed' | 'committed';
   tasks: TaskMetrics[];
   /** M5: human actions to agents beyond the initial task assignment. */
   interventions: { total: number; byKind: Record<string, number>; events: { seq: number; kind: string; detail: string }[] };
@@ -41,6 +46,13 @@ export type RunMetrics = {
   /** H-07: harness tools each agent used (unprompted use of ask/answer is the hypothesis). */
   shimCalls: Record<string, Record<string, number>>;
   overlaps: { observed: number; prospective: number };
+  /** The land step (0B): lands by outcome; M3 conflicting edits (land or sync conflicts); M9 test failures at a task's first land. */
+  lands: { completed: number; rejected: number; failed: Record<string, number>; conflicts: number; firstLandTestFailures: number };
+  /**
+   * Stale-context notices (0B; P1 diagnostic): how many of each stage were sent and delivered, and how many
+   * landed notices reached their reader before its task finished.
+   */
+  notices: { inProgress: { sent: number; delivered: number }; landed: { sent: number; delivered: number; beforeReaderFinished: number }; superseded: number };
   notComputed: Record<string, string>;
 };
 
@@ -66,12 +78,17 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     if (e.kind === 'worktree.committed') commits.set(task, String(data(e).commit));
   }
 
+  const landed = new Map<string, EventMessage>();
+  for (const e of events) if (e.kind === 'land.completed') landed.set(String(data(e).task_id), e);
+  const landForm = events.some((e) => e.kind === 'land.requested');
   const tasks: TaskMetrics[] = [...assigned.keys()].map((id) => {
     const t = view.tasks.get(id);
     const a = assigned.get(id)!;
-    // A done task counts as finished once harnessd has committed it (or found nothing to commit).
+    // 0A form: a done task counts as finished once harnessd has committed it (or found nothing to commit).
+    // 0B form: only once it has landed (its tests green), or been abandoned.
     const f = finished.get(id);
-    const fin = f?.kind === 'task.completed' ? events.find((e) => e.seq > f.seq && e.kind === 'worktree.committed' && data(e).task_id === id) ?? f : f;
+    const committed = f?.kind === 'task.completed' ? events.find((e) => e.seq > f.seq && e.kind === 'worktree.committed' && data(e).task_id === id) ?? f : f;
+    const fin = landForm && f?.kind === 'task.completed' ? landed.get(id) : committed;
     return {
       id, title: t?.title ?? id, agent: t?.assignee ? view.agentName(t.assignee) : null, status: t?.status ?? 'unknown',
       assignedAt: a.at, finishedAt: fin?.at ?? null, durationMs: fin ? Date.parse(fin.at) - Date.parse(a.at) : null, commit: commits.get(id) ?? null,
@@ -95,6 +112,34 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     interventions.total++;
     bump(interventions.byKind, e.kind);
     interventions.events.push({ seq: e.seq, kind: e.kind, detail });
+  }
+
+  const lands: RunMetrics['lands'] = { completed: 0, rejected: 0, failed: {}, conflicts: 0, firstLandTestFailures: 0 };
+  const firstLand = new Map<string, string>(); // task → outcome of its first land
+  for (const e of events) {
+    const d = data(e);
+    const task = String(d.task_id ?? '');
+    if (e.kind === 'land.completed') { lands.completed++; if (!firstLand.has(task)) firstLand.set(task, 'completed'); }
+    if (e.kind === 'land.rejected') lands.rejected++;
+    if (e.kind === 'land.failed') {
+      bump(lands.failed, String(d.reason));
+      if (d.reason === 'conflict') lands.conflicts++;
+      if (d.reason !== 'cancelled' && !firstLand.has(task)) firstLand.set(task, String(d.reason));
+    }
+    if (e.kind === 'worktree.sync_conflict') lands.conflicts++;
+  }
+  lands.firstLandTestFailures = [...firstLand.values()].filter((r) => r === 'tests').length;
+
+  const notices: RunMetrics['notices'] = { inProgress: { sent: 0, delivered: 0 }, landed: { sent: 0, delivered: 0, beforeReaderFinished: 0 }, superseded: 0 };
+  for (const m of view.messages.values()) {
+    if (m.kind !== 'dependency_changed') continue;
+    if (m.supersededBy) notices.superseded++;
+    const bucket = m.data.stage === 'landed' ? notices.landed : notices.inProgress;
+    bucket.sent++;
+    if (!m.deliveredAt) continue;
+    bucket.delivered++;
+    const readerDone = m.toTask ? finished.get(m.toTask) : undefined;
+    if (m.data.stage === 'landed' && (!readerDone || Date.parse(m.deliveredAt) <= Date.parse(readerDone.at))) notices.landed.beforeReaderFinished++;
   }
 
   const messages: RunMetrics['messages'] = { total: 0, byKind: {}, agentToAgent: 0, humanToAgent: 0, harnessNotices: 0, held: 0 };
@@ -150,6 +195,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     project: view.projectId,
     window: { start: starts[0] ?? null, end, complete },
     completionMs: complete && starts[0] && end ? Date.parse(end) - Date.parse(starts[0]) : null,
+    completionForm: landForm ? 'landed' : 'committed',
     tasks,
     interventions,
     deniedToolCalls: denied,
@@ -159,13 +205,14 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     delivery: { count: delivered.length, byPoint, latencyMs: { median: median(latencies), max: latencies.length ? Math.max(...latencies) : null }, questionRoundTripsMs: roundTrips },
     shimCalls,
     overlaps: { observed: view.overlaps.filter((o) => o.level === 'observed').length, prospective: view.overlaps.filter((o) => o.level === 'prospective').length },
+    lands,
+    notices,
     notComputed: {
       M2: 'duplicated work: post-run diff review against the rubric (0B)',
-      M3: 'conflicting edits: the land step and Git (0B)',
       M4: 'semantic rework after integration: post-integration log (0B)',
-      M6: 'stale-context incidents: event log plus diff review (0B)',
-      M9: 'failed tests at first integration: the land step\'s test run (0B)',
+      M6: 'stale-context incidents reaching integration: hidden checks plus diff review (0B A/B setup)',
       M10: 'human coordination time: the coordinator\'s timer, same method in both arms',
+      ...(landForm ? {} : { M3: 'conflicting edits: from the land step, once the run lands tasks', M9: 'failed tests at first integration: from the land step, once the run lands tasks' }),
     },
   };
 }
@@ -175,7 +222,7 @@ const secs = (ms: number | null) => (ms === null ? '—' : duration(ms));
 export function renderMetrics(m: RunMetrics): string {
   const lines = [
     `Metrics for ${m.project} (harness arm; docs/validation.md §4)`,
-    `M1  completion time: ${m.window.complete ? secs(m.completionMs) : 'still running'} (first assignment ${m.window.start ?? '—'}${m.window.end ? `, last task finished ${m.window.end}` : ''})`,
+    `M1  completion time: ${m.window.complete ? secs(m.completionMs) : 'still running'}, until every task is ${m.completionForm === 'landed' ? 'landed (tests green) or abandoned' : 'done and committed, or abandoned'} (first assignment ${m.window.start ?? '—'}${m.window.end ? `, last task finished ${m.window.end}` : ''})`,
   ];
   for (const t of m.tasks) lines.push(`      ${t.id} ${t.agent ?? '(no agent)'} [${t.status}] ${secs(t.durationMs)}${t.commit ? ` commit ${t.commit.slice(0, 12)}` : ''}`);
   lines.push(`M5  human interventions: ${m.interventions.total}${m.interventions.events.length ? ` (${m.interventions.events.map((e) => e.detail).join('; ')})` : ''}`);
@@ -189,6 +236,15 @@ export function renderMetrics(m: RunMetrics): string {
   if (m.delivery.questionRoundTripsMs.length) lines.push(`    question → answer round trips: ${m.delivery.questionRoundTripsMs.map((x) => secs(x)).join(', ')}`);
   lines.push(`H-07 harness tool use: ${Object.entries(m.shimCalls).map(([a, c]) => `${a}: ${Object.entries(c).map(([k, n]) => `${k} ${n}`).join(', ')}`).join('; ') || 'none'}`);
   lines.push(`    overlaps: ${m.overlaps.observed} while editing, ${m.overlaps.prospective} between scopes`);
+  if (m.completionForm === 'landed') {
+    lines.push(`M3  conflicting edits: ${m.lands.conflicts} (land or sync conflicts)`);
+    lines.push(`M9  failed tests at first integration: ${m.lands.firstLandTestFailures}`);
+    lines.push(`    lands: ${m.lands.completed} landed, ${m.lands.rejected} rejected by the fencing check, ${Object.entries(m.lands.failed).map(([k, n]) => `${n} failed (${k})`).join(', ') || '0 failed'}`);
+  }
+  const n = m.notices;
+  if (n.inProgress.sent || n.landed.sent) {
+    lines.push(`    stale-context notices: in progress ${n.inProgress.delivered}/${n.inProgress.sent} delivered; landed ${n.landed.delivered}/${n.landed.sent} delivered, ${n.landed.beforeReaderFinished} before the reader finished (P1); ${n.superseded} superseded`);
+  }
   lines.push('Not computed from the log:', ...Object.entries(m.notComputed).map(([k, v]) => `  ${k} ${v}`));
   return lines.join('\n');
 }
