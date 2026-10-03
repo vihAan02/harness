@@ -276,6 +276,8 @@ Sources: [CLI reference](https://code.claude.com/docs/en/cli-reference), [headle
 
 Sources: [env vars](https://code.claude.com/docs/en/env-vars), [LLM gateway: connect](https://code.claude.com/docs/en/llm-gateway-connect), [authentication](https://code.claude.com/docs/en/authentication); pinned `sdk.d.ts` (`ApiKeySource`). *Impact: D-87, C-21.*
 
+*Probe, 2026-10-03, Claude Code 2.1.287 / SDK 0.3.287, scripted mock (`packages/adapters/test/provider.test.ts`):* VERIFIED. `ANTHROPIC_AUTH_TOKEN` alone gives `apiKeySource: 'none'` with `accountInfo().tokenSource: 'ANTHROPIC_AUTH_TOKEN'` and only a bearer header. Both variables set give `apiKeySource: 'ANTHROPIC_API_KEY'` and send both headers to the configured host. A base URL with a path (`/anthropic`) is honoured. The warm-up `HEAD /api/hello` carries no credential.
+
 **F-25 ✔ Model variables behind a custom endpoint.**
 - `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` set what the aliases resolve to; the Haiku one is "also used for background functionality" (summaries, titles, classifiers). `ANTHROPIC_SMALL_FAST_MODEL` is deprecated. `CLAUDE_CODE_SUBAGENT_MODEL` sets subagent and workflow models.
 - Behind `ANTHROPIC_BASE_URL`, the background model is **the main model** unless `ANTHROPIC_DEFAULT_HAIKU_MODEL` is set; default Haiku is used only with an Anthropic Console key (`sk-ant-api…`) and no `ANTHROPIC_AUTH_TOKEN` (the prefix test is ◐, from the binary).
@@ -290,9 +292,13 @@ Sources: [model config](https://code.claude.com/docs/en/model-config), [env vars
 
 Sources: [LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol), [env vars](https://code.claude.com/docs/en/env-vars).
 
+*Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED. For `deepseek-flash` the CLI sends `thinking: {type: 'adaptive'}`, `output_config: {effort: 'high'}`, `max_tokens: 32000` and `context_management`, with nine `anthropic-beta` values. `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` removes `context_management` and cuts the betas to four (`claude-code`, `interleaved-thinking`, `mid-conversation-system`, `effort`); a strict endpoint then accepts every request. A `[1m]` suffix is stripped on the wire and adds the `context-1m` beta; `init.model` keeps the suffix.
+
 **F-27 ✔ Cost for unknown models is a guess.** `modelUsage[id].costBasis` is `'list' | 'managed' | 'unknown'`. For `'unknown'`, `costUSD` (and so `total_cost_usd` and the `maxBudgetUsd` cap) is "a guess at the default model's rate". `modelPricing` is ignored in `--settings`.
 
 Sources: pinned `sdk.d.ts` (`ModelUsage`), [cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking), [settings](https://code.claude.com/docs/en/settings). *Impact: M8 needs harness-side pricing for non-Anthropic models (D-87).*
+
+*Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED. An unknown id gets `costBasis: 'unknown'` priced at $5 in / $25 out per million tokens, about 17 to 21 times DeepSeek's `deepseek-flash` rates. `claude-haiku-4-5` gets `costBasis: 'list'` at its real $1 / $5. With no model configured, the default model on an API key is `claude-opus-5-5`.
 
 **F-28 ✔ Other endpoints the CLI contacts.**
 - `/v1/messages` and the optional `/v1/messages/count_tokens` go to `ANTHROPIC_BASE_URL`; so does a `HEAD /api/hello` warm-up, skipped when an HTTP proxy is set. `GET /v1/models` only with `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`.
@@ -303,6 +309,12 @@ Sources: [LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-prot
 **F-29 ✔ `CLAUDE_CODE_EXTRA_BODY`** is a JSON object merged into the top level of every request body. `ANTHROPIC_CUSTOM_HEADERS` (2.1.227+) adds headers. `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS` arrived in 2.1.288, after the pin.
 
 Sources: [env vars](https://code.claude.com/docs/en/env-vars), [CHANGELOG](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md).
+
+*Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED: `{"provider": {"allow_fallbacks": false}}` arrives as a top-level `provider` field. Model ids with `/` and `:` (`qwen/qwen3.8-27b:free`) pass through unchanged.
+
+**F-78 ✔ The pinned CLI is a Bun-compiled binary, and Bun's own environment variables work on it** (2.1.287, checked 2026-10-03 by the D-87 review). `node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude` is a Bun 1.4.3 compiled Mach-O (its fetches send `User-Agent: Bun/1.4.3`). Probed with a dummy key: `BUN_OPTIONS="--preload ./setup.js"` ran a file from the working directory inside the CLI process, before `init` and outside the sandbox, with the key in its environment; `BUN_CONFIG_VERBOSE_FETCH=curl` printed every request's `x-api-key` header to stderr.
+
+Source: the D-87 adversarial review's probes against the pinned binary. *Impact: TH-21; `BUN_*` is a reserved secret prefix (D-90).*
 
 ## OpenAI Codex
 

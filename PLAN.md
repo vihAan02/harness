@@ -830,6 +830,18 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **No priorities in 0B.** How claims interact with deadlock resolution stays with D-27 (detection is Phase 1).
   - It's built with the lease commands, after this stretch (D-86).
   - *Source:* S9. *Status:* Locked.
+- **D-90 How configurable model endpoints are built (D-87).**
+  - **Config:** `[providers.<name>]` tables in harnessd's local `config.toml` (never `harness.yaml`): `base_url` (https only), `auth` (`x-api-key` or `bearer`), `key_env` (the variable's name), `model`, `background_model`, context and output limits, `strip_experimental_betas` (on by default with a `base_url`), `extra_body` (at most 4 KB; can't set model, messages, system, tools or similar) and per-model `prices`. `[agents] provider` picks one, and `HARNESS_PROVIDER` overrides it. Without one, the vendor's endpoint and `ANTHROPIC_API_KEY`, as before. Example tables for DeepSeek, OpenRouter, Kimi and Haiku are in `docs/examples/providers.toml`, not in code.
+  - **Adapter:** `Auth` gains `scheme`; `SessionSpec.model` becomes a vendor-neutral `ModelConfig`; `SessionSpec.secrets` is split from the harness-set `env`. On a configured model, the Claude adapter pins every alias to it (F-25), strips experimental fields if asked (F-26), and passes limits and `extra_body` (F-29).
+  - **Bearer auth:** the key goes in both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, so `apiKeySource` stays `'ANTHROPIC_API_KEY'` and the D-56 check still rules out a subscription login (F-24, C-21). Both variables are denied to the shell (D-64).
+  - **Hardening:** the init check also requires `init.model` to equal the configured model.
+  - **Reserved names (TH-21):** secrets may not use names the CLI or runtime reads (`ANTHROPIC_*`, `CLAUDE*`, `NODE_*`, `BUN_*` since the CLI is a Bun binary (F-78), `SSL_*`, proxy and TLS variables, `PATH`, `PORT`, `HARNESS_*`, `GIT_*` and similar), or the key's variable; checked at config load and again at session open (fail closed). Model ids can't start with `-` and can't be Claude Code aliases (`sonnet`, `haiku`…).
+  - **Endpoints are https only** in the config: a plain-http local gateway's port could be squatted by an agent allowed to bind loopback ports (F-58). The adapter accepts plain http only to `127.0.0.1`, for test doubles.
+  - **Cost and budget:** each model is priced from the config where it has prices (`cost_basis: config` when all do), otherwise at the vendor's figure (`list`, or `unknown` for a guess, F-27); a provider with prices must price its background model too. The adapter stops a session whose cost reaches `max_budget_usd`, and reports its final usage when it ends; the CLI's own cap is scaled by its guessed rates (cache included, rounded up) so it can't trip early, and moved out of the way for a free model.
+  - **Recorded per session:** `agent_sessions.model` and `.provider` (migration 0007), in `session.started`; `usage.reported` carries `models` and `cost_basis`. `harness metrics` shows them and warns when sessions used different models.
+  - **harnessd startup** resolves the provider and its key and exits if the key is missing.
+  - **Tests:** with no key and no network, against the real pinned CLI and the scripted mock in provider modes (base path, auth scheme, strict fields, model allowlist), with negative controls for stripping, the D-64 deny and the reserved-name check.
+  - *Source:* D-87, built 2026-10-03. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 

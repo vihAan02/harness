@@ -39,7 +39,7 @@ The harness has to produce a **materially better outcome** than that before Phas
 
 **Held constant:**
 - the repo commit;
-- the model and its effort or settings;
+- the model and its effort or settings: **one provider table and model in both arms** (D-87), never a router that picks models. Each harness-arm session records its configured model and provider, and `harness metrics` warns if they differ. The baseline arm's launch config uses the same endpoint, model variables and request settings;
 - the task text;
 - the time cap;
 - the human coordinator (the same person);
