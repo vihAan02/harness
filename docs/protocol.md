@@ -115,16 +115,16 @@
 | Command | Phase | Notes |
 |---|---|---|
 | `agent.create { name, vendor, accountable_human_id }` | 0A | CLI `harness agent add` (D-54) |
-| `task.create { title, text, scope[], owner_human_id, assignee_agent_id?, priority? }` | 0A | Written by a human (D-08). `scope` = folder prefixes and exact files (D-21) → prospective claims |
+| `task.create { title, text, scope[], assignee_agent_id?, priority? }` | 0A | Written by a human (D-08); the owner is the calling human. Ids are `T-1`, `T-2`, … `scope` = folder prefixes and exact files (D-21), normalized (`src/api/**` → `src/api/`) → prospective claims. → `task.created { task_id, title, text, scope, priority, owner_human_id }`, plus `task.assigned` when an assignee is given (D-78) |
 | `task.assign { task_id, assignee_agent_id }` | 0A | `harnessd` on the assignee's device starts a session (D-54) |
-| `task.complete { task_id, summary? }` | 0A | From the agent tool `report_done` or the CLI `harness task done` |
+| `task.complete { task_id, summary? }` | 0A | From the agent tool `report_done` (the assignee only) or the CLI `harness task done` → `task.completed { task_id, summary?, by }` |
 | `task.abandon { task_id, reason }` | 0A | CLI `harness task abandon` |
 | ~~`device.heartbeat { device_id }`~~ | 0A | Superseded by D-75: presence is the `heartbeat` message (§2), not a command |
 | `worktree.report { task_id, event: created\|removed, path, branch? }` | 0A | `harnessd` only (a device connection) → `worktree.*` events |
 | `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed, exit_code? }` | 0A | `harnessd` only. Local approvals happen through `harness approve`; this only records them (D-52) |
 | `session.report { session_id, status, task_id?, worktree?, branch?, vendor_session_id?, vendor_version?, usage?, reason? }` | 0A | `harnessd` → server: presence and usage (D-77). Sent `as_agent`, from the device. The first report creates the session (`task_id`, `worktree`, `branch` required; only the task's assignee) → `session.started`. A status change → `session.status`; `ended` → `session.ended`. `usage` = `{input, output, cache_read, cache_creation, cost_usd}`, the vendor's running totals → `usage.reported`. Vendor ids stay on the row |
 | `claim.observe { session_id, paths[], source: hook\|diff }` | 0A | `harnessd` reports observed edits |
-| `message.send { kind, to?, in_reply_to?, text?, data? }` | 0A | Typed kinds only (D-24). Budgets enforced server-side |
+| `message.send { kind, to?, in_reply_to?, text, about_paths? }` | 0A | Typed kinds only (D-24): `question` (`to` = an agent's name or id) and `answer` (`in_reply_to` = a question asked of the sender; one answer each). Text ≤ 500 characters (Q-05). → `message.sent { message_id, kind, from, to, in_reply_to?, text, about_paths?, priority, from_task_id, to_task_id }` (D-78). Budgets are enforced server-side (item 8) |
 | `message.ack { message_id, delivered_at, delivery: between_tools\|new_turn\|stop_hook }` | 0A | Measures delivery latency and where messages landed (D-26) |
 | `sync.report { session_id, new_base_sha, event: synced\|conflict }` | 0B | `harnessd` → `worktree.synced` / `worktree.sync_conflict` (D-53) |
 | `readset.add { session_id, entries[{path, hash, source, confidence, range?}] }` | 0B | Batched per tool call or turn. Also checks the paths against active observed claims (coordination §2) |

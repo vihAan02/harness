@@ -11,6 +11,8 @@ import { CommandError, type Actor, type Caller, type Handler } from './handler.t
 import { createAgent } from './agents.ts';
 import { reportSetup, reportWorktree } from './reports.ts';
 import { reportSession } from './sessions.ts';
+import { abandonTask, assignTask, completeTask, createTask } from './tasks.ts';
+import { sendMessage } from './messages.ts';
 
 export { CommandError, type Caller } from './handler.ts';
 export { EVENTS_CHANNEL } from './events.ts';
@@ -21,6 +23,11 @@ const HANDLERS: Record<string, Handler> = {
   'worktree.report': reportWorktree,
   'setup.report': reportSetup,
   'session.report': reportSession,
+  'task.create': createTask,
+  'task.assign': assignTask,
+  'task.complete': completeTask,
+  'task.abandon': abandonTask,
+  'message.send': sendMessage,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };

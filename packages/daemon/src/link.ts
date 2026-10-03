@@ -1,5 +1,8 @@
 // harnessd's connection to the coordination server (docs/protocol.md §2 to §4).
-// - Reconnects with backoff, and resumes every project from the last event it processed.
+// - Reconnects with backoff. On its first connection it replays each project's log from the start, so
+//   harnessd can rebuild its view of the project; events at or before the saved cursor are passed on
+//   marked `replayed`, so they're folded into the view but never acted on twice (D-78). Later
+//   reconnects resume from the last event seen.
 // - Commands wait in an outbox until the server answers. After a reconnect they are resent with the
 //   same command_id, which is safe because commands are idempotent (D-74).
 // - Sends a heartbeat while connected (D-75).
@@ -8,8 +11,8 @@ import { PROTOCOL_VERSION, type Command, type EventMessage, type ServerMessage }
 
 export type LinkOptions = {
   url: string; token: string; principal: string; deviceId: string;
-  cursors: Record<string, number>; // project id → last seq processed; every key is subscribed
-  onEvent: (e: EventMessage) => void;
+  cursors: Record<string, number>; // project id → last seq acted on; every key is subscribed
+  onEvent: (e: EventMessage, replayed: boolean) => void;
   onCursor?: (projectId: string, seq: number) => void;
   heartbeatMs?: number; // default 10000
   log?: (msg: string) => void;
@@ -27,17 +30,21 @@ export class CommandFailed extends Error {
 export class ServerLink {
   o: LinkOptions;
   cursors: Record<string, number>;
+  seen: Record<string, number>; // last seq passed to onEvent in this process, replayed or not
   ws: WebSocket | null = null;
   ready = false;
   stopped = false;
   fatal: string | null = null;
   pending = new Map<string, Pending>();
   readyWaiters: (() => void)[] = [];
+  heads: Record<string, number> | null = null; // each project's head at the first welcome
+  caughtUpWaiters: (() => void)[] = [];
   running: Promise<void> | null = null;
 
   constructor(o: LinkOptions) {
     this.o = o;
     this.cursors = { ...o.cursors };
+    this.seen = Object.fromEntries(Object.keys(o.cursors).map((p) => [p, 0]));
   }
 
   start(): void {
@@ -47,6 +54,19 @@ export class ServerLink {
   /** Resolves once the server has welcomed us. */
   whenReady(): Promise<void> {
     return this.ready ? Promise.resolve() : new Promise((r) => this.readyWaiters.push(r));
+  }
+
+  /** Resolves once every project's log has been replayed up to where it stood when we first connected. */
+  whenCaughtUp(): Promise<void> {
+    return this.isCaughtUp() ? Promise.resolve() : new Promise((r) => this.caughtUpWaiters.push(r));
+  }
+
+  isCaughtUp(): boolean {
+    return this.heads !== null && Object.entries(this.heads).every(([p, h]) => (this.seen[p] ?? 0) >= h);
+  }
+
+  checkCaughtUp(): void {
+    if (this.isCaughtUp()) for (const w of this.caughtUpWaiters.splice(0)) w();
   }
 
   /** Sends a command; `asAgent` sends it for one of this human's agents (D-18). */
@@ -91,7 +111,7 @@ export class ServerLink {
       ws.addEventListener('open', () => send({
         v: PROTOCOL_VERSION, type: 'hello', client: { kind: 'harnessd', version: '0.0.0' },
         principal: this.o.principal, device_id: this.o.deviceId, auth: { scheme: 'local-token', token: this.o.token },
-        subscribe: Object.entries(this.cursors).map(([project_id, after_seq]) => ({ project_id, after_seq })),
+        subscribe: Object.entries(this.seen).map(([project_id, after_seq]) => ({ project_id, after_seq })),
       }));
       ws.addEventListener('message', (ev) => {
         let m: ServerMessage;
@@ -99,15 +119,22 @@ export class ServerLink {
         if (m.type === 'welcome') {
           welcomed = true;
           this.ready = true;
+          this.heads ??= Object.fromEntries(m.projects.map((p) => [p.project_id, p.head_seq]));
           for (const p of this.pending.values()) send(p.msg); // resend: idempotent on command_id
           send({ v: PROTOCOL_VERSION, type: 'heartbeat' });
           beat = setInterval(() => send({ v: PROTOCOL_VERSION, type: 'heartbeat' }), this.o.heartbeatMs ?? 10_000);
           for (const w of this.readyWaiters.splice(0)) w();
+          this.checkCaughtUp();
         } else if (m.type === 'event') {
-          if (m.seq <= (this.cursors[m.project_id] ?? 0)) return; // at-least-once: drop what we've processed
-          this.o.onEvent(m);
-          this.cursors[m.project_id] = m.seq;
-          this.o.onCursor?.(m.project_id, m.seq);
+          if (m.seq <= (this.seen[m.project_id] ?? 0)) return; // at-least-once: drop duplicates
+          this.seen[m.project_id] = m.seq;
+          const replayed = m.seq <= (this.cursors[m.project_id] ?? 0);
+          this.o.onEvent(m, replayed);
+          if (!replayed) {
+            this.cursors[m.project_id] = m.seq;
+            this.o.onCursor?.(m.project_id, m.seq);
+          }
+          this.checkCaughtUp();
         } else if (m.type === 'command_result') {
           const p = this.pending.get(m.command_id);
           if (!p) return;

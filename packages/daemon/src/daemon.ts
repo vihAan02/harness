@@ -19,6 +19,8 @@ import { runSetup } from './setup.ts';
 import { renderTask, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
+import { harnessTools } from './tools.ts';
+import { ProjectView } from './view.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -55,6 +57,7 @@ export class Daemon {
   stopping = false;
   adapters: Record<string, AgentAdapter>;
   running = new Map<string, RunningAgent>(); // by task id
+  views = new Map<string, ProjectView>(); // rebuilt from each project's log at start (D-78)
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -65,6 +68,7 @@ export class Daemon {
     this.sessions = new Sessions(this.home);
     this.ports = new PortAllocator(this.home, this.config.limits.portRange, this.config.limits.portsPerAgent, this.config.limits.maxConcurrentAgents);
     this.adapters = o.adapters ?? { claude: new ClaudeAdapter() };
+    for (const p of this.config.projects) this.views.set(p.id, new ProjectView(p.id));
   }
 
   async start(): Promise<void> {
@@ -77,7 +81,7 @@ export class Daemon {
     this.link = new ServerLink({
       url: this.config.serverUrl, token: this.config.token, principal: this.config.principal, deviceId: this.config.deviceId,
       cursors: Object.fromEntries(this.config.projects.map((p) => [p.id, saved[p.id] ?? 0])),
-      onEvent: (e) => this.o.onEvent?.(e),
+      onEvent: (e, replayed) => this.onEvent(e, replayed),
       onCursor: () => writeJsonAtomic(this.home.state, { cursors: this.link!.cursors }),
       ...(this.o.heartbeatMs ? { heartbeatMs: this.o.heartbeatMs } : {}),
       log: this.log,
@@ -85,10 +89,24 @@ export class Daemon {
     this.link.start();
   }
 
-  /** Resolves once the server has welcomed this daemon. */
-  ready(): Promise<void> {
+  /** Resolves once the server has welcomed this daemon and it has replayed each project's log. */
+  async ready(): Promise<void> {
     if (!this.link) throw new Error('start() first');
-    return this.link.whenReady();
+    await this.link.whenReady();
+    await this.link.whenCaughtUp();
+  }
+
+  view(projectId: string): ProjectView {
+    const v = this.views.get(projectId);
+    if (!v) throw new Error(`project ${projectId} is not in ${this.home.config}`);
+    return v;
+  }
+
+  /** Every event is folded into the project's view; only new ones are acted on (D-78). */
+  onEvent(e: EventMessage, replayed: boolean): void {
+    this.views.get(e.project_id)?.apply(e);
+    if (replayed) return;
+    this.o.onEvent?.(e);
   }
 
   async stop(): Promise<void> {
@@ -143,7 +161,7 @@ export class Daemon {
    * first message is the task itself, from the local owner. Its child PID is recorded for orphan
    * supervision (D-62), and its status and usage are reported to the server.
    */
-  async startAgent(ws: TaskWorkspace, agent: AgentRef, task: TaskForAgent, tools: HarnessTool[] = []): Promise<RunningAgent> {
+  async startAgent(ws: TaskWorkspace, agent: AgentRef, task: TaskForAgent, tools?: HarnessTool[]): Promise<RunningAgent> {
     const project = this.project(ws.projectId);
     if (this.running.has(ws.taskId)) throw new Error(`task ${ws.taskId} already has a running agent`);
     const adapter = this.adapters[agent.vendor];
@@ -160,7 +178,11 @@ export class Daemon {
     }, agent.id);
     const spec: SessionSpec = {
       sessionId, worktree: ws.worktree, gitCommonDir: await gitCommonDir(project.repo), configDir: ws.configDir,
-      ports: ws.ports, env: ws.env, auth, tools,
+      ports: ws.ports, env: ws.env, auth,
+      tools: tools ?? harnessTools({
+        view: this.view(ws.projectId), agentId: agent.id, taskId: ws.taskId,
+        send: async (name, args) => (await this.link!.command(ws.projectId, name, args, agent.id)).result,
+      }),
       instructions: sessionInstructions({ agentName: agent.name, taskId: ws.taskId, ports: ws.ports, repo: readRepoInstructions(ws.worktree) }),
       ...(this.config.agents.model ? { model: this.config.agents.model } : {}),
       ...(this.config.agents.maxBudgetUsd ? { maxBudgetUsd: this.config.agents.maxBudgetUsd } : {}),

@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 5 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) and `AgentAdapter` + `ClaudeAdapter` (D-77).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 6 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77) and the agent-facing tool shim (D-78).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -675,6 +675,24 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - Vendor ids and versions are kept on the session row, not logged.
   - **Tests** run the real pinned CLI against a scripted stand-in for the Messages API, copied from the spike into `packages/adapters/test/` (never imported, D-44).
   - *Source:* 0A item 5. *Status:* Proposal.
+- **D-78 The agent-facing tool shim and what it rests on (0A item 6).**
+  - **The task lifecycle commands arrive now** (`task.create`, `task.assign`, `task.complete`, `task.abandon`), because `report_done` maps onto `task.complete` (D-54). The CLI on top of them is still item 9.
+    - Task ids are short and readable: `T-1`, `T-2`, …, from one sequence, so they're unique across projects.
+    - Only humans create, assign and abandon tasks (principle 9). Only the assignee agent or a human completes one.
+    - Scope entries are normalized: `src/api/**` becomes `src/api/`; absolute paths, `..`, and other globs are refused (D-21).
+    - `task.created` carries the task text (at most 8,000 characters), because harnessd needs it to start the agent. It's text a human wrote, not file contents.
+  - **`message.send` stores and logs `question` and `answer`.** Delivery to the recipient and budgets are item 8.
+    - `to` names an agent by name or id.
+    - Only the agent a question was asked of may answer it, once.
+    - Each message records the sender's and the recipient's task in progress, for per-task budgets (Q-05).
+  - **harnessd keeps a view of each project, folded from the event log.**
+    - On start it replays each project's log from the beginning and acts only on events after its saved cursor, so a restart never acts twice.
+    - The CLI's `harness status` will use the same view (item 9). Phase 1 can add snapshots if logs grow long.
+  - **The tools** (protocol.md §6) run in harnessd and send their commands as the agent (D-18):
+    - `harness_status` is rendered from the view. Peer text in it is quoted and labelled as untrusted (D-25);
+    - `ask`, `answer` and `report_done` return the command's outcome, or its error, as the tool result;
+    - a tool waits up to 15 seconds for the server, then tells the agent the command is queued, since harnessd resends it on reconnect (idempotent, D-74).
+  - *Source:* 0A item 6. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -774,7 +792,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 3, coordination server v0.~~ **Done 2026-10-02:** the WebSocket server, idempotent commands and NOTIFY fan-out (D-74, Proposal). `npm run server` runs it.
    - ~~Item 4, `harnessd` v0.~~ **Done 2026-10-02:** `packages/daemon`, run with `npm run daemon`, and `harness approve` (D-75; D-76 Proposal).
    - ~~Item 5, `AgentAdapter` + `ClaudeAdapter`.~~ **Done 2026-10-03:** `packages/adapters`, and harnessd runs agent sessions through it (D-77, Proposal).
-   - **Next:** item 6, the agent-facing tool shim ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 6, the agent-facing tool shim.~~ **Done 2026-10-03:** `harness_status`, `ask`, `answer`, `report_done`, plus the task commands and `message.send` they map onto (D-78, Proposal).
+   - **Next:** item 7, claims ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

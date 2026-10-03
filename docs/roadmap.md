@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 5 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) and `AgentAdapter` + `ClaudeAdapter` (D-77). Next: item 6.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 6 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77) and the tool shim (D-78). Next: item 7.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -110,6 +110,13 @@
    
    Tested against the real pinned CLI with a scripted model: write confinement, the hidden API key, the shared-`.git` deny, verbatim delivery, resume, billing errors, kill, and an orphan killed after a simulated harnessd crash. Each confinement test was checked by weakening the rule and watching it fail.
 6. **Agent-facing tool shim** (the thin layer, D-15): `harness_status`, `ask`, `answer`, `report_done` ([protocol.md §6](protocol.md#6-agent-facing-tool-shim)).
+   
+   **Done 2026-10-03** (D-78):
+   - the four tools, served in-process to each session and sent as the agent;
+   - the task commands they rest on (`task.create`, `assign`, `complete`, `abandon`) and `message.send` for questions and answers;
+   - a per-project view in harnessd, rebuilt from the log at start, which `harness_status` renders.
+   
+   Tested end to end: a real CLI session called each tool, and each became its protocol command.
 7. **Claims:**
    - prospective claims from task scope;
    - observed claims from edit hooks plus periodic worktree diffs, which catch background writes the hooks miss (D-70);
