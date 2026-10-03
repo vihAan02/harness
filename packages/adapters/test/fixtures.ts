@@ -36,7 +36,7 @@ export async function fixture(): Promise<Fixture> {
     const configDir = path.join(root, 'cfg', randomUUID());
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
     return {
-      sessionId: randomUUID(), worktree, gitCommonDir: path.join(repo, '.git'), configDir, ports: null, env: {},
+      sessionId: randomUUID(), worktree, gitCommonDir: path.join(repo, '.git'), configDir, ports: null, env: {}, secrets: {},
       auth: { mode: 'api-key', apiKey: DUMMY_KEY, baseUrl: mock.url }, instructions: 'HARNESS-INSTRUCTIONS', tools: [],
       ...over,
     };

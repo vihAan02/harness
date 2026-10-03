@@ -9,8 +9,8 @@ export const BASE_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'] as c
 export const PEER_TOOLS = ['SendMessage', 'ListAgents'] as const;
 /** Shared-.git entries the sandbox write-denies, so agents can't touch refs, objects or hooks while `git status` works (D-60, SP-05). */
 export const GIT_DENY_WRITE = ['config', 'hooks', 'refs', 'objects', 'packed-refs', 'info', 'worktrees', 'HEAD', 'index', 'logs'] as const;
-/** The vendor's auth variable reaches the CLI but never the agent's shell (D-64). */
-export const AUTH_ENV_VARS = ['ANTHROPIC_API_KEY'] as const;
+/** Every auth variable the CLI reads reaches the CLI but never the agent's shell, whichever one a session uses (D-64, D-87). */
+export const AUTH_ENV_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
 export const SHIM_SERVER = 'harness';
 
 export const shimToolName = (name: string) => `mcp__${SHIM_SERVER}__${name}`;

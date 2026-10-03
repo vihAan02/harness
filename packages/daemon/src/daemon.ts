@@ -20,13 +20,16 @@ import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resour
 import { runSetup } from './setup.ts';
 import { renderMessage, renderTask, type MessageForAgent, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
+import { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 import { harnessTools } from './tools.ts';
 import { ProjectView, type MessageInfo } from './view.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
-  ports: PortBlock; configDir: string; env: Record<string, string>;
+  ports: PortBlock; configDir: string;
+  env: Record<string, string>; // harness-set: the port block (D-68)
+  secrets: Record<string, string>; // the task's allowlisted secrets (D-52)
 };
 export type AgentRef = { id: string; name: string; vendor: string };
 /** One agent session harnessd is running for a task. */
@@ -51,7 +54,9 @@ export type DaemonOptions = {
   finishGraceMs?: number;
   /** How often a running agent's worktree is diffed for edits the hooks missed (D-70). Default 15 s; also at every turn end. */
   diffIntervalMs?: number;
-  /** The vendor credential. Default: ANTHROPIC_API_KEY from harnessd's environment, passed through untouched (D-48, D-56). */
+  /** The model endpoint and key. Default: resolved from the config and harnessd's environment (D-87); see provider.ts. */
+  provider?: ResolvedProvider;
+  /** Overrides only the endpoint and key (tests point it at a scripted mock); the model settings still come from the config. */
   auth?: Auth;
   adapters?: Record<string, AgentAdapter>;
 };
@@ -264,8 +269,9 @@ export class Daemon {
     if (repo.setup) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
     const ports = await this.ports.allocate(t.taskId, policy.portsPerAgent);
     const configDir = agentConfigDir(this.home, t.agentId);
-    const env = { ...portEnv(ports), ...resolveSecrets(this.home, policy.secretNames) };
-    return { projectId: t.projectId, taskId: t.taskId, worktree, branch, ports, configDir, env };
+    const env = portEnv(ports);
+    const secrets = resolveSecrets(this.home, policy.secretNames);
+    return { projectId: t.projectId, taskId: t.taskId, worktree, branch, ports, configDir, env, secrets };
   }
 
   /** harnessd commits the task's work when it's done (D-50, D-54). Returns the commit, or null if nothing changed. */
@@ -296,7 +302,7 @@ export class Daemon {
     if (this.running.has(ws.taskId)) throw new Error(`task ${ws.taskId} already has a running agent`);
     const adapter = this.adapters[agent.vendor];
     if (!adapter) throw new Error(`no adapter for vendor ${agent.vendor}`);
-    const auth = this.auth();
+    const provider = this.provider();
     const sessionId = randomUUID();
     const record: SessionRecord = {
       sessionId, agentId: agent.id, taskId: ws.taskId, projectId: ws.projectId, worktree: ws.worktree, baseBranch: project.baseBranch,
@@ -305,16 +311,17 @@ export class Daemon {
     this.sessions.save(record);
     await this.report(ws.projectId, 'session.report', {
       session_id: sessionId, status: 'starting', task_id: ws.taskId, worktree: ws.worktree, branch: ws.branch,
+      ...(provider.model ? { model: provider.model.id } : {}), ...(provider.name ? { provider: provider.name } : {}),
     }, agent.id);
     const spec: SessionSpec = {
       sessionId, worktree: ws.worktree, gitCommonDir: await gitCommonDir(project.repo), configDir: ws.configDir,
-      ports: ws.ports, env: ws.env, auth,
+      ports: ws.ports, env: ws.env, secrets: ws.secrets, auth: provider.auth,
       tools: tools ?? harnessTools({
         view: this.view(ws.projectId), agentId: agent.id, taskId: ws.taskId,
         send: async (name, args) => (await this.link!.command(ws.projectId, name, args, agent.id)).result,
       }),
       instructions: sessionInstructions({ agentName: agent.name, taskId: ws.taskId, ports: ws.ports, repo: readRepoInstructions(ws.worktree) }),
-      ...(this.config.agents.model ? { model: this.config.agents.model } : {}),
+      ...(provider.model ? { model: provider.model } : {}),
       ...(this.config.agents.maxBudgetUsd ? { maxBudgetUsd: this.config.agents.maxBudgetUsd } : {}),
       log: this.vendorLog(sessionId),
     };
@@ -340,11 +347,15 @@ export class Daemon {
 
   // ---------- internals ----------
 
-  auth(): Auth {
-    if (this.o.auth) return this.o.auth;
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error('set ANTHROPIC_API_KEY for harnessd: agents run on an API key, never a subscription login (D-56)');
-    return { mode: 'api-key', apiKey };
+  /** The model endpoint, key and model settings agents run on (D-87). Read when each agent starts. */
+  provider(): ResolvedProvider {
+    if (this.o.provider) return this.o.provider;
+    if (this.o.auth) {
+      // An explicit endpoint (a test double, the scripted demo) never follows an ambient HARNESS_PROVIDER.
+      const name = providerName(this.config, {});
+      return { name, auth: this.o.auth, model: providerModel(this.config, name) };
+    }
+    return resolveProvider(this.config, process.env);
   }
 
   /** The vendor CLI's stderr, to a per-session log file (local-runtime §2). */
@@ -429,7 +440,7 @@ export class Daemon {
         const u = run.lastUsage;
         await report({
           status: run.status,
-          ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd } } : {}),
+          ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd, cost_basis: u.costBasis, models: u.models } } : {}),
           tools: { calls: { ...run.tools.calls }, denied: run.tools.denied },
         });
         break;
@@ -438,11 +449,18 @@ export class Daemon {
         // Pause and alert; the vendor CLI does its own bounded retries, harnessd never loops (F-65).
         this.log(`${run.agent.name} (${run.taskId}): ${o.error}: ${o.message}`);
         break;
-      case 'ended':
+      case 'ended': {
         Object.assign(run.record, { pid: null, endedAt: new Date().toISOString(), endReason: o.reason });
         this.sessions.save(run.record);
-        await report({ status: 'ended', reason: o.reason });
+        // The final running totals too: a session stopped mid-turn (budget, kill, hardening) never got its turn-end report (M8).
+        const u = run.lastUsage;
+        await report({
+          status: 'ended', reason: o.reason,
+          ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd, cost_basis: u.costBasis, models: u.models } } : {}),
+          tools: { calls: { ...run.tools.calls }, denied: run.tools.denied },
+        });
         break;
+      }
     }
   }
 

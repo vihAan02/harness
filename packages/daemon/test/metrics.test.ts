@@ -52,7 +52,7 @@ test('metrics while a task is still running, then once every task is finished', 
   assert.deepEqual([m.interventions.total, m.interventions.events.map((e) => e.detail)], [2, ['question to agent/frontend', 'marked T-2 done']]);
   assert.equal(m.deniedToolCalls, 1);
   assert.deepEqual(m.messages, { total: 4, byKind: { question: 2, answer: 1, claim_conflict: 1 }, agentToAgent: 2, humanToAgent: 1, harnessNotices: 1, held: 0 });
-  assert.deepEqual(m.tokens, { input: 500, output: 50, cacheRead: 50, cacheCreation: 5, costUsd: 0.05, sessions: 2 }, 'the latest running total per session, summed');
+  assert.deepEqual(m.tokens, { input: 500, output: 50, cacheRead: 50, cacheCreation: 5, costUsd: 0.05, sessions: 2, models: [], configured: ['vendor default'], costBasis: [] }, 'the latest running total per session, summed');
   assert.equal(m.coordinationTokensEst, 150);
   assert.deepEqual(m.delivery, { count: 2, byPoint: { new_turn: 1, between_tools: 1 }, latencyMs: { median: 2000, max: 3000 }, questionRoundTripsMs: [7000] });
   assert.deepEqual(m.shimCalls, { 'agent/backend': { ask: 1, report_done: 1 }, 'agent/frontend': { answer: 1 } });

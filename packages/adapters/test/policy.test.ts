@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { claudeCapabilities, claudeHooks, compileClaudePermissions, editedPaths, hardeningProblems, PINNED, relativize } from '../src/index.ts';
+import {
+  checkSessionInputs, claudeCapabilities, claudeHooks, compileClaudePermissions, editedPaths, hardeningProblems, isReservedEnvName, PINNED, relativize,
+  sessionCost, sessionEnv, vendorBudget,
+} from '../src/index.ts';
 import type { Observation } from '../src/adapter.ts';
 
 const WT = '/h/worktrees/prj/t1';
@@ -26,7 +29,7 @@ test('compilePermissions: sandbox on, no escape, shared .git and the auth variab
   assert.equal(sb.failIfUnavailable, true);
   assert.equal(sb.allowUnsandboxedCommands, false);
   for (const x of ['refs', 'objects', 'hooks', 'config', 'HEAD', 'index', 'worktrees']) assert.ok(sb.filesystem.denyWrite.includes(`${GIT}/${x}`), x);
-  assert.deepEqual(sb.credentials.envVars, [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' }]);
+  assert.deepEqual(sb.credentials.envVars, [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' }, { name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' }], 'every auth variable, whichever a session uses (D-64, D-87)');
   assert.equal(sb.network, undefined, 'no loopback binding without ports');
   const s = p.settings as Record<string, any>;
   assert.equal(s.bashEditDiffEnabled, true);
@@ -89,6 +92,82 @@ test('hardeningProblems flags anything the session config should have ruled out'
   const bad = { ...good, claude_code_version: '2.1.300', apiKeySource: 'none', permissionMode: 'auto', cwd: '/elsewhere',
     tools: [...good.tools, 'WebFetch'], mcp_servers: [...good.mcp_servers, { name: 'repo-server', status: 'connected' }], plugins: [{}] };
   assert.equal(hardeningProblems(bad, { worktree: WT, tools }).length, 7);
+  // D-87: a configured model must be the one the CLI runs; a bearer-only login reports 'none' and fails (C-21).
+  assert.deepEqual(hardeningProblems({ ...good, model: 'deepseek-flash' }, { worktree: WT, tools, model: { id: 'deepseek-flash' } }), []);
+  assert.match(hardeningProblems({ ...good, model: 'claude-opus-5-5' }, { worktree: WT, tools, model: { id: 'deepseek-flash' } }).join(), /not the configured deepseek-flash/);
+  assert.match(hardeningProblems({ ...good, apiKeySource: 'none' }, { worktree: WT, tools }).join(), /not the API key/);
+});
+
+const KEY = 'k-0123456789';
+const envOf = (over: Partial<Parameters<typeof sessionEnv>[0]> = {}) =>
+  sessionEnv({ env: { PORT: '3100' }, secrets: {}, auth: { mode: 'api-key', apiKey: KEY }, configDir: '/cfg', ...over });
+
+test('session env: the vendor default endpoint gets the key as an API key, and nothing else (D-56)', () => {
+  const env = envOf();
+  assert.equal(env.ANTHROPIC_API_KEY, KEY);
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(env.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined, 'no model configured: the vendor picks its own');
+  assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+  assert.equal(env.PORT, '3100');
+});
+
+test('session env: a bearer provider gets the key in both auth variables, so the auth-source check still holds (D-87, C-21)', () => {
+  const env = envOf({ auth: { mode: 'api-key', apiKey: KEY, scheme: 'bearer', baseUrl: 'https://gw.example/api' } });
+  assert.equal(env.ANTHROPIC_API_KEY, KEY);
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, KEY);
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://gw.example/api');
+});
+
+test('session env: a configured model pins every alias, and maps its limits and request settings (F-25, F-26, F-29)', () => {
+  const env = envOf({ model: { id: 'deepseek-flash', background: 'deepseek-flash', stripExperimental: true, contextTokens: 1_000_000, compactWindowTokens: 200_000, maxOutputTokens: 32_000, extraBody: { provider: { allow_fallbacks: false } } } });
+  for (const k of ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']) assert.equal(env[k], 'deepseek-flash', k);
+  assert.equal(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS, '1');
+  assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '1000000');
+  assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+  assert.equal(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, '32000');
+  assert.deepEqual(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!), { provider: { allow_fallbacks: false } });
+  assert.equal(envOf({ model: { id: 'claude-haiku-4-5' } }).ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined, 'no background model: the vendor keeps its own');
+});
+
+test('session env: harness-set values win over secrets, and secrets may never use a reserved name (D-87, TH-21)', () => {
+  const env = envOf({ secrets: { DATABASE_URL: 'postgres://x' } });
+  assert.equal(env.DATABASE_URL, 'postgres://x');
+  for (const name of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'anthropic_custom_headers', 'CLAUDE_CODE_OAUTH_TOKEN', 'HTTPS_PROXY', 'https_proxy', 'NODE_OPTIONS', 'PORT', 'HARNESS_PORT_BASE', 'PATH', 'DYLD_INSERT_LIBRARIES',
+    // The CLI is a Bun binary: BUN_OPTIONS can preload a file into it, BUN_CONFIG_VERBOSE_FETCH prints the key (F-78).
+    'BUN_OPTIONS', 'BUN_CONFIG_VERBOSE_FETCH', 'BUN_INSPECT', 'SSL_KEYLOG_FILE', 'SSL_CERT_FILE']) {
+    assert.ok(isReservedEnvName(name), name);
+    assert.throws(() => checkSessionInputs({ secrets: { [name]: 'x' }, auth: { mode: 'api-key', apiKey: KEY } }), /may not set/, name);
+  }
+  for (const name of ['DATABASE_URL', 'STRIPE_SECRET_KEY', 'GITHUB_TOKEN']) assert.ok(!isReservedEnvName(name), name);
+});
+
+test('session inputs: model ids and endpoints are checked before the CLI sees them (D-87)', () => {
+  const ok = { secrets: {}, auth: { mode: 'api-key' as const, apiKey: KEY } };
+  for (const id of ['deepseek-flash', 'deepseek-flash[1m]', 'qwen/qwen3.8-27b:free', 'kimi-k2.6', 'claude-haiku-4-5']) checkSessionInputs({ ...ok, model: { id } });
+  for (const id of ['--dangerously-skip-permissions', '-x', 'a b', 'x;y', '']) assert.throws(() => checkSessionInputs({ ...ok, model: { id } }), /malformed/, id);
+  for (const id of ['sonnet', 'opus', 'haiku', 'default', 'opusplan', 'sonnet[1m]']) assert.throws(() => checkSessionInputs({ ...ok, model: { id } }), /alias/, id);
+  // http only to the literal IPv4 loopback, for test doubles; never localhost, which also resolves to [::1] (TH-21).
+  for (const baseUrl of ['https://api.example.com/anthropic', 'http://127.0.0.1:9999']) checkSessionInputs({ ...ok, auth: { ...ok.auth, baseUrl } });
+  for (const baseUrl of ['http://api.example.com', 'http://localhost:1', 'http://[::1]:1', 'https://user:pw@api.example.com', 'https://api.example.com/?k=1', 'ftp://x']) {
+    assert.throws(() => checkSessionInputs({ ...ok, auth: { ...ok.auth, baseUrl } }), /https/, baseUrl);
+  }
+});
+
+test('cost: configured prices win when every model has them; otherwise the vendor figure and its basis (F-27)', () => {
+  const t = { input: 1_000_000, output: 100_000, cacheRead: 0, cacheCreation: 0, vendorCostUsd: 7.5, vendorBasis: 'unknown' as const };
+  assert.deepEqual(sessionCost({ 'deepseek-flash': t }, { 'deepseek-flash': { input: 0.3, output: 1.2 } }), { costUsd: 0.42, costBasis: 'config' });
+  assert.deepEqual(sessionCost({ 'deepseek-flash[1m]': t }, { 'deepseek-flash': { input: 0.3, output: 1.2 } }), { costUsd: 0.42, costBasis: 'config' }, 'a [1m] id uses the bare id\'s prices');
+  assert.deepEqual(sessionCost({ 'deepseek-flash': t }), { costUsd: 7.5, costBasis: 'unknown' });
+  assert.deepEqual(sessionCost({ 'claude-haiku-4-5': { ...t, vendorCostUsd: 1.5, vendorBasis: 'list' } }), { costUsd: 1.5, costBasis: 'list' });
+  // Partly priced: the priced model at configured prices, the rest at the vendor's figure, and the basis says which.
+  assert.deepEqual(sessionCost({ 'deepseek-flash': t, 'other-model': { ...t, vendorCostUsd: 1 } }, { 'deepseek-flash': { input: 0.3, output: 1.2 } }), { costUsd: 1.42, costBasis: 'unknown' });
+  // The CLI's own cap guesses $5/$25 per 1M (cache $0.50/$6.25) for unknown models, so it's scaled up to never trip before the real budget.
+  assert.equal(vendorBudget(2, { id: 'deepseek-flash', prices: { 'deepseek-flash': { input: 0.3, output: 1.2 } } }), 41.67);
+  assert.equal(vendorBudget(1, { id: 'deepseek-flash', prices: { 'deepseek-flash': { input: 0.3, output: 1.2, cacheRead: 0.006 } } }), 83.34, 'cheap cache reads scale it further');
+  assert.equal(vendorBudget(2, { id: 'free:model', prices: { 'free:model': { input: 0, output: 0 } } }), 1000, 'a free model: the CLI cap is moved out of the way');
+  assert.ok(vendorBudget(0.004, { id: 'x', prices: { x: { input: 5, output: 25 } } }) >= 0.01, 'never rounded down to a $0 cap');
+  assert.equal(vendorBudget(2, { id: 'claude-haiku-4-5' }), 2);
 });
 
 test('capabilities exist only for the verified version (D-49)', () => {

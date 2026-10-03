@@ -8,6 +8,10 @@ const STATUSES = ['starting', 'working', 'idle', 'waiting', 'suspended', 'errore
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const USAGE_KEYS = ['input', 'output', 'cache_read', 'cache_creation', 'cost_usd'] as const;
+const COST_BASES = ['config', 'list', 'unknown'];
+/** The same shape harnessd accepts in its config (D-87): never a leading `-`. */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/[\]-]{0,199}$/;
+const PROVIDER = /^[A-Za-z0-9_-]{1,40}$/;
 
 const short = (v: unknown, name: string, max: number): string | undefined => {
   if (v === undefined) return undefined;
@@ -22,7 +26,7 @@ export function requireAgentOnDevice(ctx: HandlerContext): { agentId: string; de
   return { agentId: ctx.actor.principal, deviceId: ctx.caller.deviceId };
 }
 
-/** `session.report { session_id, status, task_id?, worktree?, branch?, vendor_session_id?, vendor_version?, usage?, reason? }` */
+/** `session.report { session_id, status, task_id?, worktree?, branch?, model?, provider?, vendor_session_id?, vendor_version?, usage?, reason? }` */
 export async function reportSession(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const { agentId, deviceId } = requireAgentOnDevice(ctx);
   const sessionId = args.session_id;
@@ -32,6 +36,10 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
   const vendorSessionId = short(args.vendor_session_id, 'vendor_session_id', 200);
   const vendorVersion = short(args.vendor_version, 'vendor_version', 100);
   const reason = short(args.reason, 'reason', 300);
+  const model = args.model === undefined ? undefined : short(args.model, 'model', 200);
+  if (model !== undefined && !MODEL_ID.test(model)) throw new CommandError('bad_request', 'model is malformed');
+  const provider = args.provider === undefined ? undefined : short(args.provider, 'provider', 40);
+  if (provider !== undefined && !PROVIDER.test(provider)) throw new CommandError('bad_request', 'provider is malformed');
   let tools: { tool_calls: Record<string, number>; denied_calls: number } | undefined;
   if (args.tools !== undefined) {
     const t = args.tools as { calls?: unknown; denied?: unknown };
@@ -42,13 +50,22 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
     if (!ok) throw new CommandError('bad_request', 'tools must be { calls: { <tool>: count }, denied: count }');
     tools = { tool_calls: calls as Record<string, number>, denied_calls: t.denied as number };
   }
-  let usage: Record<string, number> | undefined;
+  let usage: Record<string, unknown> | undefined;
   if (args.usage !== undefined) {
     const u = args.usage as Record<string, unknown>;
     if (typeof u !== 'object' || u === null || !USAGE_KEYS.every((k) => typeof u[k] === 'number' && Number.isFinite(u[k]) && (u[k] as number) >= 0)) {
       throw new CommandError('bad_request', `usage needs ${USAGE_KEYS.join(', ')} as non-negative numbers`);
     }
     usage = Object.fromEntries(USAGE_KEYS.map((k) => [k, u[k] as number]));
+    // Which models the tokens went to, and where the cost figure came from (D-87; metric M8).
+    if (u.cost_basis !== undefined) {
+      if (typeof u.cost_basis !== 'string' || !COST_BASES.includes(u.cost_basis)) throw new CommandError('bad_request', `usage.cost_basis must be one of ${COST_BASES.join(', ')}`);
+      usage.cost_basis = u.cost_basis;
+    }
+    if (u.models !== undefined) {
+      if (!Array.isArray(u.models) || u.models.length > 10 || !u.models.every((m) => typeof m === 'string' && MODEL_ID.test(m))) throw new CommandError('bad_request', 'usage.models must be up to 10 model ids');
+      usage.models = u.models;
+    }
   }
 
   const events: HandlerOutput['events'] = [];
@@ -68,10 +85,13 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
     if (task.assignee_agent_id && task.assignee_agent_id !== agentId) throw new CommandError('forbidden', `${taskId} is assigned to another agent`);
     if (status === 'ended') throw new CommandError('bad_request', 'a session cannot start ended');
     await ctx.tx.query(
-      `INSERT INTO agent_sessions (id, agent_id, device_id, task_id, worktree_path, branch, vendor_session_id, vendor_version, status, last_heartbeat_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
-      [sessionId, agentId, deviceId, taskId, worktree, branch, vendorSessionId ?? null, vendorVersion ?? null, status]);
-    events.push({ kind: 'session.started', data: { session_id: sessionId, agent_id: agentId, task_id: taskId, device_id: deviceId, worktree, branch, status } });
+      `INSERT INTO agent_sessions (id, agent_id, device_id, task_id, worktree_path, branch, vendor_session_id, vendor_version, status, model, provider, last_heartbeat_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())`,
+      [sessionId, agentId, deviceId, taskId, worktree, branch, vendorSessionId ?? null, vendorVersion ?? null, status, model ?? null, provider ?? null]);
+    events.push({ kind: 'session.started', data: {
+      session_id: sessionId, agent_id: agentId, task_id: taskId, device_id: deviceId, worktree, branch, status,
+      ...(model ? { model } : {}), ...(provider ? { provider } : {}),
+    } });
   } else {
     if (row.agent_id !== agentId || row.device_id !== deviceId) throw new CommandError('forbidden', 'that session belongs to another agent or device');
     if (row.status === 'ended') throw new CommandError('conflict', `session ${sessionId} has ended`);

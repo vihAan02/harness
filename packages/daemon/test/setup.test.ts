@@ -79,7 +79,7 @@ test('the environment carries no secrets or harness credentials', async () => {
   const r = await run('env');
   delete process.env.HARNESS_LOCAL_TOKEN_PROBE;
   assert.equal(r.exitCode, 0, r.out);
-  assert.ok(!/HARNESS_LOCAL_TOKEN|ANTHROPIC_API_KEY|should-not-pass/.test(r.out), r.out);
+  assert.ok(!/HARNESS_LOCAL_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|should-not-pass/.test(r.out), r.out);
 });
 
 test('network is closed unless the local allowlist names the domain', async () => {

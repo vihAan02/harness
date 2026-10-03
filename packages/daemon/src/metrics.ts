@@ -22,8 +22,15 @@ export type RunMetrics = {
   deniedToolCalls: number;
   /** M7: messages by kind and by who talked to whom. */
   messages: { total: number; byKind: Record<string, number>; agentToAgent: number; humanToAgent: number; harnessNotices: number; held: number };
-  /** M8: the vendors' running totals, summed over every session. */
-  tokens: { input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; sessions: number };
+  /**
+   * M8: the vendors' running totals, summed over every session. `models` are the models the tokens went to;
+   * `configured` the models sessions were started with (D-87: an A/B run holds one, so more than one is a
+   * warning); `costBasis` where the cost figures came from (configured prices, list prices, or a guess).
+   */
+  tokens: {
+    input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; sessions: number;
+    models: string[]; configured: string[]; costBasis: string[];
+  };
   /** Estimated tokens of everything the harness injected (characters ÷ 4; Q-05: measured, not budgeted). */
   coordinationTokensEst: number;
   /** 0A loop latency: where messages landed and how long they took (D-26). */
@@ -100,7 +107,10 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     else messages.agentToAgent++;
   }
 
-  const tokens: RunMetrics['tokens'] = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0, sessions: view.usage.size };
+  const tokens: RunMetrics['tokens'] = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0, sessions: view.usage.size, models: [], configured: [], costBasis: [] };
+  const models = new Set<string>();
+  const bases = new Set<string>();
+  const configured = new Set([...view.sessions.values()].map((s) => s.model ? `${s.model}${s.provider ? ` (${s.provider})` : ''}` : 'vendor default'));
   let denied = 0;
   const shimCalls: RunMetrics['shimCalls'] = {};
   for (const [sessionId, u] of view.usage) {
@@ -109,6 +119,8 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     tokens.cacheRead += u.cacheRead;
     tokens.cacheCreation += u.cacheCreation;
     tokens.costUsd += u.costUsd;
+    for (const m of u.models) models.add(m);
+    if (u.costBasis) bases.add(u.costBasis);
     denied += u.deniedCalls;
     const agent = view.agentName(view.sessions.get(sessionId)?.agentId ?? null);
     for (const [tool, n] of Object.entries(u.toolCalls)) {
@@ -118,6 +130,9 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     }
   }
   tokens.costUsd = Math.round(tokens.costUsd * 1e6) / 1e6;
+  tokens.models = [...models].sort();
+  tokens.configured = view.sessions.size ? [...configured].sort() : [];
+  tokens.costBasis = [...bases].sort();
 
   const delivered = [...view.messages.values()].filter((m) => m.deliveredAt);
   const byPoint: Record<string, number> = {};
@@ -166,7 +181,9 @@ export function renderMetrics(m: RunMetrics): string {
   lines.push(`M5  human interventions: ${m.interventions.total}${m.interventions.events.length ? ` (${m.interventions.events.map((e) => e.detail).join('; ')})` : ''}`);
   lines.push(`M5b denied tool calls: ${m.deniedToolCalls}`);
   lines.push(`M7  messages: ${m.messages.total} (${Object.entries(m.messages.byKind).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}); agent↔agent ${m.messages.agentToAgent}, human↔agent ${m.messages.humanToAgent}, harness notices ${m.messages.harnessNotices}, held ${m.messages.held}`);
-  lines.push(`M8  tokens: input ${m.tokens.input}, output ${m.tokens.output}, cache read ${m.tokens.cacheRead}, cache write ${m.tokens.cacheCreation}; est. cost $${m.tokens.costUsd.toFixed(4)} over ${m.tokens.sessions} session(s)`);
+  lines.push(`M8  tokens: input ${m.tokens.input}, output ${m.tokens.output}, cache read ${m.tokens.cacheRead}, cache write ${m.tokens.cacheCreation}; est. cost $${m.tokens.costUsd.toFixed(4)} over ${m.tokens.sessions} session(s)${m.tokens.costBasis.length ? ` (${m.tokens.costBasis.join(' + ')} prices)` : ''}`);
+  lines.push(`    models: ${m.tokens.models.join(', ') || '—'}; configured: ${m.tokens.configured.join(', ') || '—'}`);
+  if (m.tokens.configured.length > 1) lines.push('    ⚠ sessions were configured with different models: an A/B run must hold one model and configuration (D-87)');
   lines.push(`    coordination tokens (est.): ${m.coordinationTokensEst}`);
   lines.push(`    deliveries: ${m.delivery.count} (${Object.entries(m.delivery.byPoint).map(([k, n]) => `${k} ${n}`).join(', ') || 'none'}); latency median ${secs(m.delivery.latencyMs.median)}, max ${secs(m.delivery.latencyMs.max)}`);
   if (m.delivery.questionRoundTripsMs.length) lines.push(`    question → answer round trips: ${m.delivery.questionRoundTripsMs.map((x) => secs(x)).join(', ')}`);

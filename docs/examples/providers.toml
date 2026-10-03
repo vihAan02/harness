@@ -1,0 +1,64 @@
+# Example model providers for harnessd (D-87). Copy the ones you use into ~/.harness/config.toml.
+#
+# - Nothing here is a secret: `key_env` names the variable in harnessd's environment that holds the
+#   key. Export it in the shell that runs harnessd; never put a key in this file or in the repo.
+# - Pick one with `[agents] provider = "<name>"` in config.toml, or `HARNESS_PROVIDER=<name>`.
+# - The demos read this file: `npm run demo -- --real --provider deepseek`.
+# - Prices are USD per million tokens, used for metric M8 and the session budget. Checked 2026-10-03
+#   (F-73, F-75, F-76, F-77); they change, so re-check them.
+# - An A/B run uses one provider and model for both arms, never a router that picks models (D-87).
+
+# DeepSeek V4.1-Flash: the cheap default for development and benchmarks (F-72, F-73). Prepaid: top up
+# at https://platform.deepseek.com/top_up. Key: https://platform.deepseek.com/api_keys
+# Caution: DeepSeek maps any unknown model name to deepseek-flash, silently.
+[providers.deepseek]
+base_url = "https://api.deepseek.com/anthropic"
+auth = "x-api-key"
+key_env = "DEEPSEEK_API_KEY"
+model = "deepseek-flash"
+max_context_tokens = 1000000
+auto_compact_window = 200000
+max_output_tokens = 32000
+
+[providers.deepseek.prices."deepseek-flash"]  # peak rates; off-peak is half (F-73)
+input = 0.30
+output = 1.20
+cache_read = 0.006
+cache_write = 0.30
+
+# OpenRouter, pinned to one free model with tool calls, for $0 smoke tests only (F-74, F-75). OpenRouter
+# says non-Anthropic models aren't supported in Claude Code, and the free tier allows 50 requests a day
+# under $10 of credits. Key: https://openrouter.ai/settings/keys
+[providers.openrouter-free]
+base_url = "https://openrouter.ai/api"
+auth = "bearer"
+key_env = "OPENROUTER_API_KEY"
+model = "qwen/qwen3.8-27b:free"
+max_context_tokens = 262144
+max_output_tokens = 16000
+extra_body = { provider = { allow_fallbacks = false } }
+
+[providers.openrouter-free.prices."qwen/qwen3.8-27b:free"]
+input = 0
+output = 0
+
+# Kimi K2.6 (Moonshot), if you want a third option (F-76). Needs about $10 of top-up for a usable
+# rate limit. Key: https://platform.kimi.ai/console/api-keys
+[providers.kimi]
+base_url = "https://api.moonshot.ai/anthropic"
+auth = "bearer"
+key_env = "MOONSHOT_API_KEY"
+model = "kimi-k2.6"
+max_context_tokens = 262144
+max_output_tokens = 32000
+
+[providers.kimi.prices."kimi-k2.6"]
+input = 0.95
+output = 4.00
+cache_read = 0.16
+
+# Anthropic Haiku 4.5, the later comparison and baseline (F-77). No base_url: the vendor's own endpoint,
+# which prices its own models. Key: https://console.anthropic.com/settings/keys
+[providers.haiku]
+key_env = "ANTHROPIC_API_KEY"
+model = "claude-haiku-4-5"

@@ -9,9 +9,13 @@ export type TaskInfo = {
   assignee: string | null; status: string; summary?: string;
   createdAt: string; assignedAt?: string; completedAt?: string;
 };
-export type SessionInfo = { id: string; agentId: string; taskId: string; deviceId: string; worktree: string; status: string; startedAt: string; endedAt?: string; endReason?: string };
+export type SessionInfo = {
+  id: string; agentId: string; taskId: string; deviceId: string; worktree: string; status: string; startedAt: string; endedAt?: string; endReason?: string;
+  model?: string; provider?: string; // as configured (D-87); unset: the vendor's default
+};
 export type UsageInfo = {
   input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number;
+  costBasis?: string; models: string[]; // where the cost came from, and the models the tokens went to (D-87)
   toolCalls: Record<string, number>; deniedCalls: number;
 };
 export type MessageInfo = {
@@ -76,7 +80,7 @@ export class ProjectView {
       case 'session.started':
         this.sessions.set(s('session_id'), {
           id: s('session_id'), agentId: s('agent_id'), taskId: s('task_id'), deviceId: s('device_id'), worktree: s('worktree'),
-          status: s('status') || 'starting', startedAt: e.at,
+          status: s('status') || 'starting', startedAt: e.at, ...(d.model ? { model: s('model') } : {}), ...(d.provider ? { provider: s('provider') } : {}),
         });
         break;
       case 'session.status': {
@@ -94,6 +98,8 @@ export class ProjectView {
         this.usage.set(s('session_id'), {
           input: Number(d.input ?? prev?.input ?? 0), output: Number(d.output ?? prev?.output ?? 0), cacheRead: Number(d.cache_read ?? prev?.cacheRead ?? 0),
           cacheCreation: Number(d.cache_creation ?? prev?.cacheCreation ?? 0), costUsd: Number(d.cost_usd ?? prev?.costUsd ?? 0),
+          ...((d.cost_basis ?? prev?.costBasis) ? { costBasis: String(d.cost_basis ?? prev?.costBasis) } : {}),
+          models: d.models !== undefined ? asStrings(d.models) : prev?.models ?? [],
           toolCalls: (d.tool_calls as Record<string, number> | undefined) ?? prev?.toolCalls ?? {},
           deniedCalls: Number(d.denied_calls ?? prev?.deniedCalls ?? 0),
         });

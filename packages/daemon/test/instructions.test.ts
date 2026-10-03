@@ -40,8 +40,8 @@ test('the task arrives in an owner envelope (protocol.md §8)', () => {
 
 test('config: agent model and budget are optional and validated', () => {
   const base = { device_id: 'dev_a', principal: 'human_a' };
-  assert.deepEqual(parseConfig(base, TOKEN).agents, { model: null, maxBudgetUsd: null });
-  assert.deepEqual(parseConfig({ ...base, agents: { model: 'claude-sonnet-5-5', max_budget_usd: 5 } }, TOKEN).agents, { model: 'claude-sonnet-5-5', maxBudgetUsd: 5 });
+  assert.deepEqual(parseConfig(base, TOKEN).agents, { provider: null, model: null, maxBudgetUsd: null });
+  assert.deepEqual(parseConfig({ ...base, agents: { model: 'claude-sonnet-5-5', max_budget_usd: 5 } }, TOKEN).agents, { provider: null, model: 'claude-sonnet-5-5', maxBudgetUsd: 5 });
   assert.throws(() => parseConfig({ ...base, agents: { model: 'bad model; rm -rf' } }, TOKEN), /agents.model/);
   assert.throws(() => parseConfig({ ...base, agents: { max_budget_usd: -1 } }, TOKEN), /max_budget_usd/);
 });

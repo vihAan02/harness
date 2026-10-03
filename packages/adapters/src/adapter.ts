@@ -19,8 +19,32 @@ export type Capabilities = {
   authModes: Array<'api-key' | 'subscription' | 'cloud-provider'>;
 };
 
-/** API keys only in Phase 0 (D-56). `baseUrl` points the vendor at a test double; real runs leave it unset. */
-export type Auth = { mode: 'api-key'; apiKey: string; baseUrl?: string };
+/**
+ * An API key or provider token from a pay-as-you-go account, never a subscription login (D-56, D-87).
+ * `baseUrl` points the vendor at another endpoint that speaks its API: a configured provider, or a test
+ * double. `scheme` is how that endpoint wants the key: `x-api-key` (the default) or a bearer token.
+ */
+export type Auth = { mode: 'api-key'; apiKey: string; scheme?: 'x-api-key' | 'bearer'; baseUrl?: string };
+
+/** USD per million tokens, from the local config (D-87). Used when the vendor can't price a model itself. */
+export type Prices = { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+
+/**
+ * The model a session runs on, and what the vendor needs to know about it (D-87). Vendor-neutral: each
+ * adapter maps these onto its own settings. `background` is the model for the vendor's own auxiliary
+ * calls (summaries, titles); `stripExperimental` drops request fields that only the vendor's first-party
+ * API accepts; `extraBody` is merged into every request (for example, to pin a router's provider).
+ */
+export type ModelConfig = {
+  id: string;
+  background?: string;
+  contextTokens?: number;
+  compactWindowTokens?: number;
+  maxOutputTokens?: number;
+  stripExperimental?: boolean;
+  extraBody?: Record<string, unknown>;
+  prices?: Record<string, Prices>;
+};
 
 /** A parameter of a harness tool. Kept tiny on purpose: the shim's tools take short strings (protocol.md §6). */
 export type ToolParam = { type: 'string' | 'string[]'; description: string; optional?: boolean; maxLength?: number };
@@ -40,12 +64,13 @@ export type SessionSpec = {
   gitCommonDir: string; // the repo's shared .git: write-denied (D-50, D-60)
   configDir: string; // the agent's own vendor config dir (D-65); part of the resume key
   ports: { base: number; count: number } | null; // D-38, D-68
-  env: Record<string, string>; // the ports and allowlisted secrets, already resolved by harnessd (D-36, D-52)
+  env: Record<string, string>; // harness-set variables, such as the port block (D-38, D-68)
+  secrets: Record<string, string>; // the task's allowlisted secrets, resolved by harnessd; never a reserved name (D-36, D-52, D-87)
   auth: Auth;
   instructions: string; // standing instructions + repo instruction files, for the system prompt (D-25, D-45)
   tools: HarnessTool[];
-  model?: string;
-  maxBudgetUsd?: number;
+  model?: ModelConfig; // unset: the vendor's default model
+  maxBudgetUsd?: number; // per session, against the cost the adapter reports (configured prices where given)
   log?: (line: string) => void; // vendor stderr; never contains our options' secrets (none are passed as options)
 };
 
@@ -62,7 +87,9 @@ export type Landed = 'between_tools' | 'new_turn' | 'stop_hook';
 export type DeliveryReceipt = { messageId: string; landed: Landed; deliveredAt: number };
 
 export type ToolCategory = 'read' | 'search' | 'edit' | 'write' | 'shell' | 'mcp' | 'other';
-export type ErrorKind = 'rate_limit' | 'billing' | 'auth' | 'sandbox' | 'hardening' | 'other';
+export type ErrorKind = 'rate_limit' | 'billing' | 'auth' | 'sandbox' | 'hardening' | 'budget' | 'other';
+/** Where a usage report's cost came from: configured prices, the vendor's list prices, or the vendor's guess for a model it doesn't know. */
+export type CostBasis = 'config' | 'list' | 'unknown';
 
 /** The normalized stream every adapter produces (agent-adapters.md §3). Paths are relative to the worktree. */
 export type Observation =
@@ -73,7 +100,7 @@ export type Observation =
   | { kind: 'turn.ended'; reason: string; isError: boolean; denied: number } // denied: tool calls the permission rules refused this turn
   | { kind: 'tool.called'; tool: string; category: ToolCategory; paths?: string[]; command?: string }
   | { kind: 'edit.observed'; paths: string[]; outside: string[] }
-  | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; cumulative: true }
+  | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; costBasis: CostBasis; models: string[]; cumulative: true }
   | { kind: 'error'; error: ErrorKind; message: string }
   | { kind: 'delivery'; messageId: string; landed: Landed; deliveredAt: number }
   | { kind: 'ended'; reason: string };

@@ -17,8 +17,13 @@
 // assistant messages after it, and plays that step. When steps run out it ends
 // the turn with "done".
 //
-// Never logs credential values: only whether x-api-key matched the dummy and
-// whether any Authorization header was present.
+// Never logs credential values: only whether x-api-key and a bearer token matched the dummy.
+//
+// Provider modes (D-87), so tests can check what the CLI sends to a third-party endpoint:
+//   basePath  serve only under this prefix (e.g. /anthropic), like DeepSeek's or Kimi's endpoints
+//   auth      require the key as x-api-key, as a bearer token, or both (401 otherwise)
+//   strict    reject request fields only Anthropic's own API accepts (F-26), as strict providers do
+//   models    reject any other model id
 import http from 'node:http';
 import fs from 'node:fs';
 
@@ -29,10 +34,23 @@ type Msg = { role: 'user' | 'assistant'; content: string | Block[] };
 export type Step = { tools?: { name: string; input: any }[]; text?: string };
 
 export type MockLogEntry = {
-  i: number; t: number; path: string; kind: 'main' | 'side' | 'other';
-  authOk: boolean; bearerPresent: boolean; model?: string;
+  i: number; t: number; method: string; path: string; kind: 'main' | 'side' | 'other';
+  authOk: boolean; bearerPresent: boolean; bearerOk: boolean; model?: string;
+  beta?: string; bodyKeys: string[]; toolExtraKeys: string[]; rejected?: string;
   summary?: any; stepIndex?: number; emitted?: any;
 };
+export type MockOptions = {
+  rawDir?: string; name?: string;
+  basePath?: string; auth?: 'x-api-key' | 'bearer' | 'both'; strict?: boolean; models?: string[];
+};
+
+/** What a strict provider rejects (F-26): fields only Anthropic's first-party API takes. */
+function strictViolation(body: any): string | null {
+  for (const k of ['context_management', 'task_budget', 'container', 'mcp_servers']) if (k in body) return k;
+  if (body.output_config && typeof body.output_config === 'object' && 'format' in body.output_config) return 'output_config.format';
+  for (const t of body.tools ?? []) for (const k of ['strict', 'defer_loading', 'eager_input_streaming']) if (k in t) return `tools[].${k}`;
+  return null;
+}
 
 function textBlocks(m: Msg): string[] {
   if (typeof m.content === 'string') return [m.content];
@@ -104,7 +122,7 @@ export type Mock = {
   failPlan?: { status: number; body: any; headers?: Record<string, string> }[];
 };
 
-export async function startMock(opts: { rawDir?: string; name?: string } = {}): Promise<Mock> {
+export async function startMock(opts: MockOptions = {}): Promise<Mock> {
   const log: MockLogEntry[] = [];
   let counter = 0;
   let toolCounter = 0;
@@ -118,11 +136,29 @@ export async function startMock(opts: { rawDir?: string; name?: string } = {}): 
       const i = counter++;
       const authOk = req.headers['x-api-key'] === DUMMY_KEY;
       const bearerPresent = !!req.headers['authorization'];
-      const path = req.url || '';
+      const bearerOk = req.headers['authorization'] === `Bearer ${DUMMY_KEY}`;
+      let path = req.url || '';
       let body: any = {};
       try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; } catch { body = {}; }
-      const entry: MockLogEntry = { i, t: Date.now(), path, kind: 'other', authOk, bearerPresent, model: body.model };
+      const toolExtraKeys = [...new Set<string>((body.tools ?? []).flatMap((t: any) => Object.keys(t).filter((k) => !['name', 'description', 'input_schema', 'cache_control', 'type'].includes(k))))].sort();
+      const entry: MockLogEntry = {
+        i, t: Date.now(), method: req.method ?? '', path, kind: 'other', authOk, bearerPresent, bearerOk, model: body.model,
+        ...(req.headers['anthropic-beta'] ? { beta: String(req.headers['anthropic-beta']) } : {}), bodyKeys: Object.keys(body).sort(), toolExtraKeys,
+      };
       log.push(entry);
+      const reject = (status: number, type: string, message: string) => {
+        entry.rejected = message;
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type, message } }));
+      };
+      if (opts.basePath) {
+        if (!path.startsWith(`${opts.basePath}/`)) return reject(404, 'not_found_error', `no route ${path}`);
+        path = path.slice(opts.basePath.length);
+      }
+      if (path.startsWith('/v1/messages') && opts.auth) {
+        const ok = opts.auth === 'x-api-key' ? authOk : opts.auth === 'bearer' ? bearerOk : authOk && bearerOk;
+        if (!ok) return reject(401, 'authentication_error', `this endpoint needs the key as ${opts.auth}`);
+      }
 
       if (path.startsWith('/v1/messages/count_tokens')) {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -138,6 +174,11 @@ export async function startMock(opts: { rawDir?: string; name?: string } = {}): 
       const tools: any[] = body.tools || [];
       const isMain = tools.some((t) => ['Bash', 'Read', 'Edit', 'Write'].includes(t.name));
       entry.kind = isMain ? 'main' : 'side';
+      if (opts.strict) {
+        const bad = strictViolation(body);
+        if (bad) return reject(400, 'invalid_request_error', `Extra inputs are not permitted: ${bad}`);
+      }
+      if (opts.models && !opts.models.includes(body.model)) return reject(404, 'not_found_error', `model ${body.model} not found`);
       const messages: Msg[] = body.messages || [];
       if (opts.rawDir) fs.writeFileSync(`${opts.rawDir}/${String(i).padStart(4, '0')}-${entry.kind}.json`, JSON.stringify(body, null, 1));
 

@@ -4,7 +4,8 @@ export { Daemon, type AgentRef, type DaemonOptions, type RunningAgent, type Task
 export { renderTask, type TaskForAgent } from './envelope.ts';
 export { sessionInstructions, STANDING_INSTRUCTION } from './instructions.ts';
 export { harnessHome, type Home } from './home.ts';
-export { loadConfig, parseConfig, type LocalConfig } from './config.ts';
+export { loadConfig, parseConfig, parseProvider, type LocalConfig, type ProviderConfig } from './config.ts';
+export { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 export { Approvals, setupHash, type ApprovalRequest } from './approvals.ts';
 export { ServerLink, CommandFailed } from './link.ts';
 export { Sessions, killOrphans, processStart, type SessionRecord } from './supervision.ts';
