@@ -21,6 +21,8 @@ let t: ReturnType<typeof tempDir>;
 let project: string;
 let watcher: TestClient;
 const errors: unknown[] = [];
+/** Daemons this file starts: stopped in after(), so a failed assertion fails the test instead of leaving it running. */
+const daemons: Daemon[] = [];
 
 before(async () => {
   db = await freshSchema();
@@ -36,6 +38,7 @@ before(async () => {
   await watcher.next('welcome');
 });
 after(async () => {
+  await Promise.all(daemons.map((d) => d.stop().catch(() => {})));
   watcher?.close();
   await server?.close();
   await db?.drop();
@@ -44,6 +47,8 @@ after(async () => {
 });
 
 const kinds = (es: EventMessage[]) => es.map((e) => e.kind);
+/** The next event about work, skipping presence: under load a late heartbeat can flap device.online/offline in between. */
+const nextWork = () => watcher.next('event', (e: EventMessage) => !e.kind.startsWith('device.'));
 
 test('harnessd prepares, sets up, commits and tears down task workspaces, reporting each step', async () => {
   const { repo, sha } = makeRepo(t.dir, {
@@ -59,19 +64,20 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   }, TOKEN);
   const seen: EventMessage[] = [];
   const daemon = new Daemon({ home, config, heartbeatMs: 200, approvalPollMs: 50, onEvent: (e) => seen.push(e) });
+  daemons.push(daemon);
   await daemon.start();
   await daemon.ready();
   assert.equal((await watcher.next('event')).kind, 'device.online');
 
   // t1: the setup command is new, so it waits for the human, who approves it with the real CLI.
   const preparing = daemon.prepareTask({ projectId: project, taskId: 't1', baseSha: sha, agentId: 'agent_one' });
-  assert.deepEqual([(await watcher.next('event')).kind, (await watcher.next('event')).kind], ['worktree.created', 'setup.approval_requested']);
+  assert.deepEqual([(await nextWork()).kind, (await nextWork()).kind], ['worktree.created', 'setup.approval_requested']);
   const [request] = new Approvals(home).pending();
   assert.equal(request!.command, 'echo installed > .setup-done');
   const cli = execFileSync(process.execPath, ['packages/cli/src/main.ts', 'approve', request!.id, '--yes'], { env: { ...process.env, HARNESS_HOME: home.root }, encoding: 'utf8' });
   assert.match(cli, /Approved/);
   const ws1 = await preparing;
-  assert.deepEqual([(await watcher.next('event')).kind, (await watcher.next('event')).kind], ['setup.approved', 'setup.ran']);
+  assert.deepEqual([(await nextWork()).kind, (await nextWork()).kind], ['setup.approved', 'setup.ran']);
   assert.equal(fs.readFileSync(path.join(ws1.worktree, '.setup-done'), 'utf8'), 'installed\n', 'setup ran in the worktree');
   assert.equal(ws1.branch, 'harness/task/t1');
   assert.deepEqual(ws1.ports, { base: 31200, count: 5 }, 'the repo lowered ports per agent from 10 to 5');
@@ -80,7 +86,7 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
 
   // t2: same command and manifests, already approved, so no prompt.
   const ws2 = await daemon.prepareTask({ projectId: project, taskId: 't2', baseSha: sha, agentId: 'agent_two' });
-  assert.deepEqual([(await watcher.next('event')).kind, (await watcher.next('event')).kind], ['worktree.created', 'setup.ran']);
+  assert.deepEqual([(await nextWork()).kind, (await nextWork()).kind], ['worktree.created', 'setup.ran']);
   assert.notEqual(ws2.ports.base, ws1.ports.base);
 
   // t3: two tasks are active, which is the 0A limit (D-38). Refused before any worktree exists.
@@ -94,7 +100,7 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   const commit = await daemon.finishTask({ projectId: project, taskId: 't1', agent: { id: 'agent_one', name: 'agent/one' }, summary: 'Finish t1' });
   assert.equal(gitIn(repo, 'log', '-1', '--format=%an|%s', commit!), 'agent/one|Finish t1');
   assert.deepEqual(await daemon.teardownTask({ projectId: project, taskId: 't1' }), { branchDeleted: false });
-  assert.equal((await watcher.next('event')).kind, 'worktree.removed');
+  assert.equal((await nextWork()).kind, 'worktree.removed');
   assert.equal(fs.existsSync(ws1.worktree), false);
   assert.deepEqual(Object.keys(daemon.ports.list()), ['t2']);
 
@@ -108,6 +114,7 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   assert.ok(kinds(seen).includes('setup.ran'));
   const again: EventMessage[] = [];
   const restarted = new Daemon({ home, config, heartbeatMs: 200, onEvent: (e) => again.push(e) });
+  daemons.push(restarted);
   await restarted.start();
   await restarted.ready();
   assert.equal((await watcher.next('event', (e) => e.kind === 'device.online')).actor.device_id, 'dev_test');
