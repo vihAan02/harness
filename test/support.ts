@@ -2,7 +2,11 @@
 // real harnessd, the real pinned Claude Code CLI behind ClaudeAdapter, and the scripted mock standing in
 // for the model (so no API key is needed, D-56). The daemon and server packages may not import each
 // other, so this lives outside both.
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { Daemon, type DaemonOptions, type RunningAgent } from '../packages/daemon/src/daemon.ts';
 import { parseConfig } from '../packages/daemon/src/config.ts';
 import { makeRepo, tempDir, tempHome, TOKEN } from '../packages/daemon/test/fixtures.ts';
@@ -45,9 +49,16 @@ export async function startStack(p: { files: Record<string, string>; portRange?:
   };
 
   const home: Home = tempHome(t.dir);
+  const range = p.portRange ?? [31400, 31499];
+  // The same config on disk, for the CLI (it reads HARNESS_HOME like harnessd does).
+  fs.writeFileSync(home.config, [
+    'device_id = "dev_test"', 'principal = "human_test"', `server_url = "${server.url}"`,
+    '[limits]', `port_range = [${range[0]}, ${range[1]}]`,
+    '[[projects]]', `id = "${project}"`, `repo = "${repo}"`, '',
+  ].join('\n'));
   const config = parseConfig({
     device_id: 'dev_test', principal: 'human_test', server_url: server.url,
-    limits: { port_range: p.portRange ?? [31400, 31499] }, projects: [{ id: project, repo }],
+    limits: { port_range: range }, projects: [{ id: project, repo }],
   }, TOKEN);
   const observed: { run: RunningAgent; o: Observation; t: number }[] = [];
   const acted: EventMessage[] = [];
@@ -81,6 +92,26 @@ export async function startStack(p: { files: Record<string, string>; portRange?:
       m.blocks.filter((b) => b.type === 'tool_result').map((b) => b.text ?? ''));
   };
 
+  /** The id the next task.create will get (task ids come from one sequence, D-78), so scripts can name its worktree. */
+  const nextTaskId = async () => {
+    const r = (await db.pool.query<{ last_value: string; is_called: boolean }>('SELECT last_value, is_called FROM task_numbers')).rows[0]!;
+    return `T-${r.is_called ? Number(r.last_value) + 1 : Number(r.last_value)}`;
+  };
+  const worktreeOf = (taskId: string) => daemon.worktreeOf(project, taskId);
+  /** Waits for the nth turn end of the agent working on `taskId`. */
+  const turnEnds = (taskId: string, n = 1, ms = 30_000) =>
+    until(() => observed.filter((x) => x.run.taskId === taskId && x.o.kind === 'turn.ended').length >= n, ms, `${n} turn end(s) on ${taskId}`);
+  /** Creates a task assigned to `agent`; harnessd starts the agent with `text` as its task (D-81). */
+  const assignTask = async (agent: string, title: string, scope: string[], text: string) =>
+    (await command('task.create', { title, text, scope, assignee_agent_id: agent })).task_id!;
+
+  /** Runs the real `harness` CLI against this stack. */
+  const cli = async (...args: string[]) => {
+    const main = path.resolve(import.meta.dirname, '../packages/cli/src/main.ts');
+    const { stdout } = await promisify(execFile)(process.execPath, [main, ...args], { env: { ...process.env, HARNESS_HOME: home.root } });
+    return stdout;
+  };
+
   const stop = async () => {
     await daemon.stop();
     human.close();
@@ -90,7 +121,7 @@ export async function startStack(p: { files: Record<string, string>; portRange?:
     t.cleanup();
     if (errors.length) throw new Error(`server errors: ${errors.map(String).join('; ')}`);
   };
-  return { db, project, server, mock, systemPrompts, requestTools, t, repo, sha, human, command, home, config, daemon, observed, acted, logs, until, nextEvent, toolResults, stop };
+  return { cli, nextTaskId, worktreeOf, turnEnds, assignTask, db, project, server, mock, systemPrompts, requestTools, t, repo, sha, human, command, home, config, daemon, observed, acted, logs, until, nextEvent, toolResults, stop };
 }
 
 export const steps = (...s: string[]) => s.map((x) => `#STEP ${x}`).join('\n');

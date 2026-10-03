@@ -9,7 +9,7 @@ The first wedge: **several humans, each running their own AI coding agents on th
 **Phase 0A is under way. The repo skeleton, the data model, the coordination server and harnessd exist; running agents and the coordination features don't yet.**
 - The architecture, decisions, risks, roadmap and validation plan are written down.
 - Phase 0A is approved (D-59). Its throwaway adapter spike is done and accepted ([docs/research/spike-0a.md](docs/research/spike-0a.md)), with architecture changes D-60 to D-70 (D-71).
-- The code lives in `packages/` (D-72 to D-80). See [Running locally](#running-locally).
+- The code lives in `packages/` (D-72 to D-81). See [Running locally](#running-locally).
 - The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
 
 ## Running locally
@@ -35,6 +35,10 @@ You need Node 24 or later and PostgreSQL 18.
    - Then `npm run daemon`.
    - A repo's `harness.yaml` setup command runs only after you approve it: `npx harness approve` lists the pending ones (D-52).
    - Agents run on an Anthropic API key, never a subscription login (D-56). Export `ANTHROPIC_API_KEY` before starting harnessd; it passes the key to Claude Code and hides it from the agent's shell (D-64).
+7. **Drive it with the CLI** (`npx harness`, reading the same `~/.harness`):
+   - `harness agent add backend`, then `harness task add "Login API" --scope src/api/,src/types.ts --assign backend --text "…"`. Assigning starts the agent in its own worktree.
+   - `harness status` shows who's alive, who owns what, what each agent is changing, overlaps and questions. `harness log --follow` streams the event log.
+   - An agent finishes with its `report_done` tool, or you run `harness task done <task>`. harnessd then commits its work on `harness/task/<task>`. `harness task abandon <task> --reason …` stops it and removes the worktree.
 
 ## The idea in one screen
 

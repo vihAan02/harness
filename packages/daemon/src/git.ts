@@ -65,6 +65,11 @@ export async function changedPaths(worktree: string, baseBranch: string): Promis
   return [...new Set([...committed, ...uncommitted].filter(Boolean))].sort();
 }
 
+/** The commit a branch points at now. */
+export async function branchTip(repo: string, branch: string): Promise<string> {
+  return git(repo, 'rev-parse', '--verify', `refs/heads/${branch}^{commit}`);
+}
+
 /** The repository's shared Git dir, which every worktree's admin data lives under (F-57). */
 export async function gitCommonDir(repo: string): Promise<string> {
   return git(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir');

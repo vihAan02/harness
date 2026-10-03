@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 8 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79) and typed messages (D-80). Item 8's real-model check, U-1, still needs an API key. Next: item 9.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 9 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80) and the CLI with the task lifecycle (D-81). Item 8's real-model check, U-1, still needs an API key. Next: item 10.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -143,6 +143,12 @@
    - `harness status`;
    - `harness log`;
    - the setup-command approval prompt.
+   
+   **Done 2026-10-03** (D-81). Tested end to end with the real `harness` CLI:
+   - an assigned task starts its agent;
+   - `report_done` and `harness task done` each stop the agent and commit its work as the agent;
+   - `harness task abandon` stops the agent and removes its worktree;
+   - `status` and `log` show it all.
 10. **Metrics capture** for the A/B test's harness arm: timings, message counts, estimated coordination tokens, usage, interventions ([validation.md §4](validation.md#4-metrics)). **Build the benchmark repo's base application** (D-58, [validation.md §3](validation.md#benchmark-repo-d-58)).
 11. **A 0A demo script** that exercises every exit criterion below.
 

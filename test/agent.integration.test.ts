@@ -92,7 +92,7 @@ test('harnessd runs a task agent through the adapter and reports its presence an
 
   const events = await sessionEvents(4);
   assert.deepEqual(events.map((e) => [e.kind, (e.data as { status?: string }).status]), [
-    ['session.started', 'starting'], ['session.status', 'working'], ['session.status', 'idle'], ['usage.reported', undefined],
+    ['session.started', 'starting'], ['session.status', 'working'], ['usage.reported', undefined], ['session.status', 'idle'],
   ]);
   for (const e of events) assert.deepEqual([e.actor.principal, e.actor.on_behalf_of, e.actor.device_id], [agent.id, 'human_test', 'dev_test'], 'events are the agent\'s, on behalf of its human (D-18)');
   const usage = events.find((e) => e.kind === 'usage.reported')!.data as Record<string, number>;

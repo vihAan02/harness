@@ -55,3 +55,66 @@ export function renderAgentStatus(view: ProjectView, agentId: string): string {
   }
   return lines.join('\n');
 }
+
+const ago = (iso: string, now: number) => {
+  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+  return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+};
+
+/**
+ * `harness status` for the human (coordination.md §8): who's alive, who owns what, what each agent is
+ * changing, overlaps, and pending or held messages. Built from the project's event log.
+ */
+export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
+  const lines: string[] = [];
+  const devices = [...view.devices.entries()];
+  lines.push(`Project ${view.projectId} (event ${view.head})`);
+  lines.push(`Devices: ${devices.length ? devices.map(([id, d]) => `${id} ${d.online ? 'online' : 'offline'}`).join(', ') : 'none seen'}`);
+
+  lines.push('', 'Agents:');
+  if (!view.agents.size) lines.push('  none yet: harness agent add <name>');
+  for (const a of view.agents.values()) {
+    const sess = view.liveSession(a.id);
+    const task = view.activeTask(a.id);
+    const state = sess ? `${sess.status} (session since ${ago(sess.startedAt, now)})` : 'no live session';
+    lines.push(`  ${a.name.padEnd(22)} ${state}${task ? `, on ${task.id}` : ''}`);
+  }
+
+  const tasks = [...view.tasks.values()].filter((t) => t.status !== 'abandoned');
+  lines.push('', 'Tasks:');
+  if (!tasks.length) lines.push('  none yet: harness task add');
+  for (const t of tasks) {
+    const c = view.claims.get(t.id);
+    lines.push(`  ${t.id} ${quote(t.title, 60)} [${t.status}] owner human/${t.ownerHumanId}, assignee ${t.assignee ? view.agentName(t.assignee) : '(none)'}`);
+    lines.push(`      scope: ${list(t.scope)}`);
+    if (t.status === 'in_progress') lines.push(`      changing: ${list(c?.observed ?? [])}`);
+    if (t.status === 'done' && t.summary) lines.push(`      summary: ${quote(t.summary, 120)}`);
+  }
+
+  const active = (id: string) => ['open', 'in_progress'].includes(view.tasks.get(id)?.status ?? '');
+  const overlaps = view.overlaps.filter((o) => o.tasks.every(active));
+  lines.push('', overlaps.length ? 'Overlaps:' : 'Overlaps: none');
+  for (const o of overlaps) {
+    lines.push(`  ${o.level === 'observed' ? 'EDITING ' : 'SCOPES  '} ${o.paths.join(', ')}: ${o.tasks.map((id) => `${id} (${view.agentName(view.tasks.get(id)?.assignee ?? null)})`).join(' and ')}`);
+  }
+
+  const answered = new Set([...view.messages.values()].filter((m) => m.kind === 'answer').map((m) => m.inReplyTo));
+  const open = [...view.messages.values()].filter((m) => m.kind === 'question' && !answered.has(m.id));
+  const held = [...view.messages.values()].filter((m) => m.held);
+  const undelivered = [...view.messages.values()].filter((m) => !m.held && !m.deliveredAt);
+  lines.push('', open.length ? 'Open questions:' : 'Open questions: none');
+  for (const q of open) lines.push(`  ${q.id} ${view.agentName(q.from)} → ${view.agentName(q.to)}: ${quote(q.text, 100)}${q.deliveredAt ? '' : ' (not delivered yet)'}`);
+  if (held.length) {
+    lines.push('', 'Held over the message budget (Q-05):');
+    for (const m of held) lines.push(`  ${m.id} ${m.kind} ${view.agentName(m.from)} → ${view.agentName(m.to)}: ${quote(m.text, 100)}`);
+  }
+  if (undelivered.length) lines.push('', `Waiting for delivery: ${undelivered.length} message(s)`);
+  const recent = [...view.messages.values()].filter((m) => m.deliveredAt).sort((a, b) => b.seq - a.seq).slice(0, 5);
+  if (recent.length) {
+    lines.push('', 'Recent deliveries (where each landed, and how long it took; D-26):');
+    for (const m of recent) {
+      lines.push(`  ${m.id} ${m.kind.padEnd(14)} ${view.agentName(m.from)} → ${view.agentName(m.to)}: ${m.delivery} after ${((m.latencyMs ?? 0) / 1000).toFixed(1)}s`);
+    }
+  }
+  return lines.join('\n');
+}

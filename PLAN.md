@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 8 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79) and typed message delivery (D-80; its real-model check, U-1, still needs an API key).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 9 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key) and the human CLI with the task lifecycle (D-81).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -717,6 +717,28 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Paths never carry control characters.** Changed-file paths and `about_paths` end up in other agents' notices, where a newline in a file name could forge a line. The server refuses them, and harnessd leaves such files out of its reports and logs them.
   - **Still open:** item 8's exit also needs U-1, the real-model check ([Q-18](docs/open-questions.md#q-18)). The mechanics are tested end to end with the scripted model.
   - *Source:* 0A item 8. *Status:* Proposal.
+- **D-81 The human CLI and the task lifecycle in harnessd (0A item 9).** Implements D-54.
+  - **The CLI** (`harness`) reads the same `~/.harness` config and token as harnessd. Each command replays the project's log into a view, then sends its command. It has:
+    - `agent add`;
+    - `task add` (title, `--scope`, `--assign`, `--text` or `--file`; reports scope overlaps);
+    - `task assign`, `task done`, `task abandon`;
+    - `status`: devices, agents and their sessions, tasks with owner, assignee, scope and the files being changed, overlaps, open and held questions, and recent deliveries with latency;
+    - `log` (`--follow`, `--kind`);
+    - `approve`.
+  - **harnessd acts on the lifecycle** for agents accountable to its own human (one device per human in 0A):
+    - **`task.assigned`:** create the worktree from the base branch's current tip, run the approved setup, start the agent;
+    - **`task.completed`** (from `report_done` or `harness task done`):
+      1. let the agent finish its turn (up to 60 seconds);
+      2. stop it;
+      3. commit its work on `harness/task/<id>` and report the commit (`worktree.committed`);
+      4. free its ports.
+      
+      The worktree and branch stay for review, since land is 0B;
+    - **`task.abandoned`:** stop the agent and remove the worktree.
+    
+    Lifecycle events for one task are handled strictly in order.
+  - **Not in 0A:** after a harnessd restart, an in-progress task isn't resumed. Crash recovery and resume are Phase 1 (D-40). The human can abandon the task and add it again.
+  - *Source:* 0A item 9. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -819,7 +841,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 6, the agent-facing tool shim.~~ **Done 2026-10-03:** `harness_status`, `ask`, `answer`, `report_done`, plus the task commands and `message.send` they map onto (D-78, Proposal).
    - ~~Item 7, claims.~~ **Done 2026-10-03:** prospective and observed claims, overlap warnings and `claim_conflict` messages (D-79, Proposal).
    - ~~Item 8, typed messages.~~ **Done 2026-10-03, except U-1:** envelopes, budgets, delivery at safe boundaries and `message.ack` (D-80, Proposal). U-1 still needs the API key (Q-18).
-   - **Next:** item 9, the human CLI and lifecycle ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 9, the human CLI and lifecycle.~~ **Done 2026-10-03:** `harness agent/task/status/log`, and harnessd starts, stops and commits agents as tasks move (D-81, Proposal).
+   - **Next:** item 10, metrics capture and the benchmark repo's base app ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

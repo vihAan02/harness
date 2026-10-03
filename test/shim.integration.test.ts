@@ -11,24 +11,18 @@ after(async () => { await s?.stop(); });
 test('an agent sees its peers, asks one a question and reports done, through the shim', async () => {
   const backend = (await s.command('agent.create', { name: 'agent/backend', vendor: 'claude' })).agent_id!;
   const frontend = (await s.command('agent.create', { name: 'agent/frontend', vendor: 'claude' })).agent_id!;
-  const tApi = (await s.command('task.create', { title: 'Login API', text: 'Build POST /login', scope: ['src/api/'], assignee_agent_id: backend })).task_id!;
-  const tWeb = (await s.command('task.create', { title: 'Login page', text: 'Build the page', scope: ['src/web/'], assignee_agent_id: frontend })).task_id!;
-  await s.until(() => s.daemon.view(s.project).tasks.size === 2, 5000, 'the view to see both tasks');
-
-  const ws = await s.daemon.prepareTask({ projectId: s.project, taskId: tApi, baseSha: s.sha, agentId: backend });
-  const run = await s.daemon.startAgent(ws, { id: backend, name: 'agent/backend', vendor: 'claude' }, {
-    id: tApi, title: 'Login API', ownerHumanId: 'human_test', scope: ['src/api/'],
-    text: steps(
-      'mcp__harness__harness_status {}',
-      'mcp__harness__ask {"to":"agent/frontend","text":"Which fields does the login page send?","about_paths":["src/api/login.ts"]}',
-      'mcp__harness__answer {"question_id":"msg_nonexistent","text":"x"}',
-      'mcp__harness__report_done {"summary":"Built POST /login"}',
-      'TEXT done',
-    ),
-  });
+  const tWeb = await s.assignTask(frontend, 'Login page', ['src/web/'], 'Build the page');
+  await s.turnEnds(tWeb);
+  const tApi = await s.assignTask(backend, 'Login API', ['src/api/'], steps(
+    'mcp__harness__harness_status {}',
+    'mcp__harness__ask {"to":"agent/frontend","text":"Which fields does the login page send?","about_paths":["src/api/login.ts"]}',
+    'mcp__harness__answer {"question_id":"msg_nonexistent","text":"x"}',
+    'mcp__harness__report_done {"summary":"Built POST /login"}',
+    'TEXT done',
+  ));
   const sent = await s.nextEvent((e) => e.kind === 'message.sent');
   const completed = await s.nextEvent((e) => e.kind === 'task.completed');
-  await s.until(() => s.observed.some((x) => x.run === run && x.o.kind === 'turn.ended'));
+  await s.turnEnds(tApi);
 
   // Each tool became its protocol command, sent as the agent (D-18).
   assert.deepEqual([sent.actor.principal, sent.actor.on_behalf_of], [backend, 'human_test']);
@@ -37,9 +31,9 @@ test('an agent sees its peers, asks one a question and reports done, through the
   assert.deepEqual(completed.data, { task_id: tApi, summary: 'Built POST /login', by: backend });
 
   // And the model got useful results back.
-  const [status, asked, badAnswer, done] = s.toolResults();
+  const [status, asked, badAnswer, done] = s.toolResults(`TASK: ${tApi}`);
   assert.match(status!, new RegExp(`You are agent/backend, working on ${tApi} "Login API"`));
-  assert.match(status!, new RegExp(`agent/frontend: working on ${tWeb} "Login page"`));
+  assert.match(status!, new RegExp(`agent/frontend: working on ${tWeb} "Login page" \\(in_progress\\); session idle`));
   assert.match(status!, /scope: src\/web\//);
   assert.match(asked!, new RegExp(`question_id: ${String(msg.message_id)}`));
   assert.match(badAnswer!, /not_found: no question msg_nonexistent/);
@@ -48,5 +42,4 @@ test('an agent sees its peers, asks one a question and reports done, through the
   // The model saw exactly the base tools plus the four shim tools, none deferred (F-15, D-66).
   assert.deepEqual(s.requestTools[0], ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write',
     'mcp__harness__answer', 'mcp__harness__ask', 'mcp__harness__harness_status', 'mcp__harness__report_done']);
-  await s.daemon.stopAgent(tApi);
 });

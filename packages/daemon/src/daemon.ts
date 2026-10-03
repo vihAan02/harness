@@ -6,11 +6,13 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec } from '@harness/adapters';
+import {
+  ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec, type SessionStatus,
+} from '@harness/adapters';
 import type { EventMessage } from '@harness/protocol';
 import { Approvals, setupHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
-import { changedPaths, commitAll, createWorktree, gitCommonDir, removeWorktree, TASK_ID } from './git.ts';
+import { branchTip, changedPaths, commitAll, createWorktree, gitCommonDir, removeWorktree, TASK_ID } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink } from './link.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -32,6 +34,8 @@ export type RunningAgent = {
   sessionId: string; projectId: string; taskId: string; agent: AgentRef; workspace: TaskWorkspace;
   adapter: AgentAdapter; handle: SessionHandle; record: SessionRecord;
   lastUsage: Extract<Observation, { kind: 'usage' }> | null;
+  /** The status as of the observation being handled; the adapter's live status may already be ahead. Only `ended` ends a session. */
+  status: SessionStatus;
   /** Observed-claim reconciliation (D-70): the last full set reported, and whether hooks reported since. */
   diff: { last: string | null; hooksSince: boolean; running: Promise<void> | null; timer: NodeJS.Timeout | null }; // running: the queue of diffs
   done: Promise<void>;
@@ -41,6 +45,8 @@ export type DaemonOptions = {
   log?: (msg: string) => void; onEvent?: (e: EventMessage) => void;
   onObservation?: (run: RunningAgent, o: Observation) => void;
   heartbeatMs?: number; approvalPollMs?: number;
+  /** After `task.completed`, how long to let the agent finish its turn before stopping it. Default 60 s. */
+  finishGraceMs?: number;
   /** How often a running agent's worktree is diffed for edits the hooks missed (D-70). Default 15 s; also at every turn end. */
   diffIntervalMs?: number;
   /** The vendor credential. Default: ANTHROPIC_API_KEY from harnessd's environment, passed through untouched (D-48, D-56). */
@@ -64,6 +70,7 @@ export class Daemon {
   views = new Map<string, ProjectView>(); // rebuilt from each project's log at start (D-78)
   delivering = new Set<string>(); // message ids being injected right now
   delivered = new Set<string>(); // acknowledged in this process, before the server's event comes back
+  lifecycles = new Map<string, Promise<void>>(); // per task, so assigned → completed never overlap
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -113,10 +120,69 @@ export class Daemon {
     this.views.get(e.project_id)?.apply(e);
     if (replayed) return;
     this.o.onEvent?.(e);
+    if (e.kind === 'task.assigned' || e.kind === 'task.completed' || e.kind === 'task.abandoned') {
+      const taskId = (e.data as { task_id: string }).task_id;
+      const next = (this.lifecycles.get(taskId) ?? Promise.resolve())
+        .then(() => this.lifecycle(e))
+        .catch((err: Error) => this.log(`${e.kind} ${taskId}: ${err.message}`));
+      this.lifecycles.set(taskId, next);
+    }
     if (e.kind === 'message.sent') {
       const m = this.view(e.project_id).messages.get((e.data as { message_id: string }).message_id);
       const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to) : undefined;
       if (m && run) void this.deliver(run, m);
+    }
+  }
+
+  /**
+   * The task lifecycle on this device (D-54), for agents accountable to this daemon's human:
+   * - assigned: create the worktree from the base branch's tip, run setup, start the agent;
+   * - completed: let the agent finish its turn, stop it, commit its work, free its ports (the worktree
+   *   and branch stay for review; land is 0B);
+   * - abandoned: stop the agent and remove the worktree.
+   */
+  async lifecycle(e: EventMessage): Promise<void> {
+    const view = this.view(e.project_id);
+    const taskId = (e.data as { task_id: string }).task_id;
+    const task = view.tasks.get(taskId);
+    if (!task?.assignee) return;
+    const agent = view.agents.get(task.assignee);
+    if (!agent || agent.humanId !== this.config.principal) return; // another human's agent runs on their device
+    const project = this.project(e.project_id);
+    const ref: AgentRef = { id: agent.id, name: agent.name, vendor: agent.vendor };
+    if (e.kind === 'task.assigned') {
+      if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      const baseSha = await branchTip(project.repo, project.baseBranch);
+      const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha, agentId: agent.id });
+      if (this.stopping) return;
+      await this.startAgent(ws, ref, { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId });
+      this.log(`${agent.name} started on ${taskId} in ${ws.worktree}`);
+    } else if (e.kind === 'task.completed') {
+      const run = this.running.get(taskId);
+      if (run) {
+        await this.untilIdle(run, this.o.finishGraceMs ?? 60_000);
+        await this.stopAgent(taskId);
+      }
+      const worktree = this.worktreeOf(project.id, taskId);
+      if (!fs.existsSync(worktree)) return;
+      const commit = await this.finishTask({ projectId: project.id, taskId, agent: ref, ...(task.summary ? { summary: task.summary } : {}) });
+      this.ports.release(taskId);
+      if (commit) await this.report(project.id, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: `harness/task/${taskId}`, commit });
+      this.log(`${taskId} done: ${commit ? `committed ${commit.slice(0, 12)} on harness/task/${taskId}` : 'nothing to commit'}`);
+    } else {
+      if (this.running.has(taskId)) await this.stopAgent(taskId, 'kill');
+      if (fs.existsSync(this.worktreeOf(project.id, taskId))) await this.teardownTask({ projectId: project.id, taskId });
+      this.log(`${taskId} abandoned; its worktree is removed`);
+    }
+  }
+
+  /** Waits until the agent's turn has ended (D-67), or `ms` passes. */
+  async untilIdle(run: RunningAgent, ms: number): Promise<void> {
+    const end = Date.now() + ms;
+    while (Date.now() < end && this.running.get(run.taskId) === run) {
+      const st = run.adapter.getStatus(run.handle);
+      if (st !== 'working' && st !== 'starting') return;
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 
@@ -172,6 +238,7 @@ export class Daemon {
   async stop(): Promise<void> {
     this.stopping = true;
     await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
+    await Promise.all(this.lifecycles.values()); // with no agents left running, these finish promptly
     await this.link?.stop();
   }
 
@@ -250,7 +317,7 @@ export class Daemon {
     };
     const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });
     const run: RunningAgent = {
-      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null,
+      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, status: 'starting',
       diff: { last: null, hooksSince: false, running: null, timer: null }, done: Promise.resolve(),
     };
     this.running.set(ws.taskId, run);
@@ -332,10 +399,12 @@ export class Daemon {
       case 'session.init':
         run.record.vendorSessionId = o.vendorSessionId;
         this.sessions.save(run.record);
-        await report({ status: run.adapter.getStatus(run.handle), vendor_session_id: o.vendorSessionId, vendor_version: o.vendorVersion });
+        await report({ status: run.status, vendor_session_id: o.vendorSessionId, vendor_version: o.vendorVersion });
         break;
       case 'status':
-        if (o.status !== 'ended') await report({ status: o.status });
+        if (o.status === 'ended') break; // reported with its reason when the session ends
+        run.status = o.status;
+        await report({ status: o.status });
         break;
       case 'usage':
         run.lastUsage = o;
@@ -353,7 +422,7 @@ export class Daemon {
         if (run.lastUsage) {
           const u = run.lastUsage;
           await report({
-            status: run.adapter.getStatus(run.handle),
+            status: run.status,
             usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd },
           });
         }

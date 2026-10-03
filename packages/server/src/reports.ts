@@ -15,15 +15,23 @@ function requireDevice(ctx: HandlerContext): string {
   return ctx.caller.deviceId;
 }
 
-/** `worktree.report { task_id, event: created | removed, path }` → `worktree.created` / `worktree.removed`. */
+/**
+ * `worktree.report { task_id, event: created | committed | removed, path, branch?, commit? }` →
+ * `worktree.created` / `worktree.committed` / `worktree.removed`. `committed` is harnessd's commit of a
+ * finished task's work (D-50, D-54), so the human knows which commit to review.
+ */
 export async function reportWorktree(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const deviceId = requireDevice(ctx);
   const taskId = await requireTask(ctx, args.task_id);
-  const { event, path, branch } = args;
-  if (event !== 'created' && event !== 'removed') throw new CommandError('bad_request', 'event must be created or removed');
+  const { event, path, branch, commit } = args;
+  if (event !== 'created' && event !== 'committed' && event !== 'removed') throw new CommandError('bad_request', 'event must be created, committed or removed');
   if (typeof path !== 'string' || !path.startsWith('/') || path.length > 1024) throw new CommandError('bad_request', 'path must be absolute');
   if (branch !== undefined && (typeof branch !== 'string' || branch.length > 255)) throw new CommandError('bad_request', 'branch is malformed');
-  return { result: null, events: [{ kind: `worktree.${event}`, data: { task_id: taskId, device_id: deviceId, path, ...(branch ? { branch } : {}) } }] };
+  if (commit !== undefined && (typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit))) throw new CommandError('bad_request', 'commit must be a full SHA');
+  return {
+    result: null,
+    events: [{ kind: `worktree.${event}`, data: { task_id: taskId, device_id: deviceId, path, ...(branch ? { branch } : {}), ...(commit ? { commit } : {}) } }],
+  };
 }
 
 /**
