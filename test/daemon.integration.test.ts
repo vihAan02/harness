@@ -99,7 +99,7 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   fs.writeFileSync(path.join(ws1.worktree, 'src', 'a.ts'), 'agent work\n');
   const commit = await daemon.finishTask({ projectId: project, taskId: 't1', agent: { id: 'agent_one', name: 'agent/one' }, summary: 'Finish t1' });
   assert.equal(gitIn(repo, 'log', '-1', '--format=%an|%s', commit!), 'agent/one|Finish t1');
-  assert.deepEqual(await daemon.teardownTask({ projectId: project, taskId: 't1' }), { branchDeleted: false });
+  assert.deepEqual(await daemon.teardownTask({ projectId: project, taskId: 't1' }, { force: true }), { branchDeleted: false });
   assert.equal((await nextWork()).kind, 'worktree.removed');
   assert.equal(fs.existsSync(ws1.worktree), false);
   assert.deepEqual(Object.keys(daemon.ports.list()), ['t2']);
@@ -120,6 +120,6 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   assert.equal((await watcher.next('event', (e) => e.kind === 'device.online')).actor.device_id, 'dev_test');
   await new Promise((r) => setTimeout(r, 300));
   assert.ok(again.length > 0 && again.every((e) => e.seq > lastSeen), `replayed old events: ${JSON.stringify(again.map((e) => e.seq))} after ${lastSeen}`);
-  await restarted.teardownTask({ projectId: project, taskId: 't2' });
+  await restarted.teardownTask({ projectId: project, taskId: 't2' }, { force: true });
   await restarted.stop();
 });

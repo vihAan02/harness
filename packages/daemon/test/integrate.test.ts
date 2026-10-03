@@ -106,3 +106,48 @@ test('a diff excerpt is capped, labelled by prefixes, and can\'t start a line li
   assert.match(ex, /more diff lines/);
   t.cleanup();
 });
+
+test('the fast-forward never overwrites the human\'s ignored or untracked files, nor moves a branch being rebased', async () => {
+  const { t, repo, sha } = setup();
+  // The human's checkout ignores .env and has a local one; the task starts tracking a .env of its own.
+  fs.writeFileSync(path.join(repo, '.gitignore'), '.env\n');
+  gitIn(repo, 'add', '.gitignore');
+  gitIn(repo, 'commit', '-qm', 'ignore .env');
+  const base = gitIn(repo, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(repo, '.env'), 'SECRET=human-local\n');
+  const wt = path.join(t.dir, 'wt-T-1');
+  await createWorktree(repo, wt, 'T-1', base);
+  fs.writeFileSync(path.join(wt, '.gitignore'), '');
+  fs.writeFileSync(path.join(wt, '.env'), 'SECRET=from-the-task\n');
+  gitIn(wt, 'add', '-A');
+  gitIn(wt, 'commit', '-qm', 'track .env');
+  const dir = path.join(t.dir, 'integration', 'land_4');
+  await addIntegrationWorktree(repo, dir, base);
+  const m = await mergeCommit(dir, gitIn(wt, 'rev-parse', 'HEAD'), 'Land T-1');
+  assert.ok(m.ok);
+  const r = await advanceBase(repo, 'main', base, m.commit);
+  assert.equal(!r.ok && r.reason, 'base_checkout_conflict');
+  assert.match(!r.ok ? r.detail : '', /\.env/);
+  assert.equal(fs.readFileSync(path.join(repo, '.env'), 'utf8'), 'SECRET=human-local\n', 'the human\'s file is intact');
+  assert.equal(gitIn(repo, 'rev-parse', 'main'), base, 'and the base did not move');
+
+  // main is being rebased in the human's checkout (HEAD detached mid-rebase): never moved under it.
+  fs.rmSync(path.join(repo, '.env'));
+  fs.writeFileSync(path.join(repo, 'README.md'), 'one\n');
+  gitIn(repo, 'commit', '-qam', 'human one');
+  const before = gitIn(repo, 'rev-parse', 'main');
+  gitIn(repo, 'checkout', '-q', '-b', 'side', base);
+  fs.writeFileSync(path.join(repo, 'README.md'), 'two\n');
+  gitIn(repo, 'commit', '-qam', 'side two');
+  gitIn(repo, 'checkout', '-q', 'main');
+  try { gitIn(repo, 'rebase', 'side'); } catch { /* stops on the README conflict */ }
+  assert.ok(fs.existsSync(path.join(gitIn(repo, 'rev-parse', '--absolute-git-dir'), 'rebase-merge')), 'a rebase is in progress');
+  const m2 = await mergeCommit(dir, before, 'catch up');
+  assert.ok(m2.ok);
+  const r2 = await advanceBase(repo, 'main', before, m2.commit);
+  assert.equal(!r2.ok && r2.reason, 'base_checkout_conflict');
+  assert.equal(gitIn(repo, 'rev-parse', 'main'), before, 'the rebasing branch was not moved');
+  gitIn(repo, 'rebase', '--abort');
+  assert.equal(gitIn(repo, 'rev-parse', 'main'), before);
+  t.cleanup();
+});

@@ -28,12 +28,15 @@ export async function createWorktree(repo: string, worktree: string, taskId: str
   return { branch };
 }
 
-/** Removes the worktree, deletes its branch only if merged, and prunes stale entries (local-runtime §3). */
-export async function removeWorktree(repo: string, worktree: string, taskId: string): Promise<{ branchDeleted: boolean }> {
-  await git(repo, 'worktree', 'remove', '--force', worktree);
+/**
+ * Removes the worktree and deletes its branch only if merged (local-runtime §3). Without `force`, Git refuses
+ * a worktree with modified or untracked files, so nothing uncommitted is lost; `force` is for an abandoned
+ * task only. No repository-wide `worktree prune`: it would drop the human's worktrees on unmounted volumes.
+ */
+export async function removeWorktree(repo: string, worktree: string, taskId: string, o: { force: boolean }): Promise<{ branchDeleted: boolean }> {
+  await git(repo, 'worktree', 'remove', ...(o.force ? ['--force'] : []), worktree);
   let branchDeleted = true;
   try { await git(repo, 'branch', '-d', taskBranch(taskId)); } catch { branchDeleted = false; }
-  await git(repo, 'worktree', 'prune');
   return { branchDeleted };
 }
 

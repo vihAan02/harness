@@ -60,9 +60,9 @@ Worktrees live **outside** the main checkout, so tools that scan the repo don't 
 6. **Land** (0B, local, D-51): triggered by the human (`harness land <task>`):
    1. Fencing check through the server (`land.accepted` / `land.rejected`).
    2. Merge the task branch with the current base in a harness-owned **integration worktree**, and run the approved `test.command` there, sandboxed.
-   3. **Green:** fast-forward the base branch and report `land.complete`. The server then sends `landed` notices to affected agents.
+   3. **Green:** move the base branch and report `land.complete`. The server then sends `landed` notices to affected agents. If no checkout has the base branch, a compare-and-swap of the ref. If one does (usually the human's), only a fast-forward of a clean checkout still at the land's base, never over the human's untracked or ignored files, and never while that branch is being rebased.
    4. **Red or conflict:** report `land.fail`. The base is untouched and the task goes back to its assignee.
-7. **Tear down:** `git worktree remove`, delete the branch if it's merged, `git worktree prune`, and release ports and leases.
+7. **Tear down:** `git worktree remove`, delete the branch if it's merged, and release ports and leases. After a land, the removal isn't forced, and it's skipped if anything was written or committed in the worktree since the land read its tip. Only an abandoned task's worktree is force-removed. There is no repository-wide `git worktree prune`, which would drop the human's worktrees on unmounted volumes.
 
 **Git write operations are `harnessd`'s alone (D-50).**
 - Agents edit files and may run read-only Git, but don't commit, branch, merge or push.

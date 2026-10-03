@@ -53,13 +53,27 @@ export async function blobsAt(repo: string, commit: string, paths: string[]): Pr
   return out;
 }
 
-/** Where each branch is checked out: `refs/heads/<name>` → worktree path. */
+/**
+ * Where each branch is checked out: `refs/heads/<name>` → worktree path. A worktree in the middle of a
+ * rebase shows as detached, so the branch being rebased is read from its rebase state and counted too.
+ */
 export async function checkouts(repo: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
+  const trees: string[] = [];
   let current = '';
   for (const line of (await git(repo, 'worktree', 'list', '--porcelain')).split('\n')) {
-    if (line.startsWith('worktree ')) current = line.slice('worktree '.length);
+    if (line.startsWith('worktree ')) trees.push(current = line.slice('worktree '.length));
     else if (line.startsWith('branch ')) out.set(line.slice('branch '.length), current);
+  }
+  for (const wt of trees) {
+    let gitDir: string;
+    try { gitDir = await git(wt, 'rev-parse', '--absolute-git-dir'); } catch { continue; }
+    for (const state of ['rebase-merge', 'rebase-apply']) {
+      try {
+        const head = fs.readFileSync(path.join(gitDir, state, 'head-name'), 'utf8').trim();
+        if (head.startsWith('refs/heads/') && !out.has(head)) out.set(head, wt);
+      } catch { /* no rebase in progress */ }
+    }
   }
   return out;
 }
@@ -92,16 +106,27 @@ export async function advanceBase(repo: string, branch: string, from: string, to
       return { ok: false, reason: 'base_moved', detail: `${branch} moved while the land ran: ${(e as Error).message.split('\n')[0]}` };
     }
   }
+  const branchNow = await git(at, 'symbolic-ref', '-q', 'HEAD').catch(() => '');
+  if (branchNow !== ref) return { ok: false, reason: 'base_checkout_conflict', detail: `${branch} is being rebased or otherwise worked on in ${at}; finish that, then land again` };
   const head = await git(at, 'rev-parse', 'HEAD');
   if (head !== from) return { ok: false, reason: 'base_moved', detail: `${branch} in ${at} is at ${head.slice(0, 12)}, not ${from.slice(0, 12)}` };
   if (await git(at, 'status', '--porcelain', '--untracked-files=no')) {
     return { ok: false, reason: 'base_checkout_dirty', detail: `${at} has uncommitted changes; commit or stash them, then land again` };
   }
+  // By default Git's fast-forward overwrites ignored files (a local .env, say) that the incoming commit adds.
+  // Checked here for a clear message; --no-overwrite-ignore backs it up.
+  const added = (await git(at, 'diff', '--name-only', '-z', '--diff-filter=A', from, to)).split('\0').filter(Boolean);
+  const inTheWay = added.filter((f) => { try { fs.lstatSync(path.join(at, f)); return true; } catch { return false; } });
+  if (inTheWay.length) {
+    return { ok: false, reason: 'base_checkout_conflict', detail: `the land adds files that already exist, untracked or ignored, in ${at}: ${inTheWay.slice(0, 10).join(', ')}; move them aside, then land again` };
+  }
   try {
-    await git(at, 'merge', '--ff-only', '-q', to);
+    await git(at, 'merge', '--ff-only', '--no-overwrite-ignore', '-q', to);
   } catch (e) {
     return { ok: false, reason: 'base_checkout_conflict', detail: `couldn't fast-forward ${at}: ${(e as Error).message.split('\n').slice(0, 3).join(' ')}` };
   }
+  const now = await git(repo, 'rev-parse', '--verify', `${ref}^{commit}`);
+  if (now !== to) throw new Error(`${branch} is at ${now.slice(0, 12)} after the fast-forward, not ${to.slice(0, 12)}`);
   return { ok: true, how: 'checkout', checkout: at };
 }
 
@@ -111,10 +136,10 @@ export async function addIntegrationWorktree(repo: string, dir: string, commit: 
   await git(repo, 'worktree', 'add', '-q', '--detach', dir, requireSha(commit, 'commit'));
 }
 
+/** Removes only this worktree: no repository-wide prune, which would drop the human's worktrees on unmounted volumes. */
 export async function removeIntegrationWorktree(repo: string, dir: string): Promise<void> {
   await git(repo, 'worktree', 'remove', '--force', dir).catch(() => {});
   fs.rmSync(dir, { recursive: true, force: true });
-  await git(repo, 'worktree', 'prune').catch(() => {});
 }
 
 /**

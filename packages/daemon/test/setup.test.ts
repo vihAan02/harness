@@ -1,6 +1,7 @@
 // The sandbox around repo-controlled setup commands (D-52, D-69), checked against real srt.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createWorktree, gitCommonDir } from '../src/git.ts';
@@ -94,6 +95,9 @@ test('the shared .git stays readable, so read-only git works', async () => {
   assert.match(r.out, /base/);
 });
 
+/** Exit code of a command run outside any sandbox. */
+const runPlain = (cmd: string) => spawnSync('sh', ['-c', cmd], { stdio: 'ignore', timeout: 10_000 }).status;
+
 test('a land\'s test command may serve and reach 127.0.0.1 with allowLocalBinding, and only then (D-83)', async () => {
   // A server on loopback and a request to it: what Shelf's tests do.
   const script = "const s=require('http').createServer((q,r)=>r.end('ok')).listen(0,'127.0.0.1',()=>fetch('http://127.0.0.1:'+s.address().port).then(r=>r.text()).then(t=>{console.log('LOOPBACK', t);process.exit(0)},e=>{console.log('FAILED', e.cause?.code ?? e.message);process.exit(3)}));setTimeout(()=>{console.log('TIMEOUT');process.exit(4)},8000)";
@@ -105,7 +109,15 @@ test('a land\'s test command may serve and reach 127.0.0.1 with allowLocalBindin
   const off = await run('echo STARTED && node loop.cjs');
   assert.match(off.out, /STARTED/, 'the command ran');
   assert.notEqual(off.exitCode, 0, off.out);
-  // Still no network beyond loopback.
+  // Still no network beyond loopback: through srt's proxy (an empty domain allowlist) ...
   const net = await run('echo STARTED && curl -s -m 5 -o /dev/null https://example.com/', { allowLocalBinding: true });
+  assert.match(net.out, /STARTED/, net.out);
   assert.notEqual(net.exitCode, 0, net.out);
+  // ... and directly, bypassing the proxy: the sandbox rule allowLocalBinding changes (F-58). Checked only when
+  // this machine can reach the address outside the sandbox, so the test can't pass just by being offline.
+  const direct = "--noproxy '*' -s -m 5 -o /dev/null http://1.1.1.1/";
+  const online = runPlain(`curl ${direct}`) === 0;
+  const raw = await run(`echo STARTED && curl ${direct}`, { allowLocalBinding: true });
+  assert.match(raw.out, /STARTED/, raw.out);
+  if (online) assert.notEqual(raw.exitCode, 0, `reached 1.1.1.1 from inside the sandbox: ${raw.out}`);
 });

@@ -23,7 +23,7 @@ import { readRepoInstructions, sessionInstructions } from './instructions.ts';
 import {
   addIntegrationWorktree, advanceBase, blobsAt, changedBetween, deleteMergedBranch, diffExcerpt, mergeCommit, removeIntegrationWorktree,
 } from './integrate.ts';
-import { contains, syncWorktree } from './sync.ts';
+import { contains, syncWorktree, unresolved } from './sync.ts';
 import { ReadTracker, type ReadReport } from './reads.ts';
 import { parseShellReads } from './shellreads.ts';
 import { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
@@ -60,12 +60,14 @@ export type RunningAgent = {
    * Sync at turn end (D-53): landed notices held until the branch has the new base; whether a sync is due;
    * the one running (deliveries wait for it); and, after a conflict, what the human must resolve.
    */
-  sync: { held: MessageInfo[]; pending: boolean; running: Promise<void> | null; blocked: { target: string; oldBase: string } | null };
+  sync: { held: MessageInfo[]; pending: boolean; running: Promise<void> | null; blocked: { target: string; oldBase: string } | null; retryGuard?: boolean };
   done: Promise<void>;
 };
 
 const SYNC_HOLD = 'The harness is updating your branch with work that just landed. Wait for its notice, then carry on.';
 const BLOCKED_HOLD = 'This task is paused: updating your branch with work that landed conflicted, and your human is resolving it. Stop and wait.';
+/** The most paths one report to the server lists (its own cap, kept under its message size limit). */
+const MAX_REPORT_PATHS = 5000;
 export type DaemonOptions = {
   home: Home; config?: LocalConfig;
   log?: (msg: string) => void; onEvent?: (e: EventMessage) => void;
@@ -160,7 +162,8 @@ export class Daemon {
     }
     if (e.kind === 'message.sent') {
       const m = this.view(e.project_id).messages.get((e.data as { message_id: string }).message_id);
-      const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to) : undefined;
+      // A message for a task goes to that task's run; an agent may still be winding down its previous one.
+      const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to && (!m.toTask || r.taskId === m.toTask)) : undefined;
       if (m && run) void this.deliver(run, m);
     }
     if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
@@ -210,7 +213,7 @@ export class Daemon {
       this.log(`${taskId} done: ${commit ? `committed ${commit.slice(0, 12)} on harness/task/${taskId}` : 'nothing to commit'}`);
     } else {
       if (this.running.has(taskId)) await this.stopAgent(taskId, 'kill');
-      if (fs.existsSync(this.worktreeOf(project.id, taskId))) await this.teardownTask({ projectId: project.id, taskId });
+      if (fs.existsSync(this.worktreeOf(project.id, taskId))) await this.teardownTask({ projectId: project.id, taskId }, { force: true });
       this.log(`${taskId} abandoned; its worktree is removed`);
     }
   }
@@ -309,10 +312,18 @@ export class Daemon {
     let baseSha: string;
     let changed: string[];
     try {
+      // The task's completion (stop the agent, commit its work) must be finished, or the land would take an older tip.
+      await this.lifecycles.get(taskId);
+      if (this.running.has(taskId)) throw new Error(`${taskId}'s agent is still running`);
+      const taskWt = this.worktreeOf(projectId, taskId);
+      if (fs.existsSync(taskWt) && await git(taskWt, 'status', '--porcelain')) {
+        throw new Error(`${taskWt} has uncommitted changes that the land wouldn't include; commit or remove them, then land again`);
+      }
       head = await branchTip(project.repo, taskBranch(taskId));
       baseSha = await branchTip(project.repo, project.baseBranch);
       const mergeBase = await git(project.repo, 'merge-base', baseSha, head);
       changed = await changedBetween(project.repo, mergeBase, head);
+      if (changed.length > MAX_REPORT_PATHS) throw new Error(`the task changes ${changed.length} files; one land takes at most ${MAX_REPORT_PATHS}`);
       const r = await this.link!.command(projectId, 'land', {
         land_id: landId, base_branch: project.baseBranch, base_sha: baseSha, merge_base_sha: mergeBase, head_sha: head,
         changed_paths: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)), lease_tokens: [],
@@ -327,6 +338,7 @@ export class Daemon {
     }
     const dir = path.join(this.home.root, 'integration', projectId, landId);
     writeJsonAtomic(this.landFile(landId), { projectId, landId, taskId, baseSha, head, dir, merge: null });
+    let moved = false;
     try {
       await addIntegrationWorktree(project.repo, dir, baseSha);
       const title = this.view(projectId).tasks.get(taskId)?.title ?? taskId;
@@ -363,13 +375,24 @@ export class Daemon {
       writeJsonAtomic(this.landFile(landId), { projectId, landId, taskId, baseSha, head, dir, merge: m.commit });
       const adv = await advanceBase(project.repo, project.baseBranch, baseSha, m.commit);
       if (!adv.ok) return void await fail(adv.reason, adv.detail);
+      moved = true;
       await this.completeLand(projectId, landId, taskId, baseSha, m.commit, head);
     } catch (e) {
-      await fail('error', (e as Error).message).catch(() => {});
+      // Once the base has moved, the land happened: never report it failed. The record stays for a retry
+      // now and for recovery at the next start.
+      if (!moved) await fail('error', (e as Error).message).catch(() => {});
+      else {
+        this.log(`land of ${taskId}: the base moved, but reporting it failed (${(e as Error).message}); retrying`);
+        const saved = readJson<{ merge: string | null } | null>(this.landFile(landId), null);
+        for (let i = 1; i <= 3 && saved?.merge; i++) {
+          await new Promise((r) => setTimeout(r, 1000 * i));
+          try { await this.completeLand(projectId, landId, taskId, baseSha, saved.merge, head); moved = false; break; } catch { /* retried at the next start */ }
+        }
+      }
     } finally {
       await removeIntegrationWorktree(project.repo, dir).catch(() => {});
       fs.rmSync(path.join(this.home.scratch, project.id, `land-${landId}`), { recursive: true, force: true });
-      fs.rmSync(this.landFile(landId), { force: true });
+      if (!moved) fs.rmSync(this.landFile(landId), { force: true }); // kept if the base moved and the server hasn't heard yet
     }
   }
 
@@ -383,26 +406,40 @@ export class Daemon {
       changed: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
     });
     this.log(`landed ${taskId}: ${project.baseBranch} is now ${merge.slice(0, 12)}`);
-    if (fs.existsSync(this.worktreeOf(projectId, taskId)) && !this.running.has(taskId)) await this.teardownTask({ projectId, taskId });
-    await deleteMergedBranch(project.repo, taskBranch(taskId), head, merge);
+    // The landed task's worktree and branch go, unless something was written or committed there since the
+    // land read its tip: never destroy work. The removal itself isn't forced, so Git refuses on any doubt.
+    const taskWt = this.worktreeOf(projectId, taskId);
+    const tip = await branchTip(project.repo, taskBranch(taskId)).catch(() => null);
+    if (tip && tip !== head) this.log(`kept ${taskWt} and its branch: it has commits made after the land`);
+    else if (fs.existsSync(taskWt) && !this.running.has(taskId)) {
+      if (await git(taskWt, 'status', '--porcelain', '--untracked-files=all')) this.log(`kept ${taskWt}: it has changes made after the land`);
+      else await this.teardownTask({ projectId, taskId }, { force: false }).catch((e) => this.log(`kept ${taskWt}: ${(e as Error).message.split('\n')[0]}`));
+    }
+    // Only if the base, as it is now, contains the branch.
+    const baseNow = await branchTip(project.repo, project.baseBranch).catch(() => null);
+    if (baseNow) await deleteMergedBranch(project.repo, taskBranch(taskId), head, baseNow);
   }
 
   /**
    * After a restart: lands this device was asked to run while it was away start now; one interrupted after
-   * the base moved is completed; one interrupted before is failed, with the base untouched.
+   * the base moved is completed (even if a human cancelled it meanwhile: the change is in the base); one
+   * interrupted before is failed, with the base untouched.
    */
   recoverLands(): void {
     for (const p of this.config.projects) {
       for (const l of this.view(p.id).lands.values()) {
         if (l.deviceId !== this.config.deviceId) continue;
         if (l.status === 'requested') this.queueLand(p.id, () => this.land(p.id, l.id, l.taskId, l.runTests));
-        if (l.status !== 'accepted') continue;
+        const cancelled = l.status === 'failed' && l.reason === 'cancelled';
+        if (l.status !== 'accepted' && !(cancelled && fs.existsSync(this.landFile(l.id)))) continue;
         this.queueLand(p.id, async () => {
           const saved = readJson<{ baseSha: string; head: string; dir: string; merge: string | null } | null>(this.landFile(l.id), null);
           const tip = await branchTip(p.repo, p.baseBranch).catch(() => '');
-          if (saved?.merge && tip === saved.merge) {
+          // The base reached the land's merge if it contains it now (later commits may have come on top).
+          const reached = !!(saved?.merge && tip && await git(p.repo, 'merge-base', '--is-ancestor', saved.merge, tip).then(() => true, () => false));
+          if (saved?.merge && reached) {
             await this.completeLand(p.id, l.id, l.taskId, saved.baseSha, saved.merge, saved.head);
-          } else {
+          } else if (!cancelled) {
             await this.report(p.id, 'land.fail', { land_id: l.id, reason: 'interrupted', detail: 'harnessd restarted before the base moved' });
           }
           if (saved) await removeIntegrationWorktree(p.repo, saved.dir).catch(() => {});
@@ -414,70 +451,115 @@ export class Daemon {
 
   // ---------- sync at turn end (0B item 2; D-53; coordination.md §2) ----------
 
+  /** Between turns: idle, or errored (the turn failed but the session is alive). A sync never starts mid-turn (D-28). */
+  betweenTurns(run: RunningAgent): boolean {
+    const st = run.adapter.getStatus(run.handle);
+    return st === 'idle' || st === 'errored';
+  }
+
   holdForSync(run: RunningAgent, m: MessageInfo): void {
     if (!run.sync.held.some((x) => x.id === m.id)) run.sync.held.push(m);
     run.sync.pending = true;
-    if (!run.sync.running && !run.sync.blocked && run.adapter.getStatus(run.handle) === 'idle') void this.runSync(run); // idle: now
+    if (!run.sync.running && !run.sync.blocked && this.betweenTurns(run)) void this.runSync(run); // idle: now
   }
 
   /**
    * Holds the agent, commits its work in progress, merges the base tip into its branch, reports the sync
    * (which marks the synced reads stale), and only then tells it what landed, with a diff excerpt. On a
    * conflict the merge is aborted, the task blocked, and the agent stays held until the human resolves it.
+   * One sync at a time per run; Git never runs alongside the periodic worktree diff. `resume` is the sync
+   * after `harness task unblock`, and `since` the merge base from before the conflict (for the diff and the
+   * stale reads).
    */
-  runSync(run: RunningAgent): Promise<void> {
-    if (run.sync.running || run.sync.blocked || !run.sync.pending) return run.sync.running ?? Promise.resolve();
-    if (run.adapter.getStatus(run.handle) !== 'idle') return Promise.resolve(); // mid-turn: at its turn end (D-28)
+  runSync(run: RunningAgent, opts: { resume?: boolean; since?: string } = {}): Promise<void> {
+    if (run.sync.running) return run.sync.running;
+    if (run.sync.blocked || (!run.sync.pending && !opts.resume)) return Promise.resolve();
+    if (!this.betweenTurns(run)) return Promise.resolve(); // mid-turn: at its turn end (D-28)
     run.sync.pending = false;
+    let held: MessageInfo[] = [];
     const job = (async () => {
+      await run.diff.running; // never alongside a worktree diff: both use the index
       const view = this.view(run.projectId);
-      const held = run.sync.held.splice(0).map((m) => view.messages.get(m.id) ?? m).filter((m) => !m.deliveredAt && !m.supersededBy);
-      if (!held.length) return;
+      held = run.sync.held.splice(0).map((m) => view.messages.get(m.id) ?? m).filter((m) => !m.deliveredAt && !m.supersededBy);
+      if (!held.length && !opts.resume) return;
       const project = this.project(run.projectId);
+      const worktree = run.workspace.worktree;
       run.adapter.setHold(run.handle, SYNC_HOLD);
       let release = true;
       try {
         const target = await branchTip(project.repo, project.baseBranch);
-        const r = await syncWorktree({ worktree: run.workspace.worktree, target, taskId: run.taskId, agent: { name: run.agent.name, email: `${run.agent.id}@harness.invalid` } });
-        if (!r.ok) {
+        const blockOn = async (oldBase: string, conflicts: string[]) => {
           await this.report(run.projectId, 'sync.report', {
-            session_id: run.sessionId, event: 'conflict', old_base_sha: r.oldBase, new_base_sha: r.newBase, conflict_paths: this.reportablePaths(run, r.conflicts),
+            session_id: run.sessionId, event: 'conflict', old_base_sha: oldBase, new_base_sha: target, conflict_paths: this.reportablePaths(run, conflicts).slice(0, MAX_REPORT_PATHS),
           }, run.agent.id);
-          run.sync.blocked = { target, oldBase: r.oldBase };
+          run.sync.blocked = { target, oldBase };
           run.sync.held.unshift(...held);
+          held = [];
           run.adapter.setHold(run.handle, BLOCKED_HOLD);
           release = false;
-          this.log(`${run.agent.name} (${run.taskId}): syncing with ${project.baseBranch} conflicts in ${r.conflicts.join(', ')}; the task is blocked until you resolve it in ${run.workspace.worktree} and run: harness task unblock ${run.taskId}`);
-          return;
-        }
-        await this.finishSync(run, held, r.oldBase, r.newBase, r.changed);
+          this.log(`${run.agent.name} (${run.taskId}): syncing with ${project.baseBranch} conflicts in ${conflicts.join(', ')}; the task is blocked until you resolve it in ${worktree} and run: harness task unblock ${run.taskId}`);
+        };
+        // A merge left unfinished in the worktree (after an unblock, or a human's own) is never committed as the agent's work.
+        const left = await unresolved(worktree);
+        if (left) return void await blockOn(opts.since ?? target, left);
+        const r = await syncWorktree({ worktree, target, taskId: run.taskId, agent: { name: run.agent.name, email: `${run.agent.id}@harness.invalid` } });
+        if (!r.ok) return void await blockOn(opts.since ?? r.oldBase, r.conflicts);
+        const since = opts.since ?? r.oldBase;
+        const changed = since === r.oldBase ? r.changed : await changedBetween(worktree, since, r.newBase);
+        await this.finishSync(run, held, since, r.newBase, changed);
+        held = [];
+        if (opts.resume) setImmediate(() => this.deliverPending(run)); // what arrived while it was paused
       } finally {
         if (release) run.adapter.setHold(run.handle, null);
       }
     })().catch((e: Error) => {
-      run.adapter.setHold(run.handle, null);
-      this.log(`${run.agent.name} (${run.taskId}): sync failed: ${e.message}`);
+      // Nothing is lost: the notices go back, and the sync is tried again at the next turn end.
+      run.sync.held.unshift(...held.filter((m) => !this.delivered.has(m.id)));
+      if (!run.sync.blocked) run.adapter.setHold(run.handle, null);
+      run.sync.pending = run.sync.held.length > 0;
+      this.log(`${run.agent.name} (${run.taskId}): sync failed, will retry at the next turn end: ${e.message}`);
     }).finally(() => {
       run.sync.running = null;
-      if (run.sync.held.length && !run.sync.blocked) run.sync.pending = true;
     });
     run.sync.running = job;
+    // A notice that arrived during this sync: sync again now if the agent is still between turns, else at its turn end.
+    void job.then(() => {
+      if (run.sync.pending && !run.sync.blocked && this.betweenTurns(run) && this.running.get(run.taskId) === run && !run.sync.retryGuard) {
+        run.sync.retryGuard = true; // one immediate retry; a failing sync otherwise waits for the next turn end
+        void this.runSync(run).finally(() => { run.sync.retryGuard = false; });
+      }
+    });
     return job;
   }
 
   /** After a sync: report it, re-baseline claims and reads, release the hold, then deliver the held notices with their diffs. */
   async finishSync(run: RunningAgent, held: MessageInfo[], oldBase: string, newBase: string, changed: string[]): Promise<void> {
+    const safe = this.reportablePaths(run, changed);
+    // More than one report can list (the server takes 5,000): every read of the task is then stale.
+    const listed = safe.length <= MAX_REPORT_PATHS ? { changed_paths: safe } : { changed_paths: [], all_changed: true };
     await this.report(run.projectId, 'sync.report', {
-      session_id: run.sessionId, event: 'synced', old_base_sha: oldBase, new_base_sha: newBase, changed_paths: this.reportablePaths(run, changed),
+      session_id: run.sessionId, event: 'synced', old_base_sha: oldBase, new_base_sha: newBase, ...listed,
     }, run.agent.id);
     run.reads.forget(changed); // stale until re-read: the next read is reported again
-    await this.reconcile(run); // the diff base moved to the new merge base: peer files are never this agent's claims
+    await this.diffNow(run); // the diff base moved to the new merge base: peer files are never this agent's claims
     run.adapter.setHold(run.handle, null);
-    for (const m of held) await this.injectLanded(run, m, oldBase, newBase, changed);
+    for (const m of held) {
+      // Only claim a merge that happened: a land this branch doesn't contain waits for the next sync.
+      const landedAt = typeof m.data.new_base_sha === 'string' ? m.data.new_base_sha : null;
+      if (landedAt && !(await contains(run.workspace.worktree, landedAt))) {
+        run.sync.held.push(m);
+        run.sync.pending = true;
+        continue;
+      }
+      await this.injectLanded(run, m, oldBase, newBase, safe);
+    }
   }
 
   async injectLanded(run: RunningAgent, m: MessageInfo, oldBase: string, newBase: string, changed: string[]): Promise<void> {
     if (this.delivered.has(m.id)) return;
+    // File names come from Git and the server. Any with control characters were already dropped (reportablePaths);
+    // dropped again here, since a newline in one could forge a line of the notice (D-25).
+    changed = changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p));
     const paths = (Array.isArray(m.data.paths) ? m.data.paths as string[] : []).filter((p) => changed.includes(p));
     const writer = typeof m.data.changed_by === 'string' ? this.view(run.projectId).agentName(m.data.changed_by) : 'another task';
     const excerpts: string[] = [];
@@ -506,22 +588,18 @@ export class Daemon {
     }
   }
 
-  /** `task.unblocked`: the human says the conflict is resolved. If the branch now has the base, resume; else sync again. */
+  /**
+   * `task.unblocked`: the human says the conflict is resolved. A full sync to the current base tip follows,
+   * through the same single-sync path: a merge they left unfinished blocks again instead of being
+   * committed, a land that came while it was paused is merged too, and the diff covers everything since
+   * the merge base from before the conflict.
+   */
   async resumeAfterConflict(run: RunningAgent): Promise<void> {
     const b = run.sync.blocked;
     if (!b) return;
-    if (await contains(run.workspace.worktree, b.target)) {
-      run.sync.blocked = null;
-      const held = run.sync.held.splice(0);
-      await this.finishSync(run, held, b.oldBase, b.target, await changedBetween(run.workspace.worktree, b.oldBase, b.target));
-      this.deliverPending(run);
-      return;
-    }
     run.sync.blocked = null;
-    run.sync.pending = true;
-    run.adapter.setHold(run.handle, null);
-    this.log(`${run.agent.name} (${run.taskId}): unblocked, but the branch doesn't contain ${b.target.slice(0, 12)} yet; syncing again`);
-    await this.runSync(run);
+    await run.sync.running;
+    await this.runSync(run, { resume: true, since: b.oldBase });
   }
 
   async stop(): Promise<void> {
@@ -542,7 +620,7 @@ export class Daemon {
     const worktree = this.worktreeOf(t.projectId, t.taskId);
     ensureDir(path.dirname(worktree));
     const { branch } = await createWorktree(project.repo, worktree, t.taskId, t.baseSha);
-    await this.report(t.projectId, 'worktree.report', { task_id: t.taskId, event: 'created', path: worktree, branch });
+    await this.report(t.projectId, 'worktree.report', { task_id: t.taskId, event: 'created', path: worktree, branch, base_sha: t.baseSha });
 
     const repo = readRepoConfig(worktree);
     const policy = effectivePolicy(this.config, project, repo);
@@ -562,11 +640,14 @@ export class Daemon {
     return commitAll(this.worktreeOf(t.projectId, t.taskId), message, { name: t.agent.name, email: `${t.agent.id}@harness.invalid` });
   }
 
-  /** Removes the worktree (and its branch, if merged), frees its ports and scratch space (local-runtime §3 step 7). */
-  async teardownTask(t: { projectId: string; taskId: string }): Promise<{ branchDeleted: boolean }> {
+  /**
+   * Removes the worktree (and its branch, if merged), frees its ports and scratch space (local-runtime §3 step 7).
+   * `force` also deletes uncommitted work: for an abandoned task only.
+   */
+  async teardownTask(t: { projectId: string; taskId: string }, o: { force: boolean }): Promise<{ branchDeleted: boolean }> {
     const project = this.project(t.projectId);
     const worktree = this.worktreeOf(t.projectId, t.taskId);
-    const { branchDeleted } = await removeWorktree(project.repo, worktree, t.taskId);
+    const { branchDeleted } = await removeWorktree(project.repo, worktree, t.taskId, o);
     this.ports.release(t.taskId);
     fs.rmSync(path.join(this.home.scratch, t.projectId, t.taskId), { recursive: true, force: true });
     await this.report(t.projectId, 'worktree.report', { task_id: t.taskId, event: 'removed', path: worktree });
@@ -633,6 +714,7 @@ export class Daemon {
     if (!run) return;
     await run.adapter.stopSession(run.handle, mode);
     await run.done;
+    await run.sync.running; // never let finishTask or teardown race a sync's Git writes
   }
 
   // ---------- internals ----------
@@ -665,6 +747,7 @@ export class Daemon {
     }
     clearInterval(run.diff.timer ?? undefined);
     await run.diff.running;
+    await run.sync.running;
     this.running.delete(run.taskId);
   }
 
@@ -674,7 +757,13 @@ export class Daemon {
    * when the set changed, or hooks reported something since the last one.
    */
   reconcile(run: RunningAgent): Promise<void> {
+    return this.diffNow(run, true);
+  }
+
+  /** The worktree diff itself. `afterSync`: wait for a running sync first (its merge holds the index); a sync calls it with false. */
+  diffNow(run: RunningAgent, afterSync = false): Promise<void> {
     const next = (run.diff.running ?? Promise.resolve()).then(async () => {
+      if (afterSync) await run.sync.running;
       try {
         const paths = this.reportablePaths(run, await changedPaths(run.workspace.worktree, this.project(run.projectId).baseBranch));
         const key = paths.join('\n');

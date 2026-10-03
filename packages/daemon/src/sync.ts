@@ -37,3 +37,12 @@ export async function contains(worktree: string, target: string): Promise<boolea
     return false;
   }
 }
+
+/**
+ * Paths the human left in conflict (unmerged index entries), else null. After `harness task unblock`, such a
+ * state is never committed as the agent's work. A merge resolved but not committed is finished by the sync.
+ */
+export async function unresolved(worktree: string): Promise<string[] | null> {
+  const unmerged = (await git(worktree, 'diff', '--name-only', '-z', '--diff-filter=U')).split('\0').filter(Boolean).sort();
+  return unmerged.length ? unmerged : null;
+}
