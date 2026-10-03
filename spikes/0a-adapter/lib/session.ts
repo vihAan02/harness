@@ -4,7 +4,18 @@ import { randomUUID } from 'node:crypto';
 import type { Mock } from './mock-api.ts';
 import { DUMMY_KEY } from './mock-api.ts';
 
-export const MODEL = 'claude-haiku-4-5-20251001';
+/**
+ * The model, and optionally a third-party Anthropic-compatible endpoint, for real runs (D-87). Defaults to
+ * Anthropic's Haiku 4.5. For DeepSeek, for example:
+ *   SPIKE_BASE_URL=https://api.deepseek.com/anthropic SPIKE_KEY_ENV=DEEPSEEK_API_KEY SPIKE_MODEL=deepseek-flash
+ * SPIKE_AUTH_SCHEME=bearer for endpoints that take only a bearer token (OpenRouter, Kimi).
+ */
+export const MODEL = process.env.SPIKE_MODEL ?? 'claude-haiku-4-5-20251001';
+export const PROVIDER = {
+  baseUrl: process.env.SPIKE_BASE_URL,
+  keyEnv: process.env.SPIKE_KEY_ENV ?? 'ANTHROPIC_API_KEY',
+  scheme: (process.env.SPIKE_AUTH_SCHEME === 'bearer' ? 'bearer' : 'x-api-key') as 'bearer' | 'x-api-key',
+};
 
 /** An input queue the harness controls: push() a message into a live session. */
 export class Inbox implements AsyncIterable<SDKUserMessage> {
@@ -92,7 +103,7 @@ export const GIT_DENY_WRITE = ['config', 'hooks', 'refs', 'objects', 'packed-ref
  * `auth.baseUrl` is set only for the mock; real runs talk to the Anthropic API.
  */
 export function correctedOptions(p: {
-  cwd: string; configDir: string; gitCommonDir: string; auth: { apiKey: string; baseUrl?: string };
+  cwd: string; configDir: string; gitCommonDir: string; auth: { apiKey: string; baseUrl?: string; scheme?: 'x-api-key' | 'bearer' };
   denyRead?: string[]; shimTools?: string[]; mcpServers?: Options['mcpServers']; append?: string;
   hooks?: any; env?: Record<string, string>; overrides?: Partial<Options>;
 }): Options {
@@ -112,7 +123,13 @@ export function correctedOptions(p: {
       HOME: process.env.HOME!,
       TMPDIR: process.env.TMPDIR ?? '/tmp',
       ANTHROPIC_API_KEY: p.auth.apiKey, // D-48 pass-through, hidden from the agent's shell below (D-64)
+      ...(p.auth.scheme === 'bearer' ? { ANTHROPIC_AUTH_TOKEN: p.auth.apiKey } : {}), // D-87: both, so apiKeySource stays the API key
       ...(p.auth.baseUrl ? { ANTHROPIC_BASE_URL: p.auth.baseUrl } : {}),
+      // D-87 / F-25, F-26: on a third-party endpoint, pin every model alias and drop first-party-only fields.
+      ...(PROVIDER.baseUrl ? {
+        ANTHROPIC_DEFAULT_OPUS_MODEL: MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL: MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL: MODEL,
+        CLAUDE_CODE_SUBAGENT_MODEL: MODEL, CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+      } : {}),
       CLAUDE_CONFIG_DIR: p.configDir, // D-65
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -122,7 +139,7 @@ export function correctedOptions(p: {
     sandbox: {
       enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: true,
       filesystem: { denyWrite: GIT_DENY_WRITE.map((x) => `${p.gitCommonDir}/${x}`) }, // D-60
-      credentials: { envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' }] }, // D-64
+      credentials: { envVars: [{ name: 'ANTHROPIC_API_KEY', mode: 'deny' }, { name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' }] }, // D-64, D-87
     } as any,
     settings: {
       permissions: { allow: [`Edit(/${wt}/**)`], deny: (p.denyRead ?? []).map((d) => `Read(/${d}/**)`) }, // D-60, D-61
