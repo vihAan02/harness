@@ -4,7 +4,7 @@
 // `readset.added`; re-reading the same content is a no-op.
 import { normalizeFilePath } from './claims.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
-import { noticeReadsOfEdits } from './invalidation.ts';
+import { lockInvalidation, noticeReadsAfterLands, noticeReadsOfEdits } from './invalidation.ts';
 import { requireAgentOnDevice } from './sessions.ts';
 
 export const MAX_ENTRIES = 200;
@@ -56,8 +56,9 @@ export async function addReadset(ctx: HandlerContext, args: Record<string, unkno
   const taskId = sess.task_id;
   if (!READER_STATUSES.includes(sess.task_status)) return { result: { changed: [] }, events: [] }; // reads end with the task
 
+  await lockInvalidation(ctx); // first: see lockInvalidation
   // Serialize with this task's other reports (claims and reads), in path order.
-  await ctx.tx.query('SELECT id FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  await ctx.tx.query('SELECT id FROM tasks WHERE id = $1 FOR NO KEY UPDATE', [taskId]);
   const prev = new Map((await ctx.tx.query<{ path: string; content_hash: string | null; confidence: string; stale: boolean }>(
     'SELECT path, content_hash, confidence, stale FROM read_entries WHERE task_id = $1 AND path = ANY($2)', [taskId, entries.map((e) => e.path)])).rows.map((r) => [r.path, r]));
   const changed: ReadEntry[] = [];
@@ -85,7 +86,9 @@ export async function addReadset(ctx: HandlerContext, args: Record<string, unkno
   const events: HandlerOutput['events'] = changed.length
     ? [{ kind: 'readset.added', data: { task_id: taskId, session_id: args.session_id, agent_id: agentId, entries: changed } }]
     : [];
-  // Stale context (0B item 2): reading a file another agent is already changing is news too.
+  // Stale context (0B item 2): reading a file another agent is already changing is news too, and so is
+  // reading one a land has changed since this branch's base (the worktree doesn't have it yet).
   events.push(...await noticeReadsOfEdits(ctx, { task: taskId, agent: agentId }, changed));
+  events.push(...await noticeReadsAfterLands(ctx, { task: taskId, agent: agentId }, changed));
   return { result: { changed: changed.map((e) => e.path) }, events };
 }

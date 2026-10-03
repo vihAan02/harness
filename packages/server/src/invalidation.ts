@@ -17,7 +17,7 @@ const MAX_TEXT_PATHS = 20;
 
 type Stage = 'in_progress' | 'landed';
 export type NoticePath = { path: string; readHash: string | null; newHash?: string | null };
-type Writer = { task: string; agent: string | null; agentName: string | null; landId?: string };
+type Writer = { task: string; agent: string | null; agentName: string | null; landId?: string; newBase?: string };
 
 const short = (h: string | null | undefined) => (h ? h.slice(0, 7) : 'unknown');
 const listed = (paths: string[]) => paths.length <= MAX_TEXT_PATHS ? paths.join(', ') : `${paths.slice(0, MAX_TEXT_PATHS).join(', ')} and ${paths.length - MAX_TEXT_PATHS} more`;
@@ -52,6 +52,8 @@ export async function sendNotice(ctx: HandlerContext, reader: { task: string; ag
   const text = noticeText(stage, fresh, w);
   const data = {
     stage, paths: fresh.map((p) => p.path), changed_by: w.agent, writer_task: w.task, ...(w.landId ? { land_id: w.landId } : {}),
+    // The base commit that has the change: harnessd says "your branch now includes it" only once it does.
+    ...(w.newBase ? { new_base_sha: w.newBase } : {}),
     read_hashes: Object.fromEntries(fresh.map((p) => [p.path, p.readHash])),
     ...(stage === 'landed' ? { new_hashes: Object.fromEntries(fresh.map((p) => [p.path, p.newHash ?? null])) } : {}),
   };
@@ -81,6 +83,48 @@ export async function sendNotice(ctx: HandlerContext, reader: { task: string; ag
   for (const o of older) {
     await ctx.tx.query('UPDATE messages SET superseded_by = $2 WHERE id = $1', [o.id, id]);
     events.push({ kind: 'message.superseded', data: { message_id: o.id, by: id, to_task_id: reader.task } });
+  }
+  return events;
+}
+
+/**
+ * Reads and edits of one project are checked against each other under one lock, so a first read and a first
+ * edit of the same file in two concurrent commands can't both miss each other. Every command that takes it
+ * takes it first, before any row lock: one lock order, so no deadlock with the row locks taken after it.
+ */
+export async function lockInvalidation(ctx: HandlerContext): Promise<void> {
+  await ctx.tx.query("SELECT pg_advisory_xact_lock(hashtext('harness.invalidation:' || $1))", [ctx.projectId]);
+}
+
+/**
+ * Trigger 2b: `reader` just read files that a land completed after its branch's base has changed. Its
+ * worktree doesn't have that land yet, so what it read is already stale: it hears it landed, and the sync
+ * follows (D-53). Reads whose hash equals the landed blob are what landed: no notice.
+ */
+export async function noticeReadsAfterLands(ctx: HandlerContext, reader: { task: string; agent: string }, reads: { path: string; hash: string | null }[]): Promise<HandlerOutput['events']> {
+  if (!reads.length) return [];
+  const lands = (await ctx.tx.query<{ id: string; task_id: string; agent_id: string | null; new_base_sha: string; changed_blobs: Record<string, string | null> }>(
+    `SELECT l.id, l.task_id, w.assignee_agent_id AS agent_id, l.new_base_sha, l.changed_blobs
+     FROM lands l JOIN tasks r ON r.id = $2 JOIN tasks w ON w.id = l.task_id
+     WHERE l.project_id = $1 AND l.status = 'completed' AND l.task_id <> $2 AND l.changed_blobs IS NOT NULL
+       AND r.base_set_at IS NOT NULL AND l.finished_at > r.base_set_at
+     ORDER BY l.finished_at`, [ctx.projectId, reader.task])).rows;
+  // The latest land wins per path.
+  const latest = new Map<string, (typeof lands)[number]>();
+  for (const l of lands) for (const p of Object.keys(l.changed_blobs)) latest.set(p, l);
+  const byLand = new Map<string, { land: (typeof lands)[number]; paths: NoticePath[] }>();
+  for (const r of reads) {
+    const l = latest.get(r.path);
+    if (!l) continue;
+    const blob = l.changed_blobs[r.path] ?? null;
+    if (r.hash !== null && r.hash === blob) continue;
+    const x = byLand.get(l.id) ?? { land: l, paths: [] };
+    x.paths.push({ path: r.path, readHash: r.hash, newHash: blob });
+    byLand.set(l.id, x);
+  }
+  const events: HandlerOutput['events'] = [];
+  for (const { land, paths } of byLand.values()) {
+    events.push(...await sendNotice(ctx, reader, 'landed', paths, { ...await writerInfo(ctx, land.task_id, land.agent_id), landId: land.id, newBase: land.new_base_sha }));
   }
   return events;
 }
@@ -115,7 +159,7 @@ export async function noticeReadsOfEdits(ctx: HandlerContext, reader: { task: st
 }
 
 /** Trigger 3: `writer`'s land changed these paths on the base. Readers whose hash differs hear it landed. */
-export async function noticeLanded(ctx: HandlerContext, writer: { task: string; agent: string | null; landId: string }, changed: { path: string; newHash: string | null }[]): Promise<HandlerOutput['events']> {
+export async function noticeLanded(ctx: HandlerContext, writer: { task: string; agent: string | null; landId: string; newBase: string }, changed: { path: string; newHash: string | null }[]): Promise<HandlerOutput['events']> {
   if (!changed.length) return [];
   const next = new Map(changed.map((c) => [c.path, c.newHash]));
   const rows = (await ctx.tx.query<{ task_id: string; agent_id: string; path: string; content_hash: string | null }>(
@@ -124,7 +168,7 @@ export async function noticeLanded(ctx: HandlerContext, writer: { task: string; 
      ORDER BY r.task_id, r.path`, [ctx.projectId, [...next.keys()], writer.task, LANDED_READERS])).rows
     // The exact rule: notify if the new content isn't what the reader read. An unknown hash always counts as changed.
     .filter((r) => r.content_hash === null || r.content_hash !== next.get(r.path));
-  return byReader(ctx, rows.map((r) => ({ ...r, newHash: next.get(r.path) ?? null })), 'landed', { ...await writerInfo(ctx, writer.task, writer.agent), landId: writer.landId });
+  return byReader(ctx, rows.map((r) => ({ ...r, newHash: next.get(r.path) ?? null })), 'landed', { ...await writerInfo(ctx, writer.task, writer.agent), landId: writer.landId, newBase: writer.newBase });
 }
 
 async function byReader(ctx: HandlerContext, rows: { task_id: string; agent_id: string; path: string; content_hash: string | null; newHash?: string | null }[], stage: Stage, w: Writer): Promise<HandlerOutput['events']> {

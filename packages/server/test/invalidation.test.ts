@@ -124,3 +124,32 @@ test('notice text: the landed form carries the exact S3 sentence for each path',
   assert.match(t, /^Dependency changed: src\/gone\.ts has changed since you read it\. \(You read unknown; it's now deleted\.\)$/m);
   assert.match(t, /Landed by agent\/backend \(task T-2\)\.$/);
 });
+
+test('a first read and a first edit of the same file, at the same moment, never miss each other', async () => {
+  // Each runs in its own transaction: without the per-project invalidation lock, each could check for the
+  // other before the other committed, and the in-progress notice would be lost for good.
+  const a = await worker('agent/race-a');
+  const b = await worker('agent/race-b');
+  const files = Array.from({ length: 40 }, (_, i) => `src/race/${i}.ts`);
+  await Promise.all(files.map((f) => Promise.all([a.read(f, H('7')), b.edit([f])])));
+  const told = new Set((await notices(a.task)).flatMap((n) => n.data.paths as string[]));
+  assert.deepEqual(files.filter((f) => !told.has(f)), [], 'every file the reader read is covered by a notice');
+});
+
+test('the same news is never sent twice: a writer whose claim clears and comes back, or a reader re-reading mid-edit', async () => {
+  const a = await worker('agent/dd-a');
+  const b = await worker('agent/dd-b');
+  await a.read('src/dd.ts', H('1'));
+  await b.edit(['src/dd.ts']);
+  assert.equal((await notices(a.task)).length, 1);
+  // The writer's diff no longer shows the file (it reverted it), then it edits it again: a new claim, the same news.
+  await executeCommand(db.pool, device, cmd('claim.observe', { session_id: b.session, paths: [], source: 'diff' }, b.agent));
+  const again = await b.edit(['src/dd.ts']);
+  assert.ok((await kinds(again.seqs)).some((e) => e.kind === 'claim.observed'), 'the claim really was added again');
+  assert.ok(!(await kinds(again.seqs)).some((e) => e.kind === 'message.sent'));
+  // The reader reads newer content while the writer is still at it: still nothing new.
+  const reread = await a.read('src/dd.ts', H('2'));
+  assert.ok((await kinds(reread.seqs)).some((e) => e.kind === 'readset.added'));
+  assert.ok(!(await kinds(reread.seqs)).some((e) => e.kind === 'message.sent'));
+  assert.equal((await notices(a.task)).length, 1);
+});

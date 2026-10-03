@@ -22,7 +22,10 @@ const pathList = (v: unknown, name: string) => {
   return [...new Set(v.map(normalizeFilePath))].sort();
 };
 
-/** `sync.report { session_id, event: synced | conflict, old_base_sha, new_base_sha, changed_paths?, conflict_paths? }`. */
+/**
+ * `sync.report { session_id, event: synced | conflict, old_base_sha, new_base_sha, changed_paths?, all_changed?, conflict_paths? }`.
+ * `all_changed`: the sync brought in more files than one report can list, so every read of the task is stale.
+ */
 export async function reportSync(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const { agentId, deviceId } = requireAgentOnDevice(ctx);
   const sess = (await ctx.tx.query<{ task_id: string; agent_id: string; device_id: string }>(
@@ -36,10 +39,12 @@ export async function reportSync(ctx: HandlerContext, args: Record<string, unkno
   const base = { task_id: task.id, session_id: args.session_id, old_base_sha: oldBase, new_base_sha: newBase };
 
   if (args.event === 'synced') {
-    const changed = pathList(args.changed_paths, 'changed_paths');
+    const all = args.all_changed === true;
+    const changed = all ? [] : pathList(args.changed_paths, 'changed_paths');
     const stale = (await ctx.tx.query<{ path: string }>(
-      'UPDATE read_entries SET stale = true WHERE task_id = $1 AND path = ANY($2) AND NOT stale RETURNING path', [task.id, changed])).rows.map((r) => r.path).sort();
-    return { result: { stale }, events: [{ kind: 'worktree.synced', data: { ...base, changed_paths: changed, stale_paths: stale } }] };
+      'UPDATE read_entries SET stale = true WHERE task_id = $1 AND ($3 OR path = ANY($2)) AND NOT stale RETURNING path', [task.id, changed, all])).rows.map((r) => r.path).sort();
+    await ctx.tx.query('UPDATE tasks SET base_sha = $2, base_set_at = now() WHERE id = $1', [task.id, newBase]);
+    return { result: { stale }, events: [{ kind: 'worktree.synced', data: { ...base, changed_paths: changed, ...(all ? { all_changed: true } : {}), stale_paths: stale } }] };
   }
   if (args.event !== 'conflict') throw new CommandError('bad_request', 'event must be synced or conflict');
   const conflicts = pathList(args.conflict_paths, 'conflict_paths');

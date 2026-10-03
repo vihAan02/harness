@@ -157,3 +157,48 @@ test('a landed notice supersedes an undelivered in-progress one; an in-progress 
   const msgs = (await db.pool.query("SELECT data->>'stage' AS stage, superseded_by FROM messages WHERE to_task_id = $1 ORDER BY created_at, id", [reader.task])).rows;
   assert.deepEqual(msgs.map((m) => [m.stage, m.superseded_by !== null]), [['in_progress', true], ['landed', false], ['in_progress', false]]);
 });
+
+test('a read made after a land, from a branch not yet synced to it, is stale from the start: the reader hears it landed', async () => {
+  const writer = await worker('agent/late-w');
+  const reader = await worker('agent/late-r');
+  // The reader's worktree was created from base 1; the writer's land moves the base to 6 afterwards.
+  await executeCommand(db.pool, device, cmd('worktree.report', { task_id: reader.task, event: 'created', path: `/w/${reader.task}`, branch: 'b', base_sha: SHA('1') }));
+  await run('task.complete', { task_id: writer.task });
+  const landId = await request(writer.task);
+  await run('land', landArgs(landId, ['src/late.ts']), device);
+  await run('land.complete', { land_id: landId, old_base_sha: SHA('1'), new_base_sha: SHA('6'), changed: [{ path: 'src/late.ts', new_hash: SHA('b') }] }, device);
+  // Now the reader reads the old content from its unsynced worktree.
+  const r = await reader.read('src/late.ts', SHA('a'));
+  const sent = (await kinds(r.seqs)).filter((e) => e.kind === 'message.sent');
+  assert.equal(sent.length, 1);
+  assert.deepEqual([sent[0].data.stage, sent[0].data.land_id, sent[0].data.new_base_sha], ['landed', landId, SHA('6')]);
+  // Reading what landed is no news; after a sync to the new base, older lands are past.
+  assert.equal((await kinds((await reader.read('src/late.ts', SHA('b'))).seqs)).filter((e) => e.kind === 'message.sent').length, 0);
+  await executeCommand(db.pool, device, cmd('sync.report', { session_id: reader.session, event: 'synced', old_base_sha: SHA('1'), new_base_sha: SHA('6'), changed_paths: ['src/late.ts'] }, reader.agent));
+  assert.equal((await kinds((await reader.read('src/late.ts', SHA('c'))).seqs)).filter((e) => e.kind === 'message.sent').length, 0);
+});
+
+test('a task can\'t be abandoned while it lands; an accepted land can be cancelled, but a base already moved is still recorded; a land of a task no longer done is rejected', async () => {
+  const w = await finished('agent/ab1');
+  const landId = await request(w.task);
+  await rejects(run('task.abandon', { task_id: w.task, reason: 'x' }), 'conflict', /being landed/);
+  await run('land', landArgs(landId, ['src/ab.ts']), device);
+  await run('land.cancel', { task_id: w.task });
+  // The cancel stops the device at its next report; once cancelled, the land can't fail.
+  await rejects(run('land.report', { land_id: landId, step: 'testing' }, device), 'conflict');
+  await rejects(run('land.fail', { land_id: landId, reason: 'error' }, device), 'conflict');
+  await run('task.abandon', { task_id: w.task, reason: 'x' });
+  // A cancelled land whose device had already moved the base is still recorded: the change is in the base.
+  const wc = await finished('agent/ab3');
+  const lc = await request(wc.task);
+  await run('land', landArgs(lc, ['src/ab3.ts']), device);
+  await run('land.cancel', { task_id: wc.task });
+  await run('land.complete', { land_id: lc, old_base_sha: SHA('1'), new_base_sha: SHA('7'), changed: [{ path: 'src/ab3.ts', new_hash: SHA('e') }] }, device);
+  assert.deepEqual((await db.pool.query('SELECT l.status, t.status AS task FROM lands l JOIN tasks t ON t.id = l.task_id WHERE l.id = $1', [lc])).rows[0], { status: 'completed', task: 'landed' });
+  // A land requested before the task changed: re-checked when the device starts it.
+  const w2 = await finished('agent/ab2');
+  const l2 = await request(w2.task);
+  await db.pool.query("UPDATE tasks SET status = 'abandoned' WHERE id = $1", [w2.task]);
+  const r = await run('land', landArgs(l2, ['src/ab2.ts']), device);
+  assert.deepEqual(res(r).problems, [{ path: '', reason: 'task_not_done' }]);
+});

@@ -8,7 +8,7 @@
 //   path, and both agents get a claim_conflict message. Scope-only overlaps go to the human at task creation.
 import { randomUUID } from 'node:crypto';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
-import { noticeEditsInProgress } from './invalidation.ts';
+import { lockInvalidation, noticeEditsInProgress } from './invalidation.ts';
 import { newMessageId } from './messages.ts';
 import { requireAgentOnDevice } from './sessions.ts';
 
@@ -121,8 +121,10 @@ export async function observeClaims(ctx: HandlerContext, args: Record<string, un
   const taskId = sess.task_id;
   if (sess.task_status !== 'in_progress' && sess.task_status !== 'blocked') return { result: { added: [], cleared: [] }, events: [] }; // claims ended with the task
 
-  // Serialize observations per task, so concurrent reports don't both add the same path.
-  await ctx.tx.query('SELECT id FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  await lockInvalidation(ctx); // first: see lockInvalidation
+  // Serialize observations per task, so concurrent reports don't both add the same path. NO KEY UPDATE: it
+  // doesn't block the foreign-key checks of rows other commands insert for this task (notices, say).
+  await ctx.tx.query('SELECT id FROM tasks WHERE id = $1 FOR NO KEY UPDATE', [taskId]);
   const active = new Set((await ctx.tx.query<{ path: string }>(
     "SELECT path FROM claims WHERE task_id = $1 AND kind = 'observed' AND cleared_at IS NULL", [taskId])).rows.map((r) => r.path));
   const added = paths.filter((p) => !active.has(p));
@@ -175,6 +177,6 @@ export async function observeClaims(ctx: HandlerContext, args: Record<string, un
     }
   }
   // Stale context (0B item 2): agents that read these files hear that they're being changed.
-  events.push(...await noticeEditsInProgress(ctx, { task: taskId, agent: agentId }, added));
+  if (added.length) events.push(...await noticeEditsInProgress(ctx, { task: taskId, agent: agentId }, added));
   return { result: { added, cleared }, events };
 }

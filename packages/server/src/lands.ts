@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { normalizeFilePath, overlaps } from './claims.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
-import { noticeLanded } from './invalidation.ts';
+import { lockInvalidation, noticeLanded } from './invalidation.ts';
 import { lockTask } from './tasks.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -106,6 +106,11 @@ export async function fencingCheck(ctx: HandlerContext, taskId: string, changed:
 /** `land { land_id, base_branch, base_sha, merge_base_sha, head_sha, changed_paths[], lease_tokens[] }` → `land.accepted` | `land.rejected`. */
 export async function startLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const land = await deviceLand(ctx, args.land_id, ['requested']);
+  const task = await lockTask(ctx, land.task_id);
+  if (task.status !== 'done') {
+    await ctx.tx.query("UPDATE lands SET status = 'rejected', reason = 'task_not_done', finished_at = now() WHERE id = $1", [land.id]);
+    return { result: { accepted: false, problems: [{ path: '', reason: 'task_not_done' }] }, events: [{ kind: 'land.rejected', data: { land_id: land.id, task_id: land.task_id, problems: [{ path: '', reason: 'task_not_done' }] } }] };
+  }
   if (typeof args.base_branch !== 'string' || !BRANCH.test(args.base_branch)) throw new CommandError('bad_request', 'base_branch is malformed');
   const baseSha = sha(args.base_sha, 'base_sha');
   const mergeBase = sha(args.merge_base_sha, 'merge_base_sha');
@@ -135,9 +140,14 @@ export async function reportLand(ctx: HandlerContext, args: Record<string, unkno
   return { result: null, events: [{ kind: 'land.progress', data: { land_id: land.id, task_id: land.task_id, step: args.step, ...(detail ? { detail } : {}) } }] };
 }
 
-/** `land.complete { land_id, old_base_sha, new_base_sha, changed[{ path, new_hash }] }` → `land.completed`, the task landed, landed notices. */
+/**
+ * `land.complete { land_id, old_base_sha, new_base_sha, changed[{ path, new_hash }] }` → `land.completed`, the task
+ * landed, landed notices. Accepted for a cancelled land too: if the device moved the base before it heard of the
+ * cancel, the change is in the base, and readers must hear of it.
+ */
 export async function completeLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
-  const land = await deviceLand(ctx, args.land_id, ['accepted']);
+  await lockInvalidation(ctx); // first: see lockInvalidation
+  const land = await deviceLand(ctx, args.land_id, ['accepted', 'cancelled']);
   const oldBase = sha(args.old_base_sha, 'old_base_sha');
   const newBase = sha(args.new_base_sha, 'new_base_sha');
   if (land.base_sha && oldBase !== land.base_sha) throw new CommandError('conflict', 'old_base_sha is not the base this land was accepted on');
@@ -148,7 +158,9 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
     return { path: normalizeFilePath(c?.path), newHash: hash };
   });
   const task = await lockTask(ctx, land.task_id);
-  await ctx.tx.query("UPDATE lands SET status = 'completed', new_base_sha = $2, finished_at = now() WHERE id = $1", [land.id, newBase]);
+  // The base has already moved on the device: record what happened, whatever the task's status says now.
+  await ctx.tx.query("UPDATE lands SET status = 'completed', new_base_sha = $2, changed_blobs = $3, finished_at = now() WHERE id = $1",
+    [land.id, newBase, JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])))]);
   await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
   const released = (await ctx.tx.query<{ id: string }>(
     'UPDATE leases SET released_at = now() WHERE task_id = $1 AND released_at IS NULL RETURNING id', [task.id])).rows.map((r) => r.id);
@@ -157,7 +169,7 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
     ...released.map((id) => ({ kind: 'lease.released', data: { lease_id: id, task_id: task.id, reason: 'landed' } })),
   ];
   // Stale context (0B item 2): everyone who read a file this land changed, and read different content, hears it.
-  events.push(...await noticeLanded(ctx, { task: task.id, agent: task.assignee_agent_id, landId: land.id }, changed));
+  events.push(...await noticeLanded(ctx, { task: task.id, agent: task.assignee_agent_id, landId: land.id, newBase }, changed));
   return { result: null, events };
 }
 
@@ -174,13 +186,17 @@ export async function failLand(ctx: HandlerContext, args: Record<string, unknown
   };
 }
 
-/** `land.cancel { task_id }`: a human gives up on a land that hasn't started (its device may be offline). */
+/**
+ * `land.cancel { task_id }`: a human gives up on a land in flight, typically because its device is offline and
+ * every other land waits behind it. If the device was mid-land, its next progress report or land.fail is refused,
+ * which stops it; only a land.complete (the base already moved) is still recorded.
+ */
 export async function cancelLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   requireHumanCaller(ctx, 'cancel a land');
   if (typeof args.task_id !== 'string') throw new CommandError('bad_request', 'task_id is missing');
   const land = (await ctx.tx.query<{ id: string }>(
-    "SELECT id FROM lands WHERE project_id = $1 AND task_id = $2 AND status = 'requested' FOR UPDATE", [ctx.projectId, args.task_id])).rows[0];
-  if (!land) throw new CommandError('conflict', `no land of ${args.task_id} is waiting to start`);
+    "SELECT id FROM lands WHERE project_id = $1 AND task_id = $2 AND status IN ('requested', 'accepted') FOR UPDATE", [ctx.projectId, args.task_id])).rows[0];
+  if (!land) throw new CommandError('conflict', `no land of ${args.task_id} is in flight`);
   await ctx.tx.query("UPDATE lands SET status = 'cancelled', reason = 'cancelled', finished_at = now() WHERE id = $1", [land.id]);
   return { result: null, events: [{ kind: 'land.failed', data: { land_id: land.id, task_id: args.task_id, reason: 'cancelled' } }] };
 }

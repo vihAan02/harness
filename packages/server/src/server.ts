@@ -29,7 +29,9 @@ export type ServerOptions = {
 };
 export type RunningServer = { url: string; port: number; close: () => Promise<void> };
 
-const MAX_MESSAGE_BYTES = 256 * 1024; // the protocol carries paths, hashes and short text, never file contents
+// The protocol carries paths, hashes and short text, never file contents. A land or a full diff report can
+// list up to 5,000 paths of up to 1,000 characters each, so frames go up to 8 MiB.
+const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const REPLAY_BATCH = 500;
 
 type Sub = { cursor: number; pumping: boolean; again: boolean };

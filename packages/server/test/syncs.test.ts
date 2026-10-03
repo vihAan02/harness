@@ -46,6 +46,14 @@ test('a sync marks the reader\'s entries for the synced files stale; a re-read f
   assert.equal((await db.pool.query("SELECT stale FROM read_entries WHERE task_id = $1 AND path = 'src/types.ts'", [a.task])).rows[0].stale, false);
 });
 
+test('a sync that brings in more files than a report can list marks every read of the task stale', async () => {
+  const a = await worker('agent/s1b');
+  await a.as('readset.add', { entries: [{ path: 'src/one.ts', hash: SHA('a'), source: 'read_tool', confidence: 'high' }, { path: 'src/two.ts', hash: SHA('b'), source: 'read_tool', confidence: 'high' }] });
+  const r = await a.as('sync.report', { event: 'synced', old_base_sha: SHA('1'), new_base_sha: SHA('2'), changed_paths: [], all_changed: true });
+  const [ev] = await events(r.seqs);
+  assert.deepEqual([ev.data.all_changed, ev.data.stale_paths], [true, ['src/one.ts', 'src/two.ts']]);
+});
+
 test('a conflicting sync blocks the task and tells its owner; only a human unblocks it', async () => {
   const a = await worker('agent/s2');
   const r = await a.as('sync.report', { event: 'conflict', old_base_sha: SHA('1'), new_base_sha: SHA('2'), conflict_paths: ['src/types.ts'] });

@@ -46,6 +46,8 @@ async function requireAgent(ctx: HandlerContext, agentId: unknown): Promise<stri
  * task can't be given to an agent that has one in progress or blocked.
  */
 async function requireFree(ctx: HandlerContext, agentId: string): Promise<void> {
+  // Two concurrent assignments to one agent serialize here, so both can't see it free (write skew).
+  await ctx.tx.query('SELECT id FROM agent_principals WHERE id = $1 FOR NO KEY UPDATE', [agentId]);
   const busy = (await ctx.tx.query<{ id: string }>(
     "SELECT id FROM tasks WHERE project_id = $1 AND assignee_agent_id = $2 AND status IN ('in_progress', 'blocked') LIMIT 1", [ctx.projectId, agentId])).rows[0];
   if (busy) throw new CommandError('conflict', `that agent is already working on ${busy.id}; finish or abandon it first`);
@@ -56,7 +58,7 @@ export type TaskRow = { id: string; status: string; assignee_agent_id: string | 
 export async function lockTask(ctx: HandlerContext, taskId: unknown): Promise<TaskRow> {
   if (typeof taskId !== 'string' || !TASK_ID.test(taskId)) throw new CommandError('bad_request', 'task_id is missing or malformed');
   const row = (await ctx.tx.query<TaskRow>(
-    'SELECT id, status, assignee_agent_id, owner_human_id, scope, title FROM tasks WHERE id = $1 AND project_id = $2 FOR UPDATE', [taskId, ctx.projectId])).rows[0];
+    'SELECT id, status, assignee_agent_id, owner_human_id, scope, title FROM tasks WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE', [taskId, ctx.projectId])).rows[0];
   if (!row) throw new CommandError('not_found', `no task ${taskId} in this project`);
   return row;
 }
@@ -117,6 +119,8 @@ export async function abandonTask(ctx: HandlerContext, args: Record<string, unkn
   const task = await lockTask(ctx, args.task_id);
   const reason = text(args.reason, 'reason', 500)!;
   if (task.status === 'landed' || task.status === 'abandoned') throw new CommandError('conflict', `${task.id} is already ${task.status}`);
+  const landing = (await ctx.tx.query("SELECT id FROM lands WHERE task_id = $1 AND status IN ('requested', 'accepted')", [task.id])).rows[0];
+  if (landing) throw new CommandError('conflict', `${task.id} is being landed; cancel the land first (harness land --cancel ${task.id})`);
   await ctx.tx.query("UPDATE tasks SET status = 'abandoned', completed_at = now() WHERE id = $1", [task.id]);
   return { result: null, events: [{ kind: 'task.abandoned', data: { task_id: task.id, reason } }, ...await clearTaskClaims(ctx, task.id)] };
 }
