@@ -59,3 +59,23 @@ test('only harnessd reports sessions, only for the assigned agent, and only its 
   await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: randomUUID(), status: 'idle' }, agentA)), 'bad_request');
   await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'idle', usage: { input: -1 } }, agentA)), 'bad_request');
 });
+
+test('a session records its configured model and provider, and usage says which models and prices it counted (D-87)', async () => {
+  const id = randomUUID();
+  const r = await executeCommand(db.pool, device, cmd('session.report', {
+    session_id: id, status: 'starting', task_id: 't1', worktree: '/w/t1', branch: 'harness/task/t1', model: 'deepseek-flash[1m]', provider: 'deepseek',
+  }, agentA));
+  const ev = (await db.pool.query('SELECT data FROM events WHERE project_id = $1 AND seq = $2', [project, r.seqs[0]])).rows[0].data;
+  assert.equal(ev.model, 'deepseek-flash[1m]');
+  assert.equal(ev.provider, 'deepseek');
+  const row = (await db.pool.query('SELECT model, provider FROM agent_sessions WHERE id = $1', [id])).rows[0];
+  assert.deepEqual(row, { model: 'deepseek-flash[1m]', provider: 'deepseek' });
+  const usage = { input: 10, output: 2, cache_read: 0, cache_creation: 0, cost_usd: 0.0001, cost_basis: 'config', models: ['deepseek-flash[1m]'] };
+  const u = await executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'idle', usage }, agentA));
+  const uev = (await db.pool.query("SELECT data FROM events WHERE project_id = $1 AND seq = ANY($2) AND kind = 'usage.reported'", [project, u.seqs])).rows[0].data;
+  assert.equal(uev.cost_basis, 'config');
+  assert.deepEqual(uev.models, ['deepseek-flash[1m]']);
+  await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: randomUUID(), status: 'starting', task_id: 't1', worktree: '/w/t1', branch: 'b', model: '--evil' }, agentA)), 'bad_request');
+  await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'idle', usage: { ...usage, cost_basis: 'made-up' } }, agentA)), 'bad_request');
+  await executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'ended' }, agentA));
+});

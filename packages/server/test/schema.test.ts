@@ -31,3 +31,8 @@ test('tasks move only through the defined states (D-54)', async () => {
     "INSERT INTO tasks (id, project_id, title, text, scope, owner_human_id, status) VALUES ('t1', $1, 't', 't', '{src/}', 'human_test', 'paused')", [p]),
   /tasks_status_check/);
 });
+
+test('runs on PostgreSQL 18 or later (D-73): a missing HARNESS_TEST_DATABASE_URL could point the tests at an older server', async () => {
+  const v = Number((await db.pool.query('SHOW server_version_num')).rows[0].server_version_num);
+  assert.ok(v >= 180000, `server_version_num is ${v}; point HARNESS_TEST_DATABASE_URL at PostgreSQL 18 (see README "Running locally")`);
+});

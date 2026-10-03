@@ -23,11 +23,14 @@ function requireDevice(ctx: HandlerContext): string {
 export async function reportWorktree(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const deviceId = requireDevice(ctx);
   const taskId = await requireTask(ctx, args.task_id);
-  const { event, path, branch, commit } = args;
+  const { event, path, branch, commit, base_sha: baseSha } = args;
   if (event !== 'created' && event !== 'committed' && event !== 'removed') throw new CommandError('bad_request', 'event must be created, committed or removed');
   if (typeof path !== 'string' || !path.startsWith('/') || path.length > 1024) throw new CommandError('bad_request', 'path must be absolute');
   if (branch !== undefined && (typeof branch !== 'string' || branch.length > 255)) throw new CommandError('bad_request', 'branch is malformed');
   if (commit !== undefined && (typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit))) throw new CommandError('bad_request', 'commit must be a full SHA');
+  if (baseSha !== undefined && (event !== 'created' || typeof baseSha !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(baseSha))) throw new CommandError('bad_request', 'base_sha is a full commit id, on created only');
+  // The base a new worktree starts from: reads are checked against lands completed after it (0011).
+  if (event === 'created' && baseSha) await ctx.tx.query('UPDATE tasks SET base_sha = $2, base_set_at = now() WHERE id = $1', [taskId, baseSha]);
   return {
     result: null,
     events: [{ kind: `worktree.${event}`, data: { task_id: taskId, device_id: deviceId, path, ...(branch ? { branch } : {}), ...(commit ? { commit } : {}) } }],

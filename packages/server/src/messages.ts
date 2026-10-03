@@ -16,11 +16,11 @@ const MAX_ABOUT_PATHS = 20;
 
 export const newMessageId = () => `msg_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
 
-/** The agent's task in progress, if any. An agent works on at most one task at a time in 0A. */
+/** The agent's active task (in progress, or blocked on a sync conflict), if any. An agent has at most one (tasks.ts). */
 export async function activeTaskOf(ctx: HandlerContext, principal: string): Promise<string | null> {
   if (!principal.startsWith('agent_')) return null;
   const r = await ctx.tx.query<{ id: string }>(
-    "SELECT id FROM tasks WHERE project_id = $1 AND assignee_agent_id = $2 AND status = 'in_progress' ORDER BY created_at DESC LIMIT 1", [ctx.projectId, principal]);
+    "SELECT id FROM tasks WHERE project_id = $1 AND assignee_agent_id = $2 AND status IN ('in_progress', 'blocked') ORDER BY created_at DESC LIMIT 1", [ctx.projectId, principal]);
   return r.rows[0]?.id ?? null;
 }
 

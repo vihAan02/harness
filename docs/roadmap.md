@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 11 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82), the benchmark app (D-83) and the demo (D-84). **The exit criteria are met with a scripted model** (`npm run demo`). Still open: the real-model checks (U-1, Q-18) and the owner's review before 0B.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 11 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82), the benchmark app (D-83) and the demo (D-84). **The exit criteria are met with a scripted model** (`npm run demo`). **Phase 0B approved 2026-10-03 (D-86),** with the real-model checks (U-1, Q-18) deferred until a key exists. This stretch built items 1, 2 and the land part of 5, plus provider configuration (D-87, D-90 to D-93): the S3 exit example passes with the scripted model. Next, after an owner's review: items 3, 4, the rest of 5, 6, 7, 8, then the A/B test.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -219,7 +219,7 @@
 10. **Run the A/B test** against pass bar v1 (D-57), or a later version recorded before the runs start. Write `docs/results/<date>-ab-gate.md`.
 
 **Exit criteria:**
-- [ ] The S3 example works end to end:
+- [x] The S3 example works end to end **(with the scripted model, 2026-10-03: `test/s3.integration.test.ts`; D-91 to D-93)**:
   1. A reads `src/types.ts` @ hash ABC.
   2. B changes it and finishes, and the human lands it.
   3. A's branch is synced at turn end, and A is told "Dependency changed: src/types.ts has changed since you read it." with a diff excerpt.

@@ -8,7 +8,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
 
 ## Current state
 - **The owners:** GitHub `vihAan02`, who owns the repo, and Daniyal Mughal (GitHub `DaniyalMughal1`), co-owner (D-85, superseding D-71's owner line). A gate marked "owner" needs the approval of either one. Daniyal continues the work from [HANDOFF.md](HANDOFF.md).
-- **Phase:** 0A, approved 2026-10-01 (D-59).
+- **Phase:** 0B, approved 2026-10-03 by a co-owner (D-86). 0A is built (D-59 to D-84).
   - **Done:**
     - the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`, accepted by the owner (D-71). Results are in [docs/research/spike-0a.md](docs/research/spike-0a.md); the architecture changes are D-60 to D-70.
     - item 1, the repo skeleton, in `packages/` (D-72);
@@ -22,12 +22,14 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 9, the human CLI and the task lifecycle (D-81);
     - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83);
     - item 11, the 0A demo, `npm run demo`, which meets every 0A exit criterion with a scripted model (D-84).
-  - **Still open for 0A:** the real-model checks need an API key (U-1, Q-18), and an owner reviews 0A before 0B starts (D-44).
+  - **Deferred from 0A:** the real-model checks need an API key (U-1, Q-18, deferred by D-86).
+  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`). **Stopped for an owner's review** before the rest of 0B.
+  - **Environment caveat:** if the checkout is inside an iCloud-synced folder (such as `~/Desktop`), real-CLI tests flake and iCloud can create `name 2.ext` duplicate files; run them from a clone outside iCloud (see HANDOFF.md).
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
   - The spike is throwaway, and product code never imports it.
-- **Stack:** TypeScript (D-55) on Node 24+ (D-72). Experiments use API keys, never subscription login (D-56).
+- **Stack:** TypeScript (D-55) on Node 24+ (D-72). Experiments use API keys or provider tokens from pay-as-you-go accounts, never subscription login (D-56, D-87). The model endpoint is configured, never hardcoded (D-87).
 - **Next step, and what must happen first:** see [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a). That's the only canonical copy.
 
 ## Read in this order before doing anything
@@ -71,7 +73,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   
   Never present a hypothesis or an unverified vendor behavior as fact.
 - **Re-verify vendor facts before relying on them in code.** Agent CLIs change fast. If a fact is more than about 60 days old, re-check it and update its F-ID.
-- **`docs/source/` holds raw records of the owners' instructions (S1–S8).** Never edit them.
+- **`docs/source/` holds raw records of the owners' instructions (S1–S9).** Never edit them.
 - **Keep the docs clear, not bureaucratic.** Don't add documents that duplicate others.
 - **Git:** don't commit or push unless the owner asks. Never commit secrets or `.env` files.
 - **Security defaults you must not weaken:**

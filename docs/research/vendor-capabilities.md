@@ -8,6 +8,7 @@
 >   - Corrections from the checkers, and from a later citation-accuracy review, are folded in below.
 > - **Empirical re-check:** the Claude facts the design leans on were re-tested against Claude Code 2.1.287 / Agent SDK 0.3.287 in the 0A spike ([spike-0a.md](spike-0a.md)). See the *Spike* lines under each F-ID, and C-14 to C-20.
 > - **What an F-ID is:** a researched claim with a source and a confidence mark. Trust the mark: `?` and `◐` items are **not** verified facts. They're kept here so the evidence for them stays in one place.
+> - **Added 2026-10-03:** F-24 to F-29 (Claude Code behind third-party endpoints), F-58 (`srt` loopback binding) and F-72 to F-77 (model providers), from one research pass over official docs, the pinned 2.1.287 binary and the srt 0.0.78 source, for D-87. Single-pass facts are ✔ at most; mock probes upgrade them where noted.
 > - **Re-verify before writing code that depends on any of this.** Both agent vendors changed these surfaces several times in 2026.
 >
 > **Checker results:** Claude checker, 26 load-bearing claims: 18 confirmed, 8 corrected (details, none reversing a design conclusion), 0 refuted. Codex/infra/terms checker, 53 claims: 40 confirmed, 8 corrected, 2 "refuted" (both were claims the researcher had already marked contradicted, so the contradiction is confirmed), 3 uncertain (Anthropic's 2026 enforcement history and the OpenAI ToU clauses, secondary sources only).
@@ -46,6 +47,7 @@ Each item lists which source it affects. C-14 to C-20 were found by the 0A spike
 | C-18 | D-48: passing the API key through env is safe | **Found by the spike:** the key is in the agent shell's environment, readable by any repo script, unless `sandbox.credentials.envVars` denies it (D-64). | SP-08 |
 | C-19 | F-22 read as "no per-agent `CLAUDE_CONFIG_DIR`" | **Found by the spike:** that caveat is subscription-only. In API-key mode a per-agent dir is the strongest isolation available (D-65). | SP-08, SP-11 |
 | C-20 | F-11's order (hooks run before deny rules), relied on by the missed-hook monitor (D-47) | **Found by the spike (2026-10-02):** a Read whose path matches a `Read(//…)` deny rule is rejected at input validation, and **no hook fires** (no PreToolUse, PermissionDenied or PostToolUseFailure). The monitor and T-1 must count attempts from the stream's `tool_use` blocks. Only Read was tested. | SP-15 |
+| C-21 | D-56/D-77: an API key from any provider reports `apiKeySource: 'ANTHROPIC_API_KEY'` | **Only for `x-api-key` providers.** A provider that takes only a bearer token (`ANTHROPIC_AUTH_TOKEN`) reports `'none'`, the same value as a subscription login, so the auth-source check can't tell them apart (D-87). | F-24 |
 
 ---
 
@@ -266,6 +268,58 @@ Sources: [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript), [
 
 Sources: [CLI reference](https://code.claude.com/docs/en/cli-reference), [headless](https://code.claude.com/docs/en/headless).
 
+**F-24 ✔ Auth headers and `apiKeySource` behind a custom endpoint** (checked 2026-10-03).
+- `ANTHROPIC_API_KEY` is sent as `X-Api-Key`; `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer`. An `apiKeyHelper`'s output goes in both headers.
+- The SDK's `apiKeySource` values are `'ANTHROPIC_API_KEY' | 'apiKeyHelper' | '/login managed key' | 'none'`. The type's own doc says `'none'` covers "claude.ai OAuth login, a bearer token, or a third-party cloud provider".
+- When `ANTHROPIC_API_KEY` is set, `apiKeySource` is `'ANTHROPIC_API_KEY'` whatever the base URL. Setting both variables to one key is the documented pattern for bearer gateways ("the copy in x-api-key is ignored"); the CLI then warns about two credential sources.
+- A custom `ANTHROPIC_BASE_URL` still counts as the first-party provider inside the CLI (◐, from the binary).
+
+Sources: [env vars](https://code.claude.com/docs/en/env-vars), [LLM gateway: connect](https://code.claude.com/docs/en/llm-gateway-connect), [authentication](https://code.claude.com/docs/en/authentication); pinned `sdk.d.ts` (`ApiKeySource`). *Impact: D-87, C-21.*
+
+*Probe, 2026-10-03, Claude Code 2.1.287 / SDK 0.3.287, scripted mock (`packages/adapters/test/provider.test.ts`):* VERIFIED. `ANTHROPIC_AUTH_TOKEN` alone gives `apiKeySource: 'none'` with `accountInfo().tokenSource: 'ANTHROPIC_AUTH_TOKEN'` and only a bearer header. Both variables set give `apiKeySource: 'ANTHROPIC_API_KEY'` and send both headers to the configured host. A base URL with a path (`/anthropic`) is honoured. The warm-up `HEAD /api/hello` carries no credential.
+
+**F-25 ✔ Model variables behind a custom endpoint.**
+- `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` set what the aliases resolve to; the Haiku one is "also used for background functionality" (summaries, titles, classifiers). `ANTHROPIC_SMALL_FAST_MODEL` is deprecated. `CLAUDE_CODE_SUBAGENT_MODEL` sets subagent and workflow models.
+- Behind `ANTHROPIC_BASE_URL`, the background model is **the main model** unless `ANTHROPIC_DEFAULT_HAIKU_MODEL` is set; default Haiku is used only with an Anthropic Console key (`sk-ant-api…`) and no `ANTHROPIC_AUTH_TOKEN` (the prefix test is ◐, from the binary).
+- Model ids aren't validated up front: a bad id fails on the first request.
+
+Sources: [model config](https://code.claude.com/docs/en/model-config), [env vars](https://code.claude.com/docs/en/env-vars), [LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol). *Impact: pin every tier to the configured model, or opus-named aliases bill at another model's price.*
+
+**F-26 ✔ What the CLI sends for a model id it doesn't know.**
+- Unknown ids behind a base URL get what current Claude models accept: adaptive `thinking`, effort (`output_config`) and `context_management`. The CLI retries automatically when a provider rejects `thinking` or effort, but **not** `context_management` or tool-schema fields.
+- `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` strips pre-release `anthropic-beta` values and their fields: `context_management`, tool `strict` / `defer_loading` / `eager_input_streaming`, `output_config.format` (2.1.287+), `task_budget`. It keeps effort and adaptive thinking.
+- Unknown ids assume a 200K context (1M with a `[1m]` suffix) and 32,000 output tokens. `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS` override them. `ANTHROPIC_DEFAULT_*_SUPPORTED_CAPABILITIES` has no effect behind a base URL.
+
+Sources: [LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol), [env vars](https://code.claude.com/docs/en/env-vars).
+
+*Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED. For `deepseek-flash` the CLI sends `thinking: {type: 'adaptive'}`, `output_config: {effort: 'high'}`, `max_tokens: 32000` and `context_management`, with nine `anthropic-beta` values. `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` removes `context_management` and cuts the betas to four (`claude-code`, `interleaved-thinking`, `mid-conversation-system`, `effort`); a strict endpoint then accepts every request. A `[1m]` suffix is stripped on the wire and adds the `context-1m` beta; `init.model` keeps the suffix.
+
+**F-27 ✔ Cost for unknown models is a guess.** `modelUsage[id].costBasis` is `'list' | 'managed' | 'unknown'`. For `'unknown'`, `costUSD` (and so `total_cost_usd` and the `maxBudgetUsd` cap) is "a guess at the default model's rate". `modelPricing` is ignored in `--settings`.
+
+Sources: pinned `sdk.d.ts` (`ModelUsage`), [cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking), [settings](https://code.claude.com/docs/en/settings). *Impact: M8 needs harness-side pricing for non-Anthropic models (D-87).*
+
+*Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED. An unknown id gets `costBasis: 'unknown'` priced at $5 in / $25 out per million tokens, about 17 to 21 times DeepSeek's `deepseek-flash` rates. `claude-haiku-4-5` gets `costBasis: 'list'` at its real $1 / $5. With no model configured, the default model on an API key is `claude-opus-5-5`.
+
+**F-28 ✔ Other endpoints the CLI contacts.**
+- `/v1/messages` and the optional `/v1/messages/count_tokens` go to `ANTHROPIC_BASE_URL`; so does a `HEAD /api/hello` warm-up, skipped when an HTTP proxy is set. `GET /v1/models` only with `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`.
+- Feature flags, event logging and Datadog go to Anthropic or Datadog hosts, **never** the base URL, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` turns them off (the adapter sets it). Whether it also stops the model-catalog fetch from `downloads.claude.ai` is ?.
+
+Sources: [LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol), [network config](https://code.claude.com/docs/en/network-config), [data usage](https://code.claude.com/docs/en/data-usage). *Impact: spike unknown U-4: the mock never saw flag requests because they're turned off, not because the mock lacks them.*
+
+**F-29 ✔ `CLAUDE_CODE_EXTRA_BODY`** is a JSON object merged into the top level of every request body. `ANTHROPIC_CUSTOM_HEADERS` (2.1.227+) adds headers. `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS` arrived in 2.1.288, after the pin.
+
+Sources: [env vars](https://code.claude.com/docs/en/env-vars), [CHANGELOG](https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md).
+
+*Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED: `{"provider": {"allow_fallbacks": false}}` arrives as a top-level `provider` field. Model ids with `/` and `:` (`qwen/qwen3.8-27b:free`) pass through unchanged.
+
+**F-78 ✔ The pinned CLI is a Bun-compiled binary, and Bun's own environment variables work on it** (2.1.287, checked 2026-10-03 by the D-87 review). `node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude` is a Bun 1.4.3 compiled Mach-O (its fetches send `User-Agent: Bun/1.4.3`). Probed with a dummy key: `BUN_OPTIONS="--preload ./setup.js"` ran a file from the working directory inside the CLI process, before `init` and outside the sandbox, with the key in its environment; `BUN_CONFIG_VERBOSE_FETCH=curl` printed every request's `x-api-key` header to stderr.
+
+Source: the D-87 adversarial review's probes against the pinned binary. *Impact: TH-21; `BUN_*` is a reserved secret prefix (D-90).*
+
+**F-97 ✔ The Bash tool's working directory carries over between commands, unless `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`** (2.1.287, checked 2026-10-03). By default, `cd sub` in one Bash call leaves the next call in `sub`. With the variable set, every call starts in the session's project directory (the worktree). The PostToolUse input names only the command, not the directory it ran in.
+
+Source: the variable is in the pinned binary's env-var list and the [env vars](https://code.claude.com/docs/en/env-vars) page. *Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED. `cd sub && pwd` then `pwd` printed `…/wt/sub` twice without the variable, and `…/wt/sub` then `…/wt` with it. *Impact: shell-read capture resolves relative paths against the worktree (D-91), so the adapter sets the variable.*
+
 ## OpenAI Codex
 
 *Docs moved: `developers.openai.com/codex/*` now 308-redirects to `learn.chatgpt.com/docs/*`.*
@@ -427,6 +481,55 @@ Sources: [sequence functions](https://www.postgresql.org/docs/current/functions-
 - **Cleanup:** `remove` needs `--force` for dirty or submodule worktrees. `prune` only cleans entries whose directories are gone.
 
 Sources: [git-worktree](https://git-scm.com/docs/git-worktree), [gitrepository-layout](https://git-scm.com/docs/gitrepository-layout). *Impact: D-50; TH-14.*
+
+**F-58 ◐ `srt` loopback binding is wider than loopback** (srt 0.0.78, macOS, from reading the source; checked 2026-10-03). `network.allowLocalBinding: true` emits `(allow network-bind (local ip "*:*"))`, `(allow network-inbound (local ip "*:*"))` and `(allow network-outbound (remote ip "localhost:*"))`. So a sandboxed process may bind any interface and accept inbound connections from anywhere, while its outbound traffic is limited to localhost (plus the proxy's allowed domains).
+
+Source: `@anthropic-ai/sandbox-runtime` 0.0.78, `macos-sandbox-utils.js`. *Impact: the land step's test sandbox (D-83): a test server bound to `0.0.0.0` is reachable from the LAN while tests run.*
+
+## Model providers (Anthropic-compatible endpoints)
+
+Checked 2026-10-03, one research pass over each provider's official docs (D-87). Prices and model lists change often: re-check before relying on them.
+
+**F-72 ✔ DeepSeek's Anthropic-compatible API.**
+- **Endpoint:** `https://api.deepseek.com/anthropic`. It accepts the key as `x-api-key` and as a bearer token (both answered 401 with the key's tail when probed with fake keys, so both headers are read).
+- **Models:** `deepseek-flash` is DeepSeek-V4.1-Flash (released 2026-09-10): 1M context, 384K max output, tool calls, thinking on by default. `deepseek-chat` and `deepseek-reasoner` were retired after 2026-07-24. **Any unknown model name maps silently to `deepseek-flash`, and `claude-opus*` names map to `deepseek-v4-pro`** at Pro prices.
+- **Compatibility table:** `anthropic-beta` and `anthropic-version` ignored; `cache_control` ignored; `thinking` supported with `budget_tokens` ignored; `output_config` supports only `effort`; `tool_choice` supported with `disable_parallel_tool_use` ignored; `document`, `redacted_thinking`, MCP and code-execution blocks not supported; `mcp_servers` and `container` ignored.
+- **Claude Code guide:** sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL=deepseek-flash[1m]`, every `ANTHROPIC_DEFAULT_*_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` to `deepseek-flash`.
+- **Known issue:** [claude-code#65863](https://github.com/anthropics/claude-code/issues/65863) (subagents sending thinking disabled plus effort → 400) was closed for inactivity, not fixed. Subagents are removed in harness sessions (D-66).
+
+Sources: [Anthropic API guide](https://api-docs.deepseek.com/guides/anthropic_api), [Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code), [models and pricing](https://api-docs.deepseek.com/quick_start/pricing), [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode).
+
+**F-73 ◐ DeepSeek pricing and billing** (volatile).
+- `deepseek-flash`, USD per 1M tokens, peak: input $0.30 (cache miss), $0.006 (cache hit); output $1.20. Off-peak is half: peak hours are 01:00–04:00 and 06:00–10:00 UTC, Monday to Friday. Caching is automatic; `cache_control` is ignored.
+- **Prepaid:** a 402 means insufficient balance. Keys at [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys), top-up at [platform.deepseek.com/top_up](https://platform.deepseek.com/top_up).
+- **Limits:** concurrency-based, 2,500 concurrent requests per account for flash; no RPM or TPM limit documented.
+
+Sources: [pricing](https://api-docs.deepseek.com/quick_start/pricing), [error codes](https://api-docs.deepseek.com/quick_start/error_codes), [rate limit](https://api-docs.deepseek.com/quick_start/rate_limit).
+
+**F-74 ✔ OpenRouter's Anthropic-compatible endpoint.**
+- **Endpoint:** `https://openrouter.ai/api` (requests go to `/api/v1/messages`). Its guide uses `ANTHROPIC_AUTH_TOKEN` (bearer) and says `ANTHROPIC_API_KEY` must be explicitly empty. Whether it also accepts `x-api-key` is ?.
+- **Official position:** "Claude Code with OpenRouter is only guaranteed to work with the Anthropic first-party provider"; the blog says non-Anthropic models "aren't supported through the native endpoint". Anthropic's docs say the same of any gateway. The API itself accepts any model id.
+- **Pinning:** no model fallback unless the request sends `models` or `fallbacks`; provider fallback is on by default and is turned off with `provider: {allow_fallbacks: false}` in the body (through `CLAUDE_CODE_EXTRA_BODY`, ◐). Router ids (`openrouter/auto`, `openrouter/free`, `~…-latest`) pick models and must not be used for the A/B (D-87).
+- Keys at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys); the docs name the variable `OPENROUTER_API_KEY`.
+
+Sources: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration.md), [messages API](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message.md), [model fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks.md), [provider selection](https://openrouter.ai/docs/guides/routing/provider-selection.md).
+
+**F-75 ◐ OpenRouter free models** (volatile; from the live model list, 2026-10-03).
+- 17 `:free` models; none is a DeepSeek, Kimi, GLM or Qwen-Coder model. Tool-capable ones with at least 64K context include `qwen/qwen3.8-27b:free`, `nvidia/nemotron-3-super-120b-a12b:free`, `cohere/north-mini-code:free` and `google/gemma-4-31b-it:free`, each served by one provider.
+- **Free limits:** 20 requests a minute; 50 a day with under $10 of credits ever bought, 1,000 a day above that. Claude Code's background calls count too.
+
+Sources: `GET https://openrouter.ai/api/v1/models?supported_parameters=tools`, [limits](https://openrouter.ai/docs/api_reference/limits.md).
+
+**F-76 ✔ Kimi (Moonshot) Anthropic-compatible endpoint.**
+- **Endpoint:** `https://api.moonshot.ai/anthropic` (mainland China: `api.moonshot.cn`); bearer via `ANTHROPIC_AUTH_TOKEN`. Keys are tied to their platform, at [platform.kimi.ai/console/api-keys](https://platform.kimi.ai/console/api-keys); the docs name the variable `MOONSHOT_API_KEY`.
+- **Models:** the cheapest with tool calls is `kimi-k2.6` (262K context; $0.95 in, $4.00 out per 1M tokens), which accepts only `tool_choice` `auto` or `none`. The messages API reference lists only `kimi-k3` as an allowed model, so whether `kimi-k2.6` works on the Anthropic endpoint is ?.
+- **Limits:** a $1 top-up gives 3 requests a minute; $10 gives 100 a minute.
+
+Sources: [Claude Code guide](https://platform.kimi.ai/docs/guide/claude-code-kimi.md), [models](https://platform.kimi.ai/docs/models.md), [pricing](https://platform.kimi.ai/docs/pricing/chat.md), [limits](https://platform.kimi.ai/docs/pricing/limits.md), [messages API](https://platform.kimi.ai/docs/api/messages.md).
+
+**F-77 ✔ Anthropic Haiku 4.5** (for the later comparison, D-87). Model id `claude-haiku-4-5`: 200K context, $1 in and $5 out per 1M tokens, endpoint `https://api.anthropic.com` with `x-api-key`. Keys at [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys). Haiku 4.5 still requires a Read before an Edit (F-20).
+
+Source: Anthropic model reference (cached 2026-09-25 in the claude-api skill), [models overview](https://docs.anthropic.com/en/docs/about-claude/models/overview).
 
 ## Vendor terms (not legal advice)
 

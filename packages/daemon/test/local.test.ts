@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { Approvals, setupHash } from '../src/approvals.ts';
+import { Approvals, setupHash, testHash } from '../src/approvals.ts';
 import { loadConfig, parseConfig, resolveSecrets } from '../src/config.ts';
 import { effectivePolicy, readRepoConfig } from '../src/repo-config.ts';
 import { agentConfigDir, PortAllocator } from '../src/resources.ts';
@@ -40,7 +40,7 @@ test('config: the token file must be private', () => {
 test('secrets: only allowlisted names reach a task, from an owner-only file', () => {
   const home = tempHome(path.join(t.dir, 'sec'));
   fs.writeFileSync(home.secrets, 'DB_URL = "postgres://x"\nOTHER = "nope"\n', { mode: 0o600 });
-  const policy = effectivePolicy(parseConfig(BASE, TOKEN), parseConfig(BASE, TOKEN).projects[0]!, { setup: null, envRefs: ['DB_URL', 'OTHER', 'MISSING'], portsPerAgent: null, maxConcurrentAgents: null });
+  const policy = effectivePolicy(parseConfig(BASE, TOKEN), parseConfig(BASE, TOKEN).projects[0]!, { setup: null, test: null, envRefs: ['DB_URL', 'OTHER', 'MISSING'], portsPerAgent: null, maxConcurrentAgents: null });
   assert.deepEqual(policy.secretNames, ['DB_URL']);
   assert.deepEqual(resolveSecrets(home, policy.secretNames), { DB_URL: 'postgres://x' });
 });
@@ -67,6 +67,21 @@ test('harness.yaml: refuses path traversal, symlinks and malformed values', () =
   fs.rmSync(path.join(wt, 'harness.yaml'));
   fs.symlinkSync('/etc/hosts', path.join(wt, 'harness.yaml'));
   assert.throws(() => readRepoConfig(wt), /regular file/);
+});
+
+test('harness.yaml: a test command for the land step, validated like setup; its approval is a separate kind (D-51)', () => {
+  const wt = path.join(t.dir, 'wt-test');
+  fs.mkdirSync(wt);
+  fs.writeFileSync(path.join(wt, 'package.json'), '{}');
+  fs.writeFileSync(path.join(wt, 'harness.yaml'), 'setup:\n  command: npm ci\n  manifests: [package.json]\ntest:\n  command: npm test\n  manifests: [package.json]\n  timeout_seconds: 300\n');
+  const r = readRepoConfig(wt);
+  assert.deepEqual(r.test, { command: 'npm test', manifests: ['package.json'], timeoutSeconds: 300 });
+  fs.writeFileSync(path.join(wt, 'harness.yaml'), 'test:\n  command: npm test\n  manifests: [../x]\n');
+  assert.throws(() => readRepoConfig(wt), /inside the repo/);
+  fs.writeFileSync(path.join(wt, 'harness.yaml'), 'test:\n  command: ""\n');
+  assert.throws(() => readRepoConfig(wt), /test.command/);
+  // The same text approved as setup never counts as an approved test command, and the other way round.
+  assert.notEqual(setupHash(wt, 'npm test', ['package.json']).hash, testHash(wt, 'npm test', ['package.json']).hash);
 });
 
 test('approvals: the hash covers the command and every manifest\'s content', () => {

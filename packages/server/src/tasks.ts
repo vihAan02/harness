@@ -41,12 +41,24 @@ async function requireAgent(ctx: HandlerContext, agentId: unknown): Promise<stri
   return agentId;
 }
 
+/**
+ * An agent works on one task at a time: messages, budgets and its config dir all assume it (D-80). So a
+ * task can't be given to an agent that has one in progress or blocked.
+ */
+async function requireFree(ctx: HandlerContext, agentId: string): Promise<void> {
+  // Two concurrent assignments to one agent serialize here, so both can't see it free (write skew).
+  await ctx.tx.query('SELECT id FROM agent_principals WHERE id = $1 FOR NO KEY UPDATE', [agentId]);
+  const busy = (await ctx.tx.query<{ id: string }>(
+    "SELECT id FROM tasks WHERE project_id = $1 AND assignee_agent_id = $2 AND status IN ('in_progress', 'blocked') LIMIT 1", [ctx.projectId, agentId])).rows[0];
+  if (busy) throw new CommandError('conflict', `that agent is already working on ${busy.id}; finish or abandon it first`);
+}
+
 export type TaskRow = { id: string; status: string; assignee_agent_id: string | null; owner_human_id: string; scope: string[]; title: string };
 
 export async function lockTask(ctx: HandlerContext, taskId: unknown): Promise<TaskRow> {
   if (typeof taskId !== 'string' || !TASK_ID.test(taskId)) throw new CommandError('bad_request', 'task_id is missing or malformed');
   const row = (await ctx.tx.query<TaskRow>(
-    'SELECT id, status, assignee_agent_id, owner_human_id, scope, title FROM tasks WHERE id = $1 AND project_id = $2 FOR UPDATE', [taskId, ctx.projectId])).rows[0];
+    'SELECT id, status, assignee_agent_id, owner_human_id, scope, title FROM tasks WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE', [taskId, ctx.projectId])).rows[0];
   if (!row) throw new CommandError('not_found', `no task ${taskId} in this project`);
   return row;
 }
@@ -61,6 +73,7 @@ export async function createTask(ctx: HandlerContext, args: Record<string, unkno
   const priority = args.priority ?? 0;
   if (!Number.isSafeInteger(priority) || (priority as number) < 0 || (priority as number) > 100) throw new CommandError('bad_request', 'priority must be 0 to 100');
   const assignee = args.assignee_agent_id === undefined ? null : await requireAgent(ctx, args.assignee_agent_id);
+  if (assignee) await requireFree(ctx, assignee);
   const id = `T-${(await ctx.tx.query<{ n: string }>("SELECT nextval('task_numbers') AS n")).rows[0]!.n}`;
   await ctx.tx.query(
     `INSERT INTO tasks (id, project_id, title, text, scope, priority, owner_human_id, assignee_agent_id, status)
@@ -82,6 +95,7 @@ export async function assignTask(ctx: HandlerContext, args: Record<string, unkno
   const task = await lockTask(ctx, args.task_id);
   const agent = await requireAgent(ctx, args.assignee_agent_id);
   if (task.status !== 'open') throw new CommandError('conflict', `${task.id} is ${task.status}; only open tasks can be assigned in 0A`);
+  await requireFree(ctx, agent);
   await ctx.tx.query("UPDATE tasks SET assignee_agent_id = $2, status = 'in_progress' WHERE id = $1", [task.id, agent]);
   return { result: null, events: [{ kind: 'task.assigned', data: { task_id: task.id, assignee_agent_id: agent } }] };
 }
@@ -105,6 +119,8 @@ export async function abandonTask(ctx: HandlerContext, args: Record<string, unkn
   const task = await lockTask(ctx, args.task_id);
   const reason = text(args.reason, 'reason', 500)!;
   if (task.status === 'landed' || task.status === 'abandoned') throw new CommandError('conflict', `${task.id} is already ${task.status}`);
+  const landing = (await ctx.tx.query("SELECT id FROM lands WHERE task_id = $1 AND status IN ('requested', 'accepted')", [task.id])).rows[0];
+  if (landing) throw new CommandError('conflict', `${task.id} is being landed; cancel the land first (harness land --cancel ${task.id})`);
   await ctx.tx.query("UPDATE tasks SET status = 'abandoned', completed_at = now() WHERE id = $1", [task.id]);
   return { result: null, events: [{ kind: 'task.abandoned', data: { task_id: task.id, reason } }, ...await clearTaskClaims(ctx, task.id)] };
 }

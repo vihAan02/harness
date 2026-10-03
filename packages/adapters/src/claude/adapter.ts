@@ -5,16 +5,33 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
-  AgentAdapter, DeliveryReceipt, EnvelopedMessage, ErrorKind, HarnessHookSink, Landed, Observation, SessionHandle,
+  AgentAdapter, DeliveryReceipt, EnvelopedMessage, ErrorKind, HarnessHookSink, Landed, Observation, Prices, SessionHandle,
   SessionSpec, SessionStatus, ToolCategory, VendorSessionRef,
 } from '../adapter.ts';
+import { priceOf, sessionCost, type ModelTokens } from '../cost.ts';
+import { isReservedEnvName } from '../env.ts';
 import { AsyncQueue } from '../queue.ts';
 import { claudeHooks, relativize, type ClaudeHookBundle } from './hooks.ts';
-import { AUTH_ENV_VARS, BASE_TOOLS, compileClaudePermissions, SHIM_SERVER, shimToolName, type ClaudePolicyBundle } from './policy.ts';
+import { BASE_TOOLS, compileClaudePermissions, SHIM_SERVER, shimToolName, type ClaudePolicyBundle } from './policy.ts';
 import { shimServer } from './shim.ts';
 import { BUILTIN_SKILLS, claudeCapabilities, installedSdkVersion, PINNED } from './version.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Model ids become a CLI argument, so one may never start with `-` (D-87). Allows `[1m]`, `org/model:free`. */
+export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/[\]-]{0,199}$/;
+/**
+ * Claude Code's own model aliases. A configured model must be a full id: the hardening check compares it
+ * with the model the CLI reports, and pinning the alias variables to an alias would point them at themselves.
+ */
+const CLI_ALIASES = new Set(['default', 'best', 'sonnet', 'opus', 'haiku', 'fable', 'opusplan']);
+export function isModelAlias(id: string): boolean {
+  return CLI_ALIASES.has(id.replace(/\[[^\]]*\]$/, '').toLowerCase());
+}
+/**
+ * What the pinned CLI charges, in USD per million tokens, for a model id it can't price (`costBasis:
+ * 'unknown'`): measured against 2.1.287 with the scripted mock (F-27). Used only to scale its budget cap.
+ */
+const CLI_GUESS_PER_MTOK = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }; // cache rates: the same model's (assumed, not probed)
 /** Graceful stop: how long to wait for the CLI to wind down after interrupt() before closing it. */
 const GRACE_MS = 5000;
 
@@ -39,10 +56,12 @@ function errorKindOf(code: string | number | null | undefined): ErrorKind {
  * The hardening D-45, D-46, D-49, D-56 and D-66 promise, checked against what the CLI reports at
  * the start of every turn. Returns the problems found; any problem stops the session.
  */
-export function hardeningProblems(init: Record<string, unknown>, spec: Pick<SessionSpec, 'worktree' | 'tools'>): string[] {
+export function hardeningProblems(init: Record<string, unknown>, spec: Pick<SessionSpec, 'worktree' | 'tools' | 'model'>): string[] {
   const problems: string[] = [];
   if (init.claude_code_version !== PINNED.cli) problems.push(`Claude Code ${String(init.claude_code_version)} is not the pinned ${PINNED.cli} (D-49)`);
+  // Bearer providers get the key in both variables, so this holds for every scheme (D-87, C-21).
   if (init.apiKeySource !== 'ANTHROPIC_API_KEY') problems.push(`auth came from ${String(init.apiKeySource)}, not the API key (D-56)`);
+  if (spec.model && init.model !== spec.model.id) problems.push(`model is ${String(init.model)}, not the configured ${spec.model.id} (D-87)`);
   if (init.permissionMode !== 'dontAsk') problems.push(`permission mode is ${String(init.permissionMode)}, not dontAsk`);
   if (init.cwd !== spec.worktree) problems.push(`cwd is ${String(init.cwd)}, not the worktree`);
   const allowed = new Set<string>([...BASE_TOOLS, ...spec.tools.map((t) => shimToolName(t.name))]);
@@ -76,6 +95,8 @@ export class ClaudeSession implements SessionHandle {
   endReason = 'ended';
   /** Settles once the first init is checked: null if the hardening holds, else why it doesn't. Tools wait on it. */
   verdict: Promise<string | null>;
+  /** While set, every tool call is denied with this reason (AgentAdapter.setHold, D-53). */
+  holdReason: string | null = null;
   settleVerdict!: (v: string | null) => void;
 
   constructor(spec: SessionSpec) {
@@ -149,6 +170,7 @@ export class ClaudeSession implements SessionHandle {
     const type = m.type;
     if (type === 'system') this.system(m);
     else if (type === 'assistant') this.assistant(m);
+    else if (type === 'user') this.toolResults(m);
     else if (type === 'result') this.result(m);
     else if (type === 'command_lifecycle') this.lifecycle(m);
   }
@@ -175,8 +197,11 @@ export class ClaudeSession implements SessionHandle {
       } else if (m.state === 'idle') {
         if (this.status === 'working' || this.status === 'waiting') {
           const r = this.lastResult;
-          const denied = Array.isArray(r?.permission_denials) ? r.permission_denials.length : 0;
-          this.emit({ kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true, denied });
+          const denials = Array.isArray(r?.permission_denials) ? (r.permission_denials as { tool_use_id?: unknown }[]) : [];
+          this.emit({
+            kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true,
+            denied: denials.length, deniedIds: denials.map((d) => String(d.tool_use_id ?? '')).filter(Boolean),
+          });
           this.setStatus(r?.is_error === true ? 'errored' : 'idle');
         } else if (this.status === 'starting') this.setStatus('idle');
       } else if (m.state === 'requires_action') {
@@ -199,10 +224,20 @@ export class ClaudeSession implements SessionHandle {
       const raw = [input.file_path, input.notebook_path, input.path].filter((p): p is string => typeof p === 'string');
       const rel = relativize(this.spec.worktree, raw);
       this.emit({
-        kind: 'tool.called', tool, category: categoryOf(tool),
+        kind: 'tool.called', toolUseId: String(block.id ?? ''), tool, category: categoryOf(tool),
         ...(raw.length ? { paths: [...rel.paths, ...rel.outside] } : {}),
         ...(typeof input.command === 'string' ? { command: input.command.slice(0, 500) } : {}),
       });
+    }
+  }
+
+  /** Tool results come back in user messages: which calls finished, and whether they failed (the missed-hook monitor, H-03). */
+  toolResults(m: Record<string, unknown>): void {
+    if (m.parent_tool_use_id) return;
+    const content = (m.message as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as Record<string, unknown>[]) {
+      if (block.type === 'tool_result') this.emit({ kind: 'tool.result', toolUseId: String(block.tool_use_id ?? ''), isError: block.is_error === true });
     }
   }
 
@@ -210,14 +245,32 @@ export class ClaudeSession implements SessionHandle {
     this.lastResult = m;
     this.resultTimes.push(Date.now());
     const usage = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-    for (const u of Object.values((m.modelUsage ?? {}) as Record<string, Partial<Record<string, number>>>)) {
-      usage.input += u.inputTokens ?? 0;
-      usage.output += u.outputTokens ?? 0;
-      usage.cacheRead += u.cacheReadInputTokens ?? 0;
-      usage.cacheCreation += u.cacheCreationInputTokens ?? 0;
+    const byModel: Record<string, ModelTokens> = {};
+    for (const [id, u] of Object.entries((m.modelUsage ?? {}) as Record<string, Partial<Record<string, number>> & { costBasis?: string }>)) {
+      const t: ModelTokens = {
+        input: u.inputTokens ?? 0, output: u.outputTokens ?? 0, cacheRead: u.cacheReadInputTokens ?? 0, cacheCreation: u.cacheCreationInputTokens ?? 0,
+        vendorCostUsd: u.costUSD ?? 0, vendorBasis: u.costBasis === 'list' || u.costBasis === 'managed' ? 'list' : 'unknown',
+      };
+      byModel[id] = t;
+      usage.input += t.input;
+      usage.output += t.output;
+      usage.cacheRead += t.cacheRead;
+      usage.cacheCreation += t.cacheCreation;
     }
-    // modelUsage and total_cost_usd are running totals across the session's turns (F-16).
-    this.emit({ kind: 'usage', ...usage, costUsd: Number(m.total_cost_usd ?? 0), cumulative: true });
+    // modelUsage is a running total across the session's turns (F-16). The vendor's own cost is a guess for
+    // models it doesn't know (F-27), so configured prices win where every model has them (D-87).
+    const cost = sessionCost(byModel, this.spec.model?.prices);
+    this.emit({ kind: 'usage', ...usage, ...cost, models: Object.keys(byModel).sort(), cumulative: true });
+    if (m.terminal_reason === 'budget_exhausted' || m.subtype === 'error_max_budget_usd') {
+      this.emit({ kind: 'error', error: 'budget', message: `the CLI's own budget cap stopped the session at its estimate of $${Number(m.total_cost_usd ?? 0).toFixed(4)}` });
+    }
+    const budget = this.spec.maxBudgetUsd;
+    if (budget && cost.costUsd >= budget && this.status !== 'ended') {
+      this.endReason = 'budget exceeded';
+      this.emit({ kind: 'error', error: 'budget', message: `the session has cost $${cost.costUsd.toFixed(4)} (${cost.costBasis} prices), over its $${budget} budget` });
+      this.q.close();
+      return;
+    }
     // D-67: a result is an error when is_error is true, whatever its subtype says (SP-09).
     if (m.is_error === true) {
       const status = m.api_error_status as number | null | undefined;
@@ -280,6 +333,10 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     return this.session(h).stop(mode);
   }
 
+  setHold(h: SessionHandle, reason: string | null): void {
+    this.session(h).holdReason = reason;
+  }
+
   getStatus(h: SessionHandle): SessionStatus {
     return this.session(h).status;
   }
@@ -300,27 +357,14 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     return {
       ...policy,
       cwd: spec.worktree,
-      ...(spec.model ? { model: spec.model } : {}),
+      ...(spec.model ? { model: spec.model.id } : {}),
       ...(resume ? { resume } : { sessionId: spec.sessionId }),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: spec.instructions },
       mcpServers: spec.tools.length ? { [SHIM_SERVER]: shimServer(spec.tools) } : {},
       hooks: this.setupHooks(spec, sink),
       verbatimPrompts: true, // D-63, on top of client_composed on every message
-      ...(spec.maxBudgetUsd ? { maxBudgetUsd: spec.maxBudgetUsd } : {}),
-      // F-22: `env` replaces the inherited environment. No secret is ever an option value, since
-      // options become CLI arguments visible in `ps` (SP-01); secrets only travel in env.
-      env: {
-        PATH: process.env.PATH ?? '/usr/bin:/bin',
-        HOME: process.env.HOME ?? '/',
-        TMPDIR: process.env.TMPDIR ?? '/tmp',
-        ...spec.env,
-        [AUTH_ENV_VARS[0]]: spec.auth.apiKey, // reaches the CLI; denied to the agent's shell (D-64)
-        ...(spec.auth.baseUrl ? { ANTHROPIC_BASE_URL: spec.auth.baseUrl } : {}),
-        CLAUDE_CONFIG_DIR: spec.configDir, // D-65
-        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', // auto memory is shared across a repo's worktrees (F-14)
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1', // D-67
-      },
+      ...(spec.maxBudgetUsd ? { maxBudgetUsd: vendorBudget(spec.maxBudgetUsd, spec.model) } : {}),
+      env: sessionEnv(spec),
       stderr: (line) => spec.log?.(line),
       // Our own spawn, so harnessd learns the child PID for orphan supervision (D-62).
       spawnClaudeCodeProcess: (o) => {
@@ -333,19 +377,107 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     };
   }
 
+  /** Refuses secrets, model ids and endpoints that could misroute the key (D-87). A method so a test can prove what it prevents. */
+  checkInputs(spec: SessionSpec): void {
+    checkSessionInputs(spec);
+  }
+
   open(spec: SessionSpec, resume: string | null): ClaudeSession {
     const v = this.version();
     if (v.installed !== v.pinned) throw new Error(`Agent SDK ${v.installed} is installed; the harness is pinned to ${v.pinned} (D-49)`);
     if (!UUID.test(spec.sessionId)) throw new Error('sessionId must be a UUID');
+    this.checkInputs(spec);
     if (!fs.existsSync(spec.configDir)) throw new Error(`config dir ${spec.configDir} doesn't exist`);
     // Sandbox and permission rules match resolved paths; the init check compares cwd too.
     const real = { ...spec, worktree: fs.realpathSync(spec.worktree), gitCommonDir: fs.realpathSync(spec.gitCommonDir) };
     const session = new ClaudeSession(real);
-    const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: () => session.verdict };
+    const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: async () => (await session.verdict) ?? session.holdReason };
     session.start(this.options(real, sink, (pid) => {
       session.pid = pid;
       session.emit({ kind: 'process.started', pid });
     }, resume));
     return session;
   }
+}
+
+/**
+ * Refuses a session whose secrets could reroute the key or change the CLI (D-87, TH-21), and model ids
+ * the CLI would misread. harnessd checks the same when it reads its config; this is the second check.
+ */
+export function checkSessionInputs(spec: Pick<SessionSpec, 'secrets' | 'model' | 'auth'>): void {
+  const reserved = Object.keys(spec.secrets).filter(isReservedEnvName);
+  if (reserved.length) throw new Error(`secrets may not set ${reserved.join(', ')}: the CLI reads those names (D-87)`);
+  for (const id of [spec.model?.id, spec.model?.background]) {
+    if (id !== undefined && !MODEL_ID.test(id)) throw new Error(`model id ${JSON.stringify(id)} is malformed`);
+    if (id !== undefined && isModelAlias(id)) throw new Error(`model id ${JSON.stringify(id)} is a Claude Code alias; configure a full model id`);
+  }
+  const url = spec.auth.baseUrl;
+  if (url !== undefined) {
+    const u = new URL(url);
+    // Plain http only to the literal IPv4 loopback, for test doubles: any agent with a port block may bind
+    // loopback ports, so a local endpoint could be squatted (and `localhost` resolves to [::1] too). harnessd's
+    // config accepts https only (TH-21).
+    if (!(u.protocol === 'https:' || (u.protocol === 'http:' && u.hostname === '127.0.0.1')) || u.username || u.password || u.search || u.hash) {
+      throw new Error('the model endpoint must be https, with no credentials, query or fragment (D-87)');
+    }
+  }
+}
+
+/**
+ * The CLI's environment (F-22: `env` replaces the inherited one). No secret is ever an option value, since
+ * options become CLI arguments visible in `ps` (SP-01); secrets only travel in env. Order: the base, then
+ * the task's secrets (never a reserved name), then harness-set values, which always win.
+ */
+export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 'model' | 'configDir'>): Record<string, string> {
+  const { auth, model } = spec;
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: process.env.HOME ?? '/',
+    TMPDIR: process.env.TMPDIR ?? '/tmp',
+    ...spec.secrets,
+    ...spec.env,
+    // Both auth variables reach the CLI and are denied to the agent's shell (D-64). A bearer provider gets
+    // the key in both, so the CLI still reports the API key as its auth source (F-24, C-21): that check is
+    // what rules out a subscription login (D-56, D-87).
+    ANTHROPIC_API_KEY: auth.apiKey,
+    ...(auth.scheme === 'bearer' ? { ANTHROPIC_AUTH_TOKEN: auth.apiKey } : {}),
+    ...(auth.baseUrl ? { ANTHROPIC_BASE_URL: auth.baseUrl } : {}),
+    CLAUDE_CONFIG_DIR: spec.configDir, // D-65
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', // auto memory is shared across a repo's worktrees (F-14)
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', // also keeps feature flags and telemetry off third-party runs (F-28)
+    CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1', // D-67
+    // Every Bash command starts in the worktree: the shell's directory never carries over from an earlier
+    // command, so harnessd resolves a command's relative paths against the worktree correctly (F-97).
+    CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1',
+  };
+  if (model) {
+    // Every alias resolves to the configured model, so nothing bills at another model's price (F-25).
+    Object.assign(env, {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: model.id, ANTHROPIC_DEFAULT_SONNET_MODEL: model.id, CLAUDE_CODE_SUBAGENT_MODEL: model.id,
+      ...(model.background ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: model.background } : {}),
+      ...(model.stripExperimental ? { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1' } : {}), // F-26
+      ...(model.contextTokens ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.contextTokens) } : {}),
+      ...(model.compactWindowTokens ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(model.compactWindowTokens) } : {}),
+      ...(model.maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(model.maxOutputTokens) } : {}),
+      ...(model.extraBody ? { CLAUDE_CODE_EXTRA_BODY: JSON.stringify(model.extraBody) } : {}), // F-29
+    });
+  }
+  return env;
+}
+
+/**
+ * The cap passed to the CLI. The session's own budget is enforced by the adapter against the reported
+ * cost; the CLI's cap is a backstop. For a model the CLI can't price, its cost is a guess at a far higher
+ * rate (F-27), so the cap is scaled up by that ratio: it then trips at most about 25% over budget, never early.
+ */
+export function vendorBudget(budget: number, model: SessionSpec['model']): number {
+  const p: Prices | undefined = model?.prices ? priceOf(model.prices, model.id) : undefined;
+  if (!p) return Math.max(0.01, budget);
+  const g = CLI_GUESS_PER_MTOK;
+  const rates: [number, number][] = [[g.input, p.input], [g.output, p.output], [g.cacheRead, p.cacheRead ?? p.input], [g.cacheWrite, p.cacheWrite ?? p.input]];
+  // A free rate makes the guess infinitely higher than the real cost: the CLI's cap is then no use as a
+  // backstop, so it's set out of the way and the adapter's own check is the only one.
+  if (rates.some(([, real]) => real === 0)) return 1000;
+  const ratio = Math.max(1, ...rates.map(([guess, real]) => guess / real));
+  return Math.max(0.01, Math.ceil(budget * ratio * 100) / 100);
 }

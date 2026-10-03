@@ -8,11 +8,13 @@
 //   path, and both agents get a claim_conflict message. Scope-only overlaps go to the human at task creation.
 import { randomUUID } from 'node:crypto';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
+import { lockInvalidation, noticeEditsInProgress } from './invalidation.ts';
 import { newMessageId } from './messages.ts';
 import { requireAgentOnDevice } from './sessions.ts';
 
-const MAX_PATHS = 500;
-const ACTIVE = ['open', 'in_progress'];
+const MAX_PATHS = 5000;
+/** Tasks whose claims count. A task blocked on a sync conflict still has its work in progress (D-53). */
+const ACTIVE = ['open', 'in_progress', 'blocked'];
 
 /** coordination.md §1: a prefix overlaps any path or prefix under it; an exact file overlaps itself and any prefix containing it. */
 export function overlaps(a: string, b: string): boolean {
@@ -40,7 +42,8 @@ type Claim = { task_id: string; kind: string; path: string; assignee_agent_id: s
 async function othersClaims(ctx: HandlerContext, taskId: string): Promise<Claim[]> {
   return (await ctx.tx.query<Claim>(
     `SELECT c.task_id, c.kind, c.path, t.assignee_agent_id FROM claims c JOIN tasks t ON t.id = c.task_id
-     WHERE c.project_id = $1 AND c.cleared_at IS NULL AND c.task_id <> $2 AND t.status = ANY($3)`,
+     WHERE c.project_id = $1 AND c.cleared_at IS NULL AND c.task_id <> $2 AND t.status = ANY($3)
+     ORDER BY c.task_id, c.path`, // a fixed order, so concurrent observations lock overlap rows in the same order
     [ctx.projectId, taskId, ACTIVE])).rows;
 }
 
@@ -116,10 +119,12 @@ export async function observeClaims(ctx: HandlerContext, args: Record<string, un
   if (!sess) throw new CommandError('not_found', `no session ${String(args.session_id)} in this project`);
   if (sess.agent_id !== agentId || sess.device_id !== deviceId) throw new CommandError('forbidden', 'that session belongs to another agent or device');
   const taskId = sess.task_id;
-  if (sess.task_status !== 'in_progress') return { result: { added: [], cleared: [] }, events: [] }; // claims ended with the task
+  if (sess.task_status !== 'in_progress' && sess.task_status !== 'blocked') return { result: { added: [], cleared: [] }, events: [] }; // claims ended with the task
 
-  // Serialize observations per task, so concurrent reports don't both add the same path.
-  await ctx.tx.query('SELECT id FROM tasks WHERE id = $1 FOR UPDATE', [taskId]);
+  await lockInvalidation(ctx); // first: see lockInvalidation
+  // Serialize observations per task, so concurrent reports don't both add the same path. NO KEY UPDATE: it
+  // doesn't block the foreign-key checks of rows other commands insert for this task (notices, say).
+  await ctx.tx.query('SELECT id FROM tasks WHERE id = $1 FOR NO KEY UPDATE', [taskId]);
   const active = new Set((await ctx.tx.query<{ path: string }>(
     "SELECT path FROM claims WHERE task_id = $1 AND kind = 'observed' AND cleared_at IS NULL", [taskId])).rows.map((r) => r.path));
   const added = paths.filter((p) => !active.has(p));
@@ -171,5 +176,7 @@ export async function observeClaims(ctx: HandlerContext, args: Record<string, un
       events.push({ kind: 'message.sent', data: { message_id: id, kind: 'claim_conflict', from: 'harness', to: n.to, text: n.text, ...data, priority: 'high', from_task_id: null, to_task_id: n.toTask } });
     }
   }
+  // Stale context (0B item 2): agents that read these files hear that they're being changed.
+  if (added.length) events.push(...await noticeEditsInProgress(ctx, { task: taskId, agent: agentId }, added));
   return { result: { added, cleared }, events };
 }

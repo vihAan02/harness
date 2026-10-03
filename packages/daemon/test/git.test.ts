@@ -67,12 +67,16 @@ test('changed paths diff against the merge base, so a synced base never counts a
 test('teardown removes the worktree, and deletes its branch only when merged', async () => {
   const merged = path.join(t.dir, 'wt-4');
   await createWorktree(repo, merged, 'task-4', sha);
-  assert.deepEqual(await removeWorktree(repo, merged, 'task-4'), { branchDeleted: true }); // nothing new on it
+  assert.deepEqual(await removeWorktree(repo, merged, 'task-4', { force: false }), { branchDeleted: true }); // nothing new on it
   const unmerged = path.join(t.dir, 'wt-5');
   await createWorktree(repo, unmerged, 'task-5', sha);
   fs.writeFileSync(path.join(unmerged, 'work.ts'), 'w\n');
   await commitAll(unmerged, 'work', { name: 'agent/a', email: 'a@harness.invalid' });
-  assert.deepEqual(await removeWorktree(repo, unmerged, 'task-5'), { branchDeleted: false });
+  // Uncommitted work: an unforced removal refuses and leaves it; only a forced one (an abandoned task) deletes it.
+  fs.writeFileSync(path.join(unmerged, 'later.ts'), 'l\n');
+  await assert.rejects(removeWorktree(repo, unmerged, 'task-5', { force: false }), /untracked/);
+  assert.equal(fs.readFileSync(path.join(unmerged, 'later.ts'), 'utf8'), 'l\n');
+  assert.deepEqual(await removeWorktree(repo, unmerged, 'task-5', { force: true }), { branchDeleted: false });
   assert.equal(fs.existsSync(unmerged), false);
   assert.match(gitIn(repo, 'branch', '--list', 'harness/task/task-5'), /task-5/);
   assert.deepEqual(markers(), []);

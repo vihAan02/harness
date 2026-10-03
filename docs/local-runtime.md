@@ -60,9 +60,9 @@ Worktrees live **outside** the main checkout, so tools that scan the repo don't 
 6. **Land** (0B, local, D-51): triggered by the human (`harness land <task>`):
    1. Fencing check through the server (`land.accepted` / `land.rejected`).
    2. Merge the task branch with the current base in a harness-owned **integration worktree**, and run the approved `test.command` there, sandboxed.
-   3. **Green:** fast-forward the base branch and report `land.complete`. The server then sends `landed` notices to affected agents.
+   3. **Green:** move the base branch and report `land.complete`. The server then sends `landed` notices to affected agents. If no checkout has the base branch, a compare-and-swap of the ref. If one does (usually the human's), only a fast-forward of a clean checkout still at the land's base, never over the human's untracked or ignored files, and never while that branch is being rebased.
    4. **Red or conflict:** report `land.fail`. The base is untouched and the task goes back to its assignee.
-7. **Tear down:** `git worktree remove`, delete the branch if it's merged, `git worktree prune`, and release ports and leases.
+7. **Tear down:** `git worktree remove`, delete the branch if it's merged, and release ports and leases. After a land, the removal isn't forced, and it's skipped if anything was written or committed in the worktree since the land read its tip. Only an abandoned task's worktree is force-removed. There is no repository-wide `git worktree prune`, which would drop the human's worktrees on unmounted volumes.
 
 **Git write operations are `harnessd`'s alone (D-50).**
 - Agents edit files and may run read-only Git, but don't commit, branch, merge or push.
@@ -128,6 +128,8 @@ limits:                            # repo values can only LOWER local limits (D-
 - **Where values live:** the project config lists secret names. The values live only on each person's machine, preferably as OS keychain entries. `~/.harness/secrets.toml` (0600) is the plaintext fallback, a small local store, not a secret manager.
 - **How they're injected:** `harnessd` puts only the secrets an agent's task needs into that agent process's environment. That's the repo's `env.refs` ∩ the local allowlist (D-52).
 - **The base env is explicit.** The Claude TS SDK's `env` option *replaces* the environment (F-22), so the adapter passes a minimal base (`PATH`, `HOME`, the chosen auth variable per F-67), plus the ports and the referenced secrets.
+- **Secret names are restricted (D-87, TH-21).** A secret may never use a name the agent CLI or runtime reads (`ANTHROPIC_*`, `CLAUDE*`, `NODE_*`, `BUN_*`, `SSL_*`, proxy and TLS variables, `PATH`, `PORT`, `HARNESS_*`, `GIT_*` and similar), nor the name of the model key's variable. harnessd refuses such a config, and the adapter refuses such a session.
+- **The model key** is read from harnessd's own environment, under the name the local config's provider table gives (`key_env`, D-87). harnessd checks it at startup, never logs it, and never writes it to disk.
 - **Never:**
   - written into worktree files;
   - included in messages or events;

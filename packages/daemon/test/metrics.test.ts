@@ -52,7 +52,7 @@ test('metrics while a task is still running, then once every task is finished', 
   assert.deepEqual([m.interventions.total, m.interventions.events.map((e) => e.detail)], [2, ['question to agent/frontend', 'marked T-2 done']]);
   assert.equal(m.deniedToolCalls, 1);
   assert.deepEqual(m.messages, { total: 4, byKind: { question: 2, answer: 1, claim_conflict: 1 }, agentToAgent: 2, humanToAgent: 1, harnessNotices: 1, held: 0 });
-  assert.deepEqual(m.tokens, { input: 500, output: 50, cacheRead: 50, cacheCreation: 5, costUsd: 0.05, sessions: 2 }, 'the latest running total per session, summed');
+  assert.deepEqual(m.tokens, { input: 500, output: 50, cacheRead: 50, cacheCreation: 5, costUsd: 0.05, sessions: 2, models: [], configured: ['vendor default'], costBasis: [] }, 'the latest running total per session, summed');
   assert.equal(m.coordinationTokensEst, 150);
   assert.deepEqual(m.delivery, { count: 2, byPoint: { new_turn: 1, between_tools: 1 }, latencyMs: { median: 2000, max: 3000 }, questionRoundTripsMs: [7000] });
   assert.deepEqual(m.shimCalls, { 'agent/backend': { ask: 1, report_done: 1 }, 'agent/frontend': { answer: 1 } });
@@ -61,4 +61,42 @@ test('metrics while a task is still running, then once every task is finished', 
   assert.match(text, /M1  completion time: 40\.0 s/);
   assert.match(text, /question → answer round trips: 7\.0 s/);
   assert.match(text, /Not computed from the log:\n  M2 /);
+});
+
+test('with the land step, M1 runs until tasks land; M3, M9 and the stale-context notices come from the log (0B)', () => {
+  const view = new ProjectView('prj');
+  let seq = 0;
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 3, 12, 0, s)).toISOString();
+  const e = (s: number, kind: string, data: Record<string, unknown>, principal = 'human_a'): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'prj', seq: ++seq, at: at(s), actor: { principal, on_behalf_of: null, device_id: null }, kind, data });
+  for (const ev of [
+    e(0, 'task.created', { task_id: 'T-1', title: 'a', text: '', scope: [], owner_human_id: 'human_a' }),
+    e(0, 'task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_a' }),
+    e(1, 'task.created', { task_id: 'T-2', title: 'b', text: '', scope: [], owner_human_id: 'human_a' }),
+    e(1, 'task.assigned', { task_id: 'T-2', assignee_agent_id: 'agent_b' }),
+    e(5, 'message.sent', { message_id: 'm1', kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage: 'in_progress', text: 'x' }, 'harness'),
+    e(6, 'message.delivered', { message_id: 'm1', delivery: 'new_turn', delivered_at: at(6) }),
+    e(8, 'task.completed', { task_id: 'T-2', by: 'agent_b' }),
+    e(9, 'worktree.committed', { task_id: 'T-2', commit: 'c2' }),
+    e(10, 'land.requested', { land_id: 'land_1', task_id: 'T-2', device_id: 'd', run_tests: true }),
+    e(11, 'land.failed', { land_id: 'land_1', task_id: 'T-2', reason: 'tests' }),
+    e(12, 'land.requested', { land_id: 'land_2', task_id: 'T-2', device_id: 'd', run_tests: true }),
+    e(13, 'land.completed', { land_id: 'land_2', task_id: 'T-2', new_base_sha: 'b', changed_paths: ['src/x.ts'] }),
+    e(13, 'message.sent', { message_id: 'm2', kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage: 'landed', text: 'y' }, 'harness'),
+    e(14, 'worktree.sync_conflict', { task_id: 'T-1', paths: ['src/x.ts'] }),
+    e(20, 'message.delivered', { message_id: 'm2', delivery: 'new_turn', delivered_at: at(20) }),
+    e(25, 'task.completed', { task_id: 'T-1', by: 'agent_a' }),
+    e(26, 'worktree.committed', { task_id: 'T-1', commit: 'c1' }),
+  ]) view.apply(ev);
+  let m = computeMetrics(view);
+  assert.equal(m.completionForm, 'landed');
+  assert.equal(m.window.complete, false, 'T-1 is done and committed but not landed yet');
+  view.apply(e(30, 'land.requested', { land_id: 'land_3', task_id: 'T-1', device_id: 'd', run_tests: true }));
+  view.apply(e(31, 'land.completed', { land_id: 'land_3', task_id: 'T-1', new_base_sha: 'c', changed_paths: [] }));
+  m = computeMetrics(view);
+  assert.equal(m.completionMs, 31_000, 'from the first assignment to the last land');
+  assert.deepEqual(m.lands, { completed: 2, rejected: 0, failed: { tests: 1 }, conflicts: 1, firstLandTestFailures: 1 });
+  assert.deepEqual(m.notices, { inProgress: { sent: 1, delivered: 1 }, landed: { sent: 1, delivered: 1, beforeReaderFinished: 1 }, superseded: 0 });
+  assert.match(renderMetrics(m), /M9  failed tests at first integration: 1/);
+  assert.equal(m.notComputed.M3, undefined, 'M3 and M9 come from the land step now');
 });

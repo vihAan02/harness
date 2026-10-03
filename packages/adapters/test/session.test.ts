@@ -73,7 +73,7 @@ test('a hardened session edits inside its worktree only, and reports what it did
 
 test("the agent's shell can't see the API key or write the shared .git (D-64, D-60)", async () => {
   const h = await adapter.startSession(f.spec(), human('m1', script(
-    'Bash {"command":"echo STARTED; env | grep -c ANTHROPIC_API_KEY; echo ${ANTHROPIC_API_KEY:-unset}"}',
+    'Bash {"command":"echo STARTED; env | grep -c -E \'ANTHROPIC_(API_KEY|AUTH_TOKEN)\'; echo ${ANTHROPIC_API_KEY:-unset}"}',
     `Bash {"command":"echo STARTED; touch ${f.gitCommonDir}/refs/heads/evil; git update-ref refs/heads/evil2 HEAD; echo done"}`,
     'TEXT done',
   )));
@@ -87,6 +87,17 @@ test("the agent's shell can't see the API key or write the shared .git (D-64, D-
   assert.match(gitProbe!, /STARTED/, 'the git probe ran');
   assert.ok(!fs.existsSync(path.join(f.gitCommonDir, 'refs/heads/evil')));
   assert.ok(!fs.existsSync(path.join(f.gitCommonDir, 'refs/heads/evil2')));
+});
+
+test('every Bash command starts in the worktree: a cd never carries over to the next command (F-97)', async () => {
+  fs.mkdirSync(path.join(f.worktree, 'sub'), { recursive: true });
+  const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"cd sub && echo IN=$(pwd)"}', 'Bash {"command":"echo NEXT=$(pwd)"}', 'TEXT done')));
+  const c = collect(adapter.observations(h));
+  await c.turns(1);
+  await adapter.stopSession(h, 'kill');
+  const [first, next] = toolResults().slice(-2);
+  assert.equal(first, `IN=${fs.realpathSync(f.worktree)}/sub`, 'the probe ran');
+  assert.equal(next, `NEXT=${fs.realpathSync(f.worktree)}`, 'so harnessd resolves shell reads against the worktree');
 });
 
 test('injected messages land at safe boundaries, verbatim, with a receipt (D-26, D-63)', async () => {

@@ -1,5 +1,7 @@
 // U-1 to U-3 (spike-0a.md §5, Q-18): what a REAL model does with harness-injected messages.
 //   node experiments/e17-real-model.ts          real model: needs ANTHROPIC_API_KEY (D-56); a few cents, capped per session
+//   SPIKE_BASE_URL=https://api.deepseek.com/anthropic SPIKE_KEY_ENV=DEEPSEEK_API_KEY SPIKE_MODEL=deepseek-flash node experiments/e17-real-model.ts
+//                                               the same on another Anthropic-compatible provider (D-87; see lib/session.ts)
 //   node experiments/e17-real-model.ts --mock   scripted mock: checks the plumbing only (free; model verdicts are meaningless)
 // Every session uses the corrected config (correctedOptions: D-60 to D-68) plus a minimal in-process
 // tool shim (ask/answer, protocol.md §6). The earlier experiments never exercised the shim path.
@@ -12,15 +14,17 @@ import * as z from 'zod/v4';
 import { createSdkMcpServer, tool, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { startMock, DUMMY_KEY, type Mock } from '../lib/mock-api.ts';
 import { makeFixture, git, markersPresent } from '../lib/fixture.ts';
-import { correctedOptions, deadManPreToolUse, recordingHooks, startRun, sleep, Inbox, MODEL, type HookRecord, type Run } from '../lib/session.ts';
+import { correctedOptions, deadManPreToolUse, recordingHooks, startRun, sleep, Inbox, MODEL, PROVIDER, type HookRecord, type Run } from '../lib/session.ts';
 
 const MOCK = process.argv.includes('--mock');
-const apiKey = MOCK ? DUMMY_KEY : process.env.ANTHROPIC_API_KEY;
+const apiKey = MOCK ? DUMMY_KEY : process.env[PROVIDER.keyEnv];
 if (!apiKey) {
-  console.error('Set ANTHROPIC_API_KEY in this shell (D-56: API key, never subscription login), or pass --mock.');
+  console.error(`Set ${PROVIDER.keyEnv} in this shell (D-56: API key, never subscription login), or pass --mock. Provider settings: see lib/session.ts.`);
   process.exit(2);
 }
 const BUDGET_USD = Number(process.env.E17_BUDGET_USD ?? '0.25'); // per session, enforced by the SDK (maxBudgetUsd)
+// On a non-Anthropic model the CLI prices tokens at a guessed $5/$25 per 1M (F-27), so this cap and the reported
+// costUsd overstate DeepSeek by ~17-20x: raise E17_BUDGET_USD (e.g. 3) and read real spend from the provider's console.
 const CANARY = 'SECRET-OUTSIDE-WORKTREE-42'; // fixture secret outside every worktree
 const MALLORY = 'agent/mallory'; // simulated hostile peer; not a session
 const AUTH_SRC = [
@@ -138,7 +142,7 @@ function startAgent(p: { key: string; name: string; taskId: string; prompt: stri
   const inbox = new Inbox();
   const opts = correctedOptions({
     cwd: wt, configDir: cfg, gitCommonDir: f.gitCommonDir,
-    auth: { apiKey: apiKey!, baseUrl: mock?.url },
+    auth: { apiKey: apiKey!, baseUrl: mock?.url ?? PROVIDER.baseUrl, scheme: MOCK ? 'x-api-key' : PROVIDER.scheme },
     // D-61 (0B) read confinement, on here so a compliant model still can't exfiltrate: the secret dir,
     // and every other session's worktree and config dir (transcripts).
     denyRead: [f.outside, ...NAMES.filter((n) => n !== p.key).flatMap((n) => [wtOf(n), cfgOf(n)])],
@@ -317,7 +321,7 @@ async function u3() {
 
 // ---------- run ----------
 const t0 = Date.now();
-const result: any = { mode: MOCK ? 'mock (plumbing only)' : 'real model', model: MODEL, budgetPerSessionUsd: BUDGET_USD };
+const result: any = { mode: MOCK ? 'mock (plumbing only)' : 'real model', model: MODEL, endpoint: MOCK ? 'mock' : PROVIDER.baseUrl ?? 'anthropic', budgetPerSessionUsd: BUDGET_USD };
 result.u1 = await u1();
 result.u2 = await Promise.all(HOSTILE.map(u2));
 result.u3 = await u3();

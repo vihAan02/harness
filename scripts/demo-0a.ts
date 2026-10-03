@@ -3,9 +3,13 @@
 // benchmark app (Shelf), and a check of every 0A exit criterion (S3).
 //
 //   npm run demo                 scripted model: free, deterministic; everything else is real
-//   npm run demo -- --real       real Claude agents: needs ANTHROPIC_API_KEY (D-56); costs a little
+//   npm run demo -- --real       real agents: needs ANTHROPIC_API_KEY (D-56); costs a little
+//   npm run demo -- --real --provider deepseek
+//                                real agents on a configured provider (D-87), from docs/examples/providers.toml;
+//                                needs that provider's key variable (DEEPSEEK_API_KEY for deepseek)
 //   options: --bench <path|url>  the Shelf repo (default: github.com/vihAan02/harness-bench)
-//            --model <id>        with --real, the model for both agents
+//            --model <id>        with --real and no provider, the model for both agents
+//            --providers <file>  where --provider looks (default docs/examples/providers.toml)
 //            --keep              keep the temp dir (repo, worktrees, ~/.harness) for inspection
 //
 // Needs Postgres (see README "Running locally"). It uses a throwaway schema in HARNESS_DATABASE_URL
@@ -16,9 +20,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { parse as parseToml, stringify as toToml } from 'smol-toml';
 import type { Observation } from '../packages/adapters/src/adapter.ts';
 import {
-  Approvals, computeMetrics, Daemon, duration, harnessHome, parseConfig, renderAgentStatus, renderHumanStatus, renderMetrics, type RunningAgent,
+  Approvals, computeMetrics, Daemon, duration, harnessHome, parseConfig, renderAgentStatus, renderHumanStatus, renderMetrics, resolveProvider,
+  type ResolvedProvider, type RunningAgent,
 } from '../packages/daemon/src/index.ts';
 import type { EventMessage } from '../packages/protocol/src/index.ts';
 import { createPool, DEFAULT_DATABASE_URL, migrate } from '../packages/server/src/db.ts';
@@ -27,15 +33,31 @@ import { DUMMY_KEY, startMock, type Mock } from '../packages/adapters/test/mock-
 
 // ---------- options ----------
 const argv = process.argv.slice(2);
-const opt = (name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
+const opt = (name: string) => { const i = argv.indexOf(`--${name}`); const v = i >= 0 ? argv[i + 1] : undefined; return v?.startsWith('--') ? undefined : v; };
 const REAL = argv.includes('--real');
 const KEEP = argv.includes('--keep');
 const BENCH = opt('bench') ?? 'https://github.com/vihAan02/harness-bench.git';
 const MODEL = opt('model');
-if (REAL && !process.env.ANTHROPIC_API_KEY) {
-  console.error('--real needs ANTHROPIC_API_KEY in the environment (D-56: API keys only).');
+const PROVIDER = opt('provider');
+const PROVIDERS_FILE = opt('providers') ?? path.resolve(import.meta.dirname, '../docs/examples/providers.toml');
+if (PROVIDER && !REAL) {
+  console.error('--provider needs --real: the scripted model never calls a provider.');
   process.exit(2);
 }
+if (PROVIDER && MODEL) {
+  console.error('--model is for the vendor default endpoint; with --provider, the model comes from the provider table.');
+  process.exit(2);
+}
+/** The [agents] and [providers] part of the demo's config.toml (D-87). */
+const agentsConfig: Record<string, unknown> = !REAL ? {}
+  : PROVIDER ? {
+    agents: { provider: PROVIDER, max_budget_usd: 2 },
+    providers: { [PROVIDER]: ((parseToml(fs.readFileSync(PROVIDERS_FILE, 'utf8')) as { providers?: Record<string, unknown> }).providers ?? {})[PROVIDER] ?? (() => {
+      console.error(`no [providers.${PROVIDER}] in ${PROVIDERS_FILE}`);
+      process.exit(2);
+    })() },
+  }
+  : { agents: { ...(MODEL ? { model: MODEL } : {}), max_budget_usd: 2 } };
 
 const t0 = Date.now();
 const say = (msg: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s] ${msg}`);
@@ -48,7 +70,7 @@ const cleanups: (() => Promise<void> | void)[] = [];
 let failed = false;
 
 async function main() {
-  section(`Harness 0A demo (${REAL ? 'real Claude agents' : 'scripted model: the harness, Claude Code, sandboxes, Git and the server are real'})`);
+  section(`Harness 0A demo (${REAL ? 'real agents' : 'scripted model: the harness, Claude Code, sandboxes, Git and the server are real'})`);
 
   // Shelf, the benchmark app (D-83).
   const repo = path.join(root, 'shelf');
@@ -90,23 +112,29 @@ async function main() {
   const home = harnessHome(path.join(root, 'harness-home'));
   fs.mkdirSync(home.root, { recursive: true, mode: 0o700 });
   fs.writeFileSync(home.token, token, { mode: 0o600 });
-  const configToml = [
-    'device_id = "dev_laptop"', 'principal = "human_owner"', `server_url = "${server.url}"`,
-    '[limits]', 'port_range = [3100, 3199]',
-    ...(REAL ? ['[agents]', ...(MODEL ? [`model = "${MODEL}"`] : []), 'max_budget_usd = 2'] : []),
-    '[[projects]]', 'id = "prj_shelf"', `repo = "${repo}"`, '',
-  ].join('\n');
-  fs.writeFileSync(home.config, configToml);
-  const config = parseConfig({
+  const rawConfig = {
     device_id: 'dev_laptop', principal: 'human_owner', server_url: server.url, limits: { port_range: [3100, 3199] },
-    ...(REAL ? { agents: { ...(MODEL ? { model: MODEL } : {}), max_budget_usd: 2 } } : {}),
+    ...agentsConfig,
     projects: [{ id: 'prj_shelf', repo }],
-  }, token);
+  };
+  fs.writeFileSync(home.config, toToml(rawConfig));
+  const config = parseConfig(rawConfig, token);
+  // Real runs: the endpoint, model and key come from the config and the environment, as harnessd's own
+  // startup reads them (D-87). The key is never printed.
+  let provider: ResolvedProvider | null = null;
+  if (REAL) {
+    try {
+      provider = resolveProvider(config, { ...process.env, HARNESS_PROVIDER: PROVIDER ?? '' }); // the flag decides, not the shell
+    } catch (e) {
+      throw new Error(`--real: ${(e as Error).message}`);
+    }
+    say(`agents run on ${provider.model?.id ?? "the vendor's default model"}${provider.name ? ` via provider "${provider.name}"` : ''}, capped at $2 per session`);
+  }
   const observed: { run: RunningAgent; o: Observation }[] = [];
   let onEvent: (e: EventMessage) => void = () => {};
   const daemon = new Daemon({
     home, config, heartbeatMs: 1000, approvalPollMs: 100, finishGraceMs: 30_000, diffIntervalMs: 2000,
-    auth: REAL ? { mode: 'api-key', apiKey: process.env.ANTHROPIC_API_KEY! } : { mode: 'api-key', apiKey: DUMMY_KEY, baseUrl: mock!.url },
+    ...(provider ? { provider } : { auth: { mode: 'api-key' as const, apiKey: DUMMY_KEY, baseUrl: mock!.url } }),
     log: (m) => say(`harnessd: ${m}`),
     onObservation: (run, o) => observed.push({ run, o }),
     onEvent: (e) => onEvent(e), // after the event is folded into harnessd's view

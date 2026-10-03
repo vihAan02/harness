@@ -14,6 +14,9 @@ import { reportSession } from './sessions.ts';
 import { abandonTask, assignTask, completeTask, createTask } from './tasks.ts';
 import { ackMessage, sendMessage } from './messages.ts';
 import { observeClaims } from './claims.ts';
+import { addReadset } from './readsets.ts';
+import { reportSync, unblockTask } from './syncs.ts';
+import { cancelLand, completeLand, failLand, reportLand, requestLand, startLand } from './lands.ts';
 
 export { CommandError, type Caller } from './handler.ts';
 export { EVENTS_CHANNEL } from './events.ts';
@@ -31,11 +34,35 @@ const HANDLERS: Record<string, Handler> = {
   'message.send': sendMessage,
   'claim.observe': observeClaims,
   'message.ack': ackMessage,
+  'readset.add': addReadset,
+  'land.request': requestLand,
+  land: startLand,
+  'land.report': reportLand,
+  'land.complete': completeLand,
+  'land.fail': failLand,
+  'land.cancel': cancelLand,
+  'sync.report': reportSync,
+  'task.unblock': unblockTask,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };
 
+/** Postgres deadlock_detected and serialization_failure: the transaction did nothing, so it's safe to run again. */
+const RETRYABLE = new Set(['40P01', '40001']);
+const ATTEMPTS = 3;
+
 export async function executeCommand(pool: pg.Pool, caller: Caller, cmd: Command): Promise<CommandOutcome> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await executeOnce(pool, caller, cmd);
+    } catch (e) {
+      if (attempt >= ATTEMPTS || !RETRYABLE.has((e as { code?: string }).code ?? '')) throw e;
+      await new Promise((r) => setTimeout(r, 10 * attempt + Math.floor(Math.random() * 20)));
+    }
+  }
+}
+
+async function executeOnce(pool: pg.Pool, caller: Caller, cmd: Command): Promise<CommandOutcome> {
   const handler = Object.hasOwn(HANDLERS, cmd.name) ? HANDLERS[cmd.name] : undefined;
   if (!handler) throw new CommandError('bad_request', `unknown command ${cmd.name}`);
   const stored = await storedOutcome(pool, caller, cmd);
