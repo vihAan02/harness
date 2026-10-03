@@ -446,6 +446,9 @@ export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', // auto memory is shared across a repo's worktrees (F-14)
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', // also keeps feature flags and telemetry off third-party runs (F-28)
     CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1', // D-67
+    // Every Bash command starts in the worktree: the shell's directory never carries over from an earlier
+    // command, so harnessd resolves a command's relative paths against the worktree correctly (F-97).
+    CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1',
   };
   if (model) {
     // Every alias resolves to the configured model, so nothing bills at another model's price (F-25).

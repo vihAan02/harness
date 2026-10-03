@@ -89,6 +89,17 @@ test("the agent's shell can't see the API key or write the shared .git (D-64, D-
   assert.ok(!fs.existsSync(path.join(f.gitCommonDir, 'refs/heads/evil2')));
 });
 
+test('every Bash command starts in the worktree: a cd never carries over to the next command (F-97)', async () => {
+  fs.mkdirSync(path.join(f.worktree, 'sub'), { recursive: true });
+  const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"cd sub && echo IN=$(pwd)"}', 'Bash {"command":"echo NEXT=$(pwd)"}', 'TEXT done')));
+  const c = collect(adapter.observations(h));
+  await c.turns(1);
+  await adapter.stopSession(h, 'kill');
+  const [first, next] = toolResults().slice(-2);
+  assert.equal(first, `IN=${fs.realpathSync(f.worktree)}/sub`, 'the probe ran');
+  assert.equal(next, `NEXT=${fs.realpathSync(f.worktree)}`, 'so harnessd resolves shell reads against the worktree');
+});
+
 test('injected messages land at safe boundaries, verbatim, with a receipt (D-26, D-63)', async () => {
   const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"sleep 3; echo slept"}', 'TEXT done')));
   const c = collect(adapter.observations(h));

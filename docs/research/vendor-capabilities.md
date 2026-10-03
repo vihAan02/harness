@@ -316,6 +316,10 @@ Sources: [env vars](https://code.claude.com/docs/en/env-vars), [CHANGELOG](https
 
 Source: the D-87 adversarial review's probes against the pinned binary. *Impact: TH-21; `BUN_*` is a reserved secret prefix (D-90).*
 
+**F-97 ✔ The Bash tool's working directory carries over between commands, unless `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1`** (2.1.287, checked 2026-10-03). By default, `cd sub` in one Bash call leaves the next call in `sub`. With the variable set, every call starts in the session's project directory (the worktree). The PostToolUse input names only the command, not the directory it ran in.
+
+Source: the variable is in the pinned binary's env-var list and the [env vars](https://code.claude.com/docs/en/env-vars) page. *Probe, 2026-10-03, 2.1.287, scripted mock:* VERIFIED. `cd sub && pwd` then `pwd` printed `…/wt/sub` twice without the variable, and `…/wt/sub` then `…/wt` with it. *Impact: shell-read capture resolves relative paths against the worktree (D-91), so the adapter sets the variable.*
+
 ## OpenAI Codex
 
 *Docs moved: `developers.openai.com/codex/*` now 308-redirects to `learn.chatgpt.com/docs/*`.*
