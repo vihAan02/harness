@@ -10,7 +10,10 @@ export type TaskInfo = {
   createdAt: string; assignedAt?: string; completedAt?: string;
 };
 export type SessionInfo = { id: string; agentId: string; taskId: string; deviceId: string; worktree: string; status: string; startedAt: string; endedAt?: string; endReason?: string };
-export type UsageInfo = { input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number };
+export type UsageInfo = {
+  input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number;
+  toolCalls: Record<string, number>; deniedCalls: number;
+};
 export type MessageInfo = {
   id: string; kind: string; from: string; to: string | null; inReplyTo?: string; text: string; data: Record<string, unknown>;
   fromTask: string | null; toTask: string | null; priority: string; sentAt: string; seq: number;
@@ -86,12 +89,16 @@ export class ProjectView {
         if (sess) Object.assign(sess, { status: 'ended', endedAt: e.at, ...(d.reason ? { endReason: s('reason') } : {}) });
         break;
       }
-      case 'usage.reported':
+      case 'usage.reported': {
+        const prev = this.usage.get(s('session_id'));
         this.usage.set(s('session_id'), {
-          input: Number(d.input ?? 0), output: Number(d.output ?? 0), cacheRead: Number(d.cache_read ?? 0),
-          cacheCreation: Number(d.cache_creation ?? 0), costUsd: Number(d.cost_usd ?? 0),
+          input: Number(d.input ?? prev?.input ?? 0), output: Number(d.output ?? prev?.output ?? 0), cacheRead: Number(d.cache_read ?? prev?.cacheRead ?? 0),
+          cacheCreation: Number(d.cache_creation ?? prev?.cacheCreation ?? 0), costUsd: Number(d.cost_usd ?? prev?.costUsd ?? 0),
+          toolCalls: (d.tool_calls as Record<string, number> | undefined) ?? prev?.toolCalls ?? {},
+          deniedCalls: Number(d.denied_calls ?? prev?.deniedCalls ?? 0),
         });
         break;
+      }
       case 'claim.prospective':
         for (const p of asStrings(d.paths)) this.claimsOf(s('task_id')).prospective.add(p);
         break;

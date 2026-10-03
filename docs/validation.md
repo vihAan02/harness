@@ -80,6 +80,8 @@ A **dedicated repo built for this experiment** (S4). It isn't one of the owner's
 
 **Timing:** the base application is built in 0A (roadmap 0A item 10); the scenario tags, task cards, hidden checks, playbook and rubric in 0B (roadmap 0B item 9).
 
+**Built (2026-10-03, D-83):** "Shelf", a team book-lending service, in [github.com/vihAan02/harness-bench](https://github.com/vihAan02/harness-bench). It has an HTTP API, a typed client with HTML views, SQLite through Node's standard library with migrations, shared types as the API contract, and unit, contract and integration tests (about a second).
+
 ### Real-project validation (D-58)
 After the controlled test, the harness is tested separately on **a real existing project**, chosen by the owner.
 - Same arms, same metrics (§4), same fixed configuration.
@@ -118,6 +120,8 @@ These are the ten metrics S3 requires, each with a concrete definition.
 | M8 | Tokens consumed | Input and output tokens (and cost) for all agents over the whole run | Adapter usage reports | Session transcripts / usage reports |
 | M9 | Failed tests / integration issues | Test failures at the first integration attempt; broken contracts reaching main | Test runner | Same |
 | M10 | Human coordination time | Minutes the human spends reading, relaying or deciding | Self-timer or screen log, same method in both arms | Same |
+
+**Harness-arm capture (0A, D-82):** `harness metrics [--json]` computes M1, M5, M5b, M7 and M8 from the event log, plus the diagnostics below that the log holds. M2, M3, M4, M6, M9 and M10 are scored as described in the table.
 
 **Also recorded, as diagnostics only (not pass criteria):**
 - **H-04:** how often agents re-read after a notice.

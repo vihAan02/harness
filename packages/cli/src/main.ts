@@ -3,7 +3,7 @@
 // server, the local token and the human principal, the same files harnessd uses.
 import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { Approvals, harnessHome, loadConfig, renderHumanStatus, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
+import { Approvals, computeMetrics, harnessHome, loadConfig, renderHumanStatus, renderMetrics, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
 import { PROTOCOL_VERSION, type EventMessage } from '@harness/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { CliClient, CliError } from './client.ts';
@@ -18,6 +18,7 @@ const USAGE = `usage: harness <command> [--project <id>]
   task abandon <task> --reason <text>         abandon a task; harnessd stops the agent and removes the worktree
   status                                      agents, tasks, what each agent is changing, overlaps, questions
   log [--follow] [--kind <prefix>]            the project's event log
+  metrics [--json]                            A/B metrics for this run, from the event log (validation.md §4)
   approve [<id>] [--yes]                      review and approve a repo's setup command (D-52)
   --version`;
 
@@ -135,6 +136,13 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === 'status') return withServer(a, async (c) => void console.log(renderHumanStatus(c.view)));
+
+  if (command === 'metrics') {
+    return withServer(a, async (c) => {
+      const m = computeMetrics(c.view);
+      console.log(a.flags.json ? JSON.stringify(m, null, 2) : renderMetrics(m));
+    });
+  }
 
   if (command === 'log') {
     const kind = flag(a, 'kind');

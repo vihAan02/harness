@@ -12,3 +12,4 @@ export { ProjectView, type AgentInfo, type TaskInfo, type MessageInfo } from './
 export { renderAgentStatus, renderHumanStatus } from './status.ts';
 export { renderMessage } from './envelope.ts';
 export { harnessTools } from './tools.ts';
+export { computeMetrics, renderMetrics, type RunMetrics } from './metrics.ts';

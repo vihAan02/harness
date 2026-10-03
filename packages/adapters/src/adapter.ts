@@ -70,7 +70,7 @@ export type Observation =
   | { kind: 'session.init'; vendorSessionId: string; vendorVersion: string; model: string }
   | { kind: 'status'; status: SessionStatus }
   | { kind: 'turn.started' }
-  | { kind: 'turn.ended'; reason: string; isError: boolean }
+  | { kind: 'turn.ended'; reason: string; isError: boolean; denied: number } // denied: tool calls the permission rules refused this turn
   | { kind: 'tool.called'; tool: string; category: ToolCategory; paths?: string[]; command?: string }
   | { kind: 'edit.observed'; paths: string[]; outside: string[] }
   | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; cumulative: true }

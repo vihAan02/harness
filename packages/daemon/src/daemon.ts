@@ -34,6 +34,8 @@ export type RunningAgent = {
   sessionId: string; projectId: string; taskId: string; agent: AgentRef; workspace: TaskWorkspace;
   adapter: AgentAdapter; handle: SessionHandle; record: SessionRecord;
   lastUsage: Extract<Observation, { kind: 'usage' }> | null;
+  /** Tool calls by tool, and calls the permission rules denied, over the whole session (H-07, M5b). */
+  tools: { calls: Record<string, number>; denied: number };
   /** The status as of the observation being handled; the adapter's live status may already be ahead. Only `ended` ends a session. */
   status: SessionStatus;
   /** Observed-claim reconciliation (D-70): the last full set reported, and whether hooks reported since. */
@@ -317,7 +319,7 @@ export class Daemon {
     };
     const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });
     const run: RunningAgent = {
-      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, status: 'starting',
+      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, status: 'starting', tools: { calls: {}, denied: 0 },
       diff: { last: null, hooksSince: false, running: null, timer: null }, done: Promise.resolve(),
     };
     this.running.set(ws.taskId, run);
@@ -409,6 +411,9 @@ export class Daemon {
       case 'usage':
         run.lastUsage = o;
         break;
+      case 'tool.called':
+        run.tools.calls[o.tool] = (run.tools.calls[o.tool] ?? 0) + 1;
+        break;
       case 'edit.observed':
         if (o.outside.length) this.log(`${run.agent.name} (${run.taskId}): edit outside its worktree reported: ${o.outside.join(', ')}`);
         if (o.paths.length) {
@@ -417,16 +422,17 @@ export class Daemon {
           if (paths.length) await this.report(run.projectId, 'claim.observe', { session_id: run.sessionId, paths, source: 'hook' }, run.agent.id);
         }
         break;
-      case 'turn.ended':
+      case 'turn.ended': {
         await this.reconcile(run);
-        if (run.lastUsage) {
-          const u = run.lastUsage;
-          await report({
-            status: run.status,
-            usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd },
-          });
-        }
+        run.tools.denied += o.denied;
+        const u = run.lastUsage;
+        await report({
+          status: run.status,
+          ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd } } : {}),
+          tools: { calls: { ...run.tools.calls }, denied: run.tools.denied },
+        });
         break;
+      }
       case 'error':
         // Pause and alert; the vendor CLI does its own bounded retries, harnessd never loops (F-65).
         this.log(`${run.agent.name} (${run.taskId}): ${o.error}: ${o.message}`);

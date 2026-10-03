@@ -32,6 +32,16 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
   const vendorSessionId = short(args.vendor_session_id, 'vendor_session_id', 200);
   const vendorVersion = short(args.vendor_version, 'vendor_version', 100);
   const reason = short(args.reason, 'reason', 300);
+  let tools: { tool_calls: Record<string, number>; denied_calls: number } | undefined;
+  if (args.tools !== undefined) {
+    const t = args.tools as { calls?: unknown; denied?: unknown };
+    const calls = t?.calls as Record<string, unknown> | undefined;
+    const ok = typeof calls === 'object' && calls !== null && Object.keys(calls).length <= 100
+      && Object.entries(calls).every(([k, v]) => /^[A-Za-z0-9_.:-]{1,100}$/.test(k) && Number.isSafeInteger(v) && (v as number) >= 0)
+      && Number.isSafeInteger(t.denied) && (t.denied as number) >= 0;
+    if (!ok) throw new CommandError('bad_request', 'tools must be { calls: { <tool>: count }, denied: count }');
+    tools = { tool_calls: calls as Record<string, number>, denied_calls: t.denied as number };
+  }
   let usage: Record<string, number> | undefined;
   if (args.usage !== undefined) {
     const u = args.usage as Record<string, unknown>;
@@ -74,6 +84,7 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
     if (status === 'ended') events.push({ kind: 'session.ended', data: { session_id: sessionId, agent_id: agentId, task_id: taskId, ...(reason ? { reason } : {}) } });
     else if (status !== row.status) events.push({ kind: 'session.status', data: { session_id: sessionId, agent_id: agentId, task_id: taskId, status, previous: row.status, ...(reason ? { reason } : {}) } });
   }
-  if (usage) events.push({ kind: 'usage.reported', data: { session_id: sessionId, agent_id: agentId, task_id: taskId, cumulative: true, ...usage } });
+  // Usage and tool counts are the session's running totals (A/B metrics M8, M5b, H-07).
+  if (usage || tools) events.push({ kind: 'usage.reported', data: { session_id: sessionId, agent_id: agentId, task_id: taskId, cumulative: true, ...usage, ...tools } });
   return { result: { session_id: sessionId }, events };
 }

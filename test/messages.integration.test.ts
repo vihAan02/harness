@@ -51,5 +51,14 @@ test('A asks B; B gets it as a new turn, answers; the answer lands in A between 
   assert.deepEqual(order, ['message.sent:question', 'message.delivered:question', 'message.sent:answer', 'message.delivered:answer']);
   const budgets = (await s.db.pool.query('SELECT task_id, messages_sent, messages_received, coord_tokens_est > 0 AS tokens FROM budgets ORDER BY task_id')).rows;
   assert.deepEqual(budgets, [tApi, tWeb].sort().map((task_id) => ({ task_id, messages_sent: 1, messages_received: 1, tokens: true })));
+  // The run's metrics, from the log, through the real CLI (validation.md §4).
+  const m = JSON.parse(await s.cli('metrics', '--json')) as Record<string, any>;
+  assert.deepEqual(m.messages.byKind, { question: 1, answer: 1 });
+  assert.equal(m.messages.agentToAgent, 2);
+  assert.deepEqual(m.delivery.byPoint, { new_turn: 1, between_tools: 1 });
+  assert.equal(m.delivery.questionRoundTripsMs.length, 1);
+  assert.ok(m.tokens.input > 0 && m.coordinationTokensEst > 0);
+  assert.deepEqual(m.shimCalls, { 'agent/backend': { ask: 1 }, 'agent/frontend': { answer: 1 } });
+  assert.equal(m.interventions.total, 0);
   await Promise.all([s.daemon.stopAgent(tApi), s.daemon.stopAgent(tWeb)]);
 });

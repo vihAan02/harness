@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 9 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80) and the CLI with the task lifecycle (D-81). Item 8's real-model check, U-1, still needs an API key. Next: item 10.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 10 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82) and the benchmark app (D-83). Item 8's real-model check, U-1, still needs an API key. Next: item 11.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -150,6 +150,12 @@
    - `harness task abandon` stops the agent and removes its worktree;
    - `status` and `log` show it all.
 10. **Metrics capture** for the A/B test's harness arm: timings, message counts, estimated coordination tokens, usage, interventions ([validation.md §4](validation.md#4-metrics)). **Build the benchmark repo's base application** (D-58, [validation.md §3](validation.md#benchmark-repo-d-58)).
+    
+    **Done 2026-10-03:**
+    - `harness metrics [--json]` scores a run from its event log: M1, M5, M5b, M7, M8, delivery latency and round trips, and harness tool use (D-82);
+    - the benchmark app, Shelf, is in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83). harnessd set it up in its sandbox, and an agent ran its 18 tests from its own sandbox.
+    
+    Found for 0B: the land step's `test.command` needs loopback binding in its `srt` config.
 11. **A 0A demo script** that exercises every exit criterion below.
 
 **Exit criteria (from S3).** The harness reliably shows:
@@ -194,7 +200,7 @@
    - PostToolUse / PostToolBatch notices;
    - the Stop gate: **(open task AND unread high-priority notice) OR a resolved `wait_for`**, within the 8-continuation cap, then escalate.
 4. **`wait_for(event, timeout)`**: choose the mechanism (end-turn-and-push vs. blocking tool) and record wait-for edges.
-5. **Hard claims and land:**
+5. **Hard claims and land** (the `srt` config for `test.command` needs loopback binding: Shelf's server tests can't bind or reach `127.0.0.1` without it, D-83):
    - leases with TTL and `harnessd` heartbeat;
    - fencing tokens;
    - the local **land** step, triggered by the human with `harness land <task>`: fencing check → merge + approved `test.command` in an integration worktree → fast-forward the base only if green; otherwise `land.fail` (D-51, D-54);

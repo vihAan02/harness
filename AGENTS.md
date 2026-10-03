@@ -19,8 +19,9 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 6, the agent-facing tool shim, the task commands and `message.send` (D-78);
     - item 7, soft claims and overlap warnings (D-79);
     - item 8, typed message delivery (D-80). Its real-model check, U-1, still needs an API key (Q-18);
-    - item 9, the human CLI and the task lifecycle (D-81).
-  - **Next:** item 10, metrics capture and the benchmark repo's base app.
+    - item 9, the human CLI and the task lifecycle (D-81);
+    - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
+  - **Next:** item 11, the 0A demo script.
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
@@ -69,7 +70,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   
   Never present a hypothesis or an unverified vendor behavior as fact.
 - **Re-verify vendor facts before relying on them in code.** Agent CLIs change fast. If a fact is more than about 60 days old, re-check it and update its F-ID.
-- **`docs/source/` holds raw records of the owner's instructions (S1–S6).** Never edit them.
+- **`docs/source/` holds raw records of the owner's instructions (S1–S7).** Never edit them.
 - **Keep the docs clear, not bureaucratic.** Don't add documents that duplicate others.
 - **Git:** don't commit or push unless the owner asks. Never commit secrets or `.env` files.
 - **Security defaults you must not weaken:**

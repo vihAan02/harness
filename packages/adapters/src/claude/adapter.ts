@@ -175,7 +175,8 @@ export class ClaudeSession implements SessionHandle {
       } else if (m.state === 'idle') {
         if (this.status === 'working' || this.status === 'waiting') {
           const r = this.lastResult;
-          this.emit({ kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true });
+          const denied = Array.isArray(r?.permission_denials) ? r.permission_denials.length : 0;
+          this.emit({ kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true, denied });
           this.setStatus(r?.is_error === true ? 'errored' : 'idle');
         } else if (this.status === 'starting') this.setStatus('idle');
       } else if (m.state === 'requires_action') {

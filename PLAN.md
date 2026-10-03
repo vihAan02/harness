@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 9 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key) and the human CLI with the task lifecycle (D-81).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 10 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key), the human CLI with the task lifecycle (D-81), metrics capture (D-82) and the benchmark repo's base app (D-83).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -35,6 +35,7 @@ Six sources define this plan. Later sources win where they sharpen or override e
 | **S4** | [Owner's approval and 0A go-ahead](docs/source/2026-10-01-S4-owner-approval-and-0a-go.md) | Approved this plan as the initial source of truth. Answered Q-01 (TypeScript), Q-04 for experiments (API keys), Q-03 (pass bar approved, versioned) and Q-02 (a purpose-built benchmark repo, then a real project as a separate test). Approved Phase 0A, starting with an empirical spike of ten named assumptions (D-55 to D-59). |
 | **S5** | [Owner accepts the spike](docs/source/2026-10-02-S5-owner-accepts-spike.md) | Accepted the spike results and D-60 to D-70, and approved going deeper into 0A from item 1 (D-71). Identified the owner (GitHub `vihAan02`, working with Daniyal Mughal). |
 | **S6** | [Owner's picks for item 4](docs/source/2026-10-02-S6-owner-item4-picks.md) | Approved four choices for `harnessd` v0: TOML/YAML config, `harness approve` now, presence-only heartbeat events, a foreground daemon (D-75). |
+| **S7** | [Owner's choice of the benchmark repo](docs/source/2026-10-03-S7-owner-bench-repo.md) | The benchmark app lives in its own repo, github.com/vihAan02/harness-bench, built in TypeScript on Node 24 with Node's built-in SQLite (D-83). |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -739,6 +740,33 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     Lifecycle events for one task are handled strictly in order.
   - **Not in 0A:** after a harnessd restart, an in-progress task isn't resumed. Crash recovery and resume are Phase 1 (D-40). The human can abandon the task and add it again.
   - *Source:* 0A item 9. *Status:* Proposal.
+- **D-82 How A/B metrics are captured for the harness arm (0A item 10).** Follows validation.md §4.
+  - **Everything comes from the event log,** so any run can be scored afterwards. `harness metrics [--json]` computes:
+    - **M1:** time from the first assignment until every task is done and committed. Land and its tests join this in 0B;
+    - **M5:** human actions beyond the initial assignments: messages to agents, tasks marked done by a human, abandoned tasks. In 0A a task is assigned only once, so every `task.created` and `task.assigned` counts as setup;
+    - **M5b:** tool calls the allow list denied;
+    - **M7:** messages by kind, split into agent↔agent, human↔agent and harness notices, plus held messages;
+    - **M8:** tokens and cost, summing the latest running total of each session;
+    - **diagnostics:** coordination tokens (estimated), where messages landed and how long they took, question-to-answer round trips (the 0A loop latency), each agent's use of the harness tools (H-07), and overlaps.
+  - **Tool counts:** at each turn end, harnessd adds the session's tool-call counts by tool, and its denied calls, to `session.report`. They're logged in `usage.reported` as `tool_calls` and `denied_calls`. Denials come from the vendor's per-turn `permission_denials`.
+  - **Not computed here:** M2, M3, M4, M6, M9 and M10. They need a diff review, the land step's tests, or the coordinator's timer. The report lists them as still to score.
+  - *Source:* 0A item 10. *Status:* Proposal.
+- **D-83 The benchmark repo (0A item 10; D-58).** From S7.
+  - **Where:** its own repo, [github.com/vihAan02/harness-bench](https://github.com/vihAan02/harness-bench), because every A/B run starts from a fresh clone at a scenario tag.
+  - **What:** "Shelf", a small team book-lending service written fresh for the experiment:
+    - an HTTP API (login, books, loans) on `node:http`;
+    - SQLite from Node's standard library (`node:sqlite`), so there's no database server or native build;
+    - shared request and response types as the API contract (`src/shared/types.ts`);
+    - a typed client and the web front end's HTML views;
+    - numbered SQL migrations, deterministic seed data and an injectable clock;
+    - unit, API contract and integration tests that run in about a second.
+    
+    It has the couplings the scenarios plant (validation.md §3): a login response the client renders, shared types, a schema with migrations, and inline formatting and validation that two tasks could both factor out.
+  - **Stack:** TypeScript on Node 24, run from source like the harness. Its only dependencies are `typescript` and `@types/node`, for type-checking. Its `harness.yaml` sets `npm ci` as the setup command and `npm test` as the test command.
+  - **Checked through the harness:** the setup command waited for approval, then ran under `srt` in under 2 seconds. An agent then ran the whole suite from its own sandbox (18 of 18).
+  - **Found for 0B:** under the setup sandbox, `srt` blocks a server binding or reaching `127.0.0.1`. So Shelf's server tests hang there, and the land step's `test.command` (0B item 5) will need loopback binding in its `srt` config.
+  - **Scenario tags, task cards and hidden checks** are 0B item 9.
+  - *Source:* S7, 0A item 10. *Status:* Locked (S7) for the location and stack; Proposal for the app's design.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -842,9 +870,10 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 7, claims.~~ **Done 2026-10-03:** prospective and observed claims, overlap warnings and `claim_conflict` messages (D-79, Proposal).
    - ~~Item 8, typed messages.~~ **Done 2026-10-03, except U-1:** envelopes, budgets, delivery at safe boundaries and `message.ack` (D-80, Proposal). U-1 still needs the API key (Q-18).
    - ~~Item 9, the human CLI and lifecycle.~~ **Done 2026-10-03:** `harness agent/task/status/log`, and harnessd starts, stops and commits agents as tasks move (D-81, Proposal).
-   - **Next:** item 10, metrics capture and the benchmark repo's base app ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 10, metrics capture and the benchmark repo's base app.~~ **Done 2026-10-03:** `harness metrics` (D-82, Proposal), and Shelf in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
+   - **Next:** item 11, the 0A demo script ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
-   - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
+   - ~~Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).~~ **Done 2026-10-03:** [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
 6. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
@@ -893,4 +922,4 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 | [docs/roadmap.md](docs/roadmap.md) | Ordered checklists and exit criteria per phase |
 | [docs/open-questions.md](docs/open-questions.md) | What's undecided, and what it blocks |
 | [docs/research/](docs/research/) | Researched facts (F-IDs), the 0A adapter spike results, and the competitive landscape |
-| [docs/source/](docs/source/) | The raw S1 to S6 records. Never edit these. |
+| [docs/source/](docs/source/) | The raw S1 to S7 records. Never edit these. |
