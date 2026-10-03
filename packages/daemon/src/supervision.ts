@@ -15,6 +15,7 @@ const run = promisify(execFile);
 export type SessionRecord = {
   sessionId: string; agentId: string; taskId: string; projectId: string; worktree: string; baseBranch: string;
   pid: number | null; pidStart: string | null; configDir: string; startedAt: string;
+  vendor?: string; vendorSessionId?: string; // with configDir and worktree, the resume key (D-65, SP-07)
   endedAt?: string; endReason?: string;
 };
 export type OrphanReport = { sessionId: string; taskId: string; projectId: string; pid: number; changedPaths: string[] };

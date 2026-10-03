@@ -2,7 +2,7 @@
 
 > **Scope:** the rules for how agents become aware of each other's work, and how stale context gets caught and fixed.
 >
-> **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. Phase 0A code is in `packages/` (see the roadmap for what is built). [PLAN.md](../PLAN.md) wins on any conflict.
 >
 > **Labels:** D (decision), H (hypothesis), Q (open question), F (researched fact). See the PLAN label table.
 >

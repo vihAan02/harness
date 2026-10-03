@@ -69,6 +69,8 @@ Sources: [TS reference](https://code.claude.com/docs/en/agent-sdk/typescript), [
 
 *Spike, 2026-10-01, Claude Code 2.1.287 / SDK 0.3.287:* VERIFIED for delivery timing (next tool boundary mid-turn, new turn when idle, merged when close together), with additions and one contradiction: `priority` `later`/`now` exist; `command_lifecycle` frames are the receipt; **`origin` is not model-visible** (C-14); injected text is expanded unless `client_composed: true` (C-15). (SP-02)
 
+*0A item 5, 2026-10-03, SDK 0.3.287 type definitions:* `origin.kind` is typed as `human`, `channel`, `peer` or `task-notification`; there's no `coordinator`. The adapter sends harness notices as `peer` from `harness`, which changes nothing the model sees (C-14). A session-wide `verbatimPrompts` option sets `client_composed` on every message; the adapter sets both (D-63, D-77). Re-tested end to end through `ClaudeAdapter` (`packages/adapters/test/session.test.ts`): a mid-tool injection rode in with that tool's result and an idle one opened a new turn, each with a `command_lifecycle` `started` receipt.
+
 **F-03 ✔✔ `interrupt()` doesn't cancel queued messages.**
 - In TS it returns `{still_queued, cancelled?}`.
 - Messages that aren't cancelled still run, so re-sending them duplicates them.

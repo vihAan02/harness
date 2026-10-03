@@ -1,10 +1,16 @@
 # Agent adapters
 
-> **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. `ClaudeAdapter` is built in `packages/adapters` (0A item 5, D-77); `CodexAdapter` is Phase 1. [PLAN.md](../PLAN.md) wins on any conflict.
 >
 > F-IDs refer to [research/vendor-capabilities.md](research/vendor-capabilities.md), checked 2026-10-01 against Claude Code 2.1.286 / Agent SDK TS 0.3.286 and Codex CLI/SDK 0.159.3. **Re-verify before coding.** Both vendors change these surfaces monthly.
 >
 > **The Claude side was then tested empirically** against Claude Code 2.1.287 / Agent SDK TS 0.3.287 in the 0A spike ([research/spike-0a.md](research/spike-0a.md), SP-xx). The `ClaudeAdapter` mapping in §5 reflects those results and decisions D-60 to D-70.
+>
+> **Implemented (0A item 5, D-77):** the interface in `packages/adapters/src/adapter.ts`, and `ClaudeAdapter` in `packages/adapters/src/claude/`. Where the code differs from the sketch in §2:
+> - `startSession` and `resumeSession` take the first message, since a streaming session starts with one;
+> - `getStatus` is synchronous, read from the stream;
+> - the observation stream adds `process.started {pid}` (for orphan supervision), `session.init`, `status` and `ended`;
+> - the hook sink has a `gate`, through which the adapter holds tool calls until the session's hardening is verified.
 
 ## 1. Why adapters exist (D-17, R-4)
 
@@ -152,7 +158,7 @@ The adapter is implemented on the **Agent SDK (TypeScript)**. Python lacks many 
 - **`CLAUDE_CONFIG_DIR`:** per agent in API-key mode (D-65). Only in subscription mode (not used in Phase 0) does it re-key the macOS Keychain and break login (F-22).
 - **Treat a result as an error when `is_error` is true,** whatever the `subtype`: a billing error comes back as `subtype: "success"`, `is_error: true`, `terminal_reason: "api_error"`, `api_error_status: 400` (SP-09).
 - **Supervise against your own crash:** record each child PID; on `harnessd` start, kill orphans from a previous run and reconcile the worktree diff before resuming (D-62).
-- **Verify the hardening at session start:** `init.apiKeySource` is the expected source, no MCP servers or repo skills are listed, and a probe Bash command can't see the auth variable (D-56, D-64).
+- **Verify the hardening at session start:** `init.apiKeySource` is the expected source, no MCP servers or repo skills are listed, and a probe Bash command can't see the auth variable (D-56, D-64). *As built (D-77):* every turn's `init` is checked, and tools wait for the first check. The probe runs in the adapter's test suite against the pinned version, because only the model can run a Bash command in a session.
 - **Phrase notices as facts.** Imperative "system command" wording in injected context can trigger the model's prompt-injection defenses (F-10).
 - **Stop-gate cap:** respect the 8-continuation limit (F-09). After the cap, escalate to the human rather than looping.
 - **Detect billing and rate-limit errors.** Pause and alert; don't retry in a loop (F-65).

@@ -1,6 +1,6 @@
 # Security model
 
-> **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. Phase 0A code is in `packages/` (see the roadmap for what is built). [PLAN.md](../PLAN.md) wins on any conflict.
 >
 > **Ranked risk R-1** (S2): security across teammates and remote code execution.
 

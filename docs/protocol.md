@@ -92,7 +92,7 @@
 |---|---|---|---|
 | `agent.created` | 0A | n/a | `agent_principals` |
 | `task.created`, `task.assigned`, `task.completed`, `task.abandoned` | 0A | n/a (`task.assigned` starts a session; `task.completed` stops it, D-54) | `tasks` |
-| `device.online`, `device.offline` (a presence change only; heartbeats themselves log nothing, D-75), `session.started`, `session.status` (presence), `session.ended` | 0A | n/a | `device_presence`, `devices`, `agent_sessions` |
+| `device.online`, `device.offline` (a presence change only; heartbeats themselves log nothing, D-75), `session.started`, `session.status` (presence), `session.ended` (D-77) | 0A | n/a | `device_presence`, `devices`, `agent_sessions` |
 | `worktree.created`, `worktree.removed` | 0A | n/a | n/a (log only) |
 | `claim.prospective`, `claim.observed`, `claim.cleared` | 0A | n/a | `claims` |
 | `overlap.detected` | 0A | `claim_conflict` (to both agents) | `messages` |
@@ -122,7 +122,7 @@
 | ~~`device.heartbeat { device_id }`~~ | 0A | Superseded by D-75: presence is the `heartbeat` message (§2), not a command |
 | `worktree.report { task_id, event: created\|removed, path, branch? }` | 0A | `harnessd` only (a device connection) → `worktree.*` events |
 | `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed, exit_code? }` | 0A | `harnessd` only. Local approvals happen through `harness approve`; this only records them (D-52) |
-| `session.report { session_id, status, vendor_session_id?, vendor_version?, usage? }` | 0A | `harnessd` → server: presence and usage |
+| `session.report { session_id, status, task_id?, worktree?, branch?, vendor_session_id?, vendor_version?, usage?, reason? }` | 0A | `harnessd` → server: presence and usage (D-77). Sent `as_agent`, from the device. The first report creates the session (`task_id`, `worktree`, `branch` required; only the task's assignee) → `session.started`. A status change → `session.status`; `ended` → `session.ended`. `usage` = `{input, output, cache_read, cache_creation, cost_usd}`, the vendor's running totals → `usage.reported`. Vendor ids stay on the row |
 | `claim.observe { session_id, paths[], source: hook\|diff }` | 0A | `harnessd` reports observed edits |
 | `message.send { kind, to?, in_reply_to?, text?, data? }` | 0A | Typed kinds only (D-24). Budgets enforced server-side |
 | `message.ack { message_id, delivered_at, delivery: between_tools\|new_turn\|stop_hook }` | 0A | Measures delivery latency and where messages landed (D-26) |
@@ -229,7 +229,7 @@ If an agent never calls these tools, the harness still works from its observatio
 |---|---|---|---|---|
 | Another agent, any owner | `peer-agent agent/<id> (accountable human: human/<id>)` | `untrusted suggestion` | `none` | 0A |
 | The harness itself (notices) | `harness` | `system-notice` | `none` | 0A |
-| The local human who owns this device and task | `human/<id> (local owner)` | `owner instruction` | `none` (message text never changes policy; the owner changes policy through local config) | 0A |
+| The local human who owns this device and task, including the task itself, sent as the session's first message under `[harness task]` (D-77) | `human/<id> (local owner)` | `owner instruction` | `none` (message text never changes policy; the owner changes policy through local config) | 0A |
 | A remote human (teammate), including **task text** they wrote for an agent on your device | `human/<id> (remote)` | `untrusted suggestion` | `none` | 1 |
 
 ```

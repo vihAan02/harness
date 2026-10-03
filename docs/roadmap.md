@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 4 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74) and `harnessd` v0 (D-75, D-76). Next: item 5.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 5 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) and `AgentAdapter` + `ClaudeAdapter` (D-77). Next: item 6.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -101,6 +101,14 @@
    - turn off auto memory.
    
    See [agent-adapters.md §5](agent-adapters.md#5-claudeadapter-phase-0a-how-each-method-maps).
+   
+   **Done 2026-10-03:** `packages/adapters` (D-77). It covers:
+   - the interface, normalized observations, and `ClaudeAdapter` on the pinned SDK;
+   - the hardening checked at every turn's `init`, with tool calls held until it passes;
+   - delivery receipts that record whether a message landed between tools or as a new turn;
+   - harnessd starting and stopping sessions, recording child PIDs, and reporting status and usage with `session.report`.
+   
+   Tested against the real pinned CLI with a scripted model: write confinement, the hidden API key, the shared-`.git` deny, verbatim delivery, resume, billing errors, kill, and an orphan killed after a simulated harnessd crash. Each confinement test was checked by weakening the rule and watching it fail.
 6. **Agent-facing tool shim** (the thin layer, D-15): `harness_status`, `ask`, `answer`, `report_done` ([protocol.md §6](protocol.md#6-agent-facing-tool-shim)).
 7. **Claims:**
    - prospective claims from task scope;

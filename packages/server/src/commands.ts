@@ -10,6 +10,7 @@ import { appendEvents, notifyProject } from './events.ts';
 import { CommandError, type Actor, type Caller, type Handler } from './handler.ts';
 import { createAgent } from './agents.ts';
 import { reportSetup, reportWorktree } from './reports.ts';
+import { reportSession } from './sessions.ts';
 
 export { CommandError, type Caller } from './handler.ts';
 export { EVENTS_CHANNEL } from './events.ts';
@@ -19,6 +20,7 @@ const HANDLERS: Record<string, Handler> = {
   'agent.create': createAgent,
   'worktree.report': reportWorktree,
   'setup.report': reportSetup,
+  'session.report': reportSession,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };

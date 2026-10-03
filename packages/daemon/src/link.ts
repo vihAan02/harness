@@ -49,9 +49,12 @@ export class ServerLink {
     return this.ready ? Promise.resolve() : new Promise((r) => this.readyWaiters.push(r));
   }
 
-  command(projectId: string, name: string, args: Record<string, unknown>): Promise<{ seqs: number[]; result: unknown }> {
+  /** Sends a command; `asAgent` sends it for one of this human's agents (D-18). */
+  command(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string): Promise<{ seqs: number[]; result: unknown }> {
     if (this.stopped) return Promise.reject(new Error('link stopped'));
-    const msg: Command = { v: PROTOCOL_VERSION, type: 'command', command_id: randomUUID(), project_id: projectId, name, args };
+    const msg: Command = {
+      v: PROTOCOL_VERSION, type: 'command', command_id: randomUUID(), project_id: projectId, name, args, ...(asAgent ? { as_agent: asAgent } : {}),
+    };
     return new Promise((resolve, reject) => {
       this.pending.set(msg.command_id, { msg, resolve, reject });
       if (this.ready) this.ws?.send(JSON.stringify(msg));

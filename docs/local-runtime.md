@@ -1,6 +1,6 @@
 # Local runtime: `harnessd` on a laptop
 
-> **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. `harnessd` v0 is built in `packages/daemon` (0A item 4, D-75, D-76; sessions D-77); the 0B and later rows are not. [PLAN.md](../PLAN.md) wins on any conflict.
 >
 > **Ranked risk R-6:** laptop, environment and resource realities.
 
@@ -29,7 +29,7 @@
 
 ```
 ~/.harness/                      # created by harnessd, never inside a repo
-  config.toml                    # device id, server URL, local policy (allowlist), limits (format: packages/daemon/src/config.ts)
+  config.toml                    # device id, server URL, local policy (allowlist), limits, agent model (format: packages/daemon/src/config.ts)
   token                          # the coordination server's local token (0600; D-74)
   approvals.json                 # approved setup-command hashes; pending-approvals/ holds requests (D-52)
   scratch/<project>/<task-id>/   # HOME and TMPDIR for that task's sandboxed setup command (D-76)
@@ -39,7 +39,7 @@
   worktrees/<project>/<task-id>/ # git worktrees, outside the main checkout
   sessions/<agent-session>.json  # adapter state: vendor session/thread id, worktree, child PID + start time
   vendor/<agent>/claude-config/  # per-agent CLAUDE_CONFIG_DIR (API-key mode, D-65); part of the resume key
-  logs/                          # harnessd logs (no secret values, no file contents)
+  logs/                          # harnessd logs (no secret values, no file contents); session-<id>.log = the vendor CLI's stderr
 ```
 
 Worktrees live **outside** the main checkout, so tools that scan the repo don't find nested copies, and so policy can confine each agent to exactly one directory.

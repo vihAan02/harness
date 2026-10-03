@@ -1,10 +1,12 @@
 // harnessd v0 (0A item 4; docs/local-runtime.md). The per-device execution and security boundary
 // (D-32): it prepares and tears down task workspaces, owns their Git writes, runs approved setup
 // commands sandboxed, hands out ports and agent config dirs, tracks agent processes, and keeps a
-// connection to the coordination server. Acting on task assignments arrives with the lifecycle
-// (item 9), and running agents with the adapter (item 5).
+// connection to the coordination server. It runs agent sessions only through @harness/adapters
+// (D-17). Acting on task assignments arrives with the lifecycle (item 9).
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec } from '@harness/adapters';
 import type { EventMessage } from '@harness/protocol';
 import { Approvals, setupHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
@@ -14,16 +16,30 @@ import { ServerLink } from './link.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
-import { killOrphans, Sessions, type OrphanReport } from './supervision.ts';
+import { renderTask, type TaskForAgent } from './envelope.ts';
+import { readRepoInstructions, sessionInstructions } from './instructions.ts';
+import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
   ports: PortBlock; configDir: string; env: Record<string, string>;
 };
+export type AgentRef = { id: string; name: string; vendor: string };
+/** One agent session harnessd is running for a task. */
+export type RunningAgent = {
+  sessionId: string; projectId: string; taskId: string; agent: AgentRef; workspace: TaskWorkspace;
+  adapter: AgentAdapter; handle: SessionHandle; record: SessionRecord;
+  lastUsage: Extract<Observation, { kind: 'usage' }> | null;
+  done: Promise<void>;
+};
 export type DaemonOptions = {
   home: Home; config?: LocalConfig;
   log?: (msg: string) => void; onEvent?: (e: EventMessage) => void;
+  onObservation?: (run: RunningAgent, o: Observation) => void;
   heartbeatMs?: number; approvalPollMs?: number;
+  /** The vendor credential. Default: ANTHROPIC_API_KEY from harnessd's environment, passed through untouched (D-48, D-56). */
+  auth?: Auth;
+  adapters?: Record<string, AgentAdapter>;
 };
 
 export class Daemon {
@@ -37,6 +53,8 @@ export class Daemon {
   link: ServerLink | null = null;
   orphans: OrphanReport[] = [];
   stopping = false;
+  adapters: Record<string, AgentAdapter>;
+  running = new Map<string, RunningAgent>(); // by task id
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -46,6 +64,7 @@ export class Daemon {
     this.approvals = new Approvals(this.home);
     this.sessions = new Sessions(this.home);
     this.ports = new PortAllocator(this.home, this.config.limits.portRange, this.config.limits.portsPerAgent, this.config.limits.maxConcurrentAgents);
+    this.adapters = o.adapters ?? { claude: new ClaudeAdapter() };
   }
 
   async start(): Promise<void> {
@@ -74,6 +93,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
     await this.link?.stop();
   }
 
@@ -118,7 +138,119 @@ export class Daemon {
     return { branchDeleted };
   }
 
+  /**
+   * Starts the task's agent session in its prepared workspace (local-runtime §3 step 3). The session's
+   * first message is the task itself, from the local owner. Its child PID is recorded for orphan
+   * supervision (D-62), and its status and usage are reported to the server.
+   */
+  async startAgent(ws: TaskWorkspace, agent: AgentRef, task: TaskForAgent, tools: HarnessTool[] = []): Promise<RunningAgent> {
+    const project = this.project(ws.projectId);
+    if (this.running.has(ws.taskId)) throw new Error(`task ${ws.taskId} already has a running agent`);
+    const adapter = this.adapters[agent.vendor];
+    if (!adapter) throw new Error(`no adapter for vendor ${agent.vendor}`);
+    const auth = this.auth();
+    const sessionId = randomUUID();
+    const record: SessionRecord = {
+      sessionId, agentId: agent.id, taskId: ws.taskId, projectId: ws.projectId, worktree: ws.worktree, baseBranch: project.baseBranch,
+      pid: null, pidStart: null, configDir: ws.configDir, startedAt: new Date().toISOString(), vendor: agent.vendor,
+    };
+    this.sessions.save(record);
+    await this.report(ws.projectId, 'session.report', {
+      session_id: sessionId, status: 'starting', task_id: ws.taskId, worktree: ws.worktree, branch: ws.branch,
+    }, agent.id);
+    const spec: SessionSpec = {
+      sessionId, worktree: ws.worktree, gitCommonDir: await gitCommonDir(project.repo), configDir: ws.configDir,
+      ports: ws.ports, env: ws.env, auth, tools,
+      instructions: sessionInstructions({ agentName: agent.name, taskId: ws.taskId, ports: ws.ports, repo: readRepoInstructions(ws.worktree) }),
+      ...(this.config.agents.model ? { model: this.config.agents.model } : {}),
+      ...(this.config.agents.maxBudgetUsd ? { maxBudgetUsd: this.config.agents.maxBudgetUsd } : {}),
+      log: this.vendorLog(sessionId),
+    };
+    const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });
+    const run: RunningAgent = {
+      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, done: Promise.resolve(),
+    };
+    this.running.set(ws.taskId, run);
+    run.done = this.watch(run);
+    return run;
+  }
+
+  /** Graceful: interrupt the turn, then end the session (agent-adapters §5). */
+  async stopAgent(taskId: string, mode: 'graceful' | 'kill' = 'graceful'): Promise<void> {
+    const run = this.running.get(taskId);
+    if (!run) return;
+    await run.adapter.stopSession(run.handle, mode);
+    await run.done;
+  }
+
   // ---------- internals ----------
+
+  auth(): Auth {
+    if (this.o.auth) return this.o.auth;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('set ANTHROPIC_API_KEY for harnessd: agents run on an API key, never a subscription login (D-56)');
+    return { mode: 'api-key', apiKey };
+  }
+
+  /** The vendor CLI's stderr, to a per-session log file (local-runtime §2). */
+  vendorLog(sessionId: string): (line: string) => void {
+    const file = path.join(this.home.logs, `session-${sessionId}.log`);
+    return (line) => { try { fs.appendFileSync(file, line, { mode: 0o600 }); } catch {} };
+  }
+
+  async watch(run: RunningAgent): Promise<void> {
+    for await (const o of run.adapter.observations(run.handle)) {
+      try {
+        await this.observe(run, o);
+      } catch (e) {
+        this.log(`${run.agent.name} (${run.taskId}): ${(e as Error).message}`);
+      }
+      this.o.onObservation?.(run, o);
+    }
+    this.running.delete(run.taskId);
+  }
+
+  async observe(run: RunningAgent, o: Observation): Promise<void> {
+    const report = (args: Record<string, unknown>) =>
+      this.report(run.projectId, 'session.report', { session_id: run.sessionId, ...args }, run.agent.id);
+    switch (o.kind) {
+      case 'process.started':
+        run.record.pid = o.pid;
+        run.record.pidStart = await processStart(o.pid);
+        this.sessions.save(run.record);
+        break;
+      case 'session.init':
+        run.record.vendorSessionId = o.vendorSessionId;
+        this.sessions.save(run.record);
+        await report({ status: run.adapter.getStatus(run.handle), vendor_session_id: o.vendorSessionId, vendor_version: o.vendorVersion });
+        break;
+      case 'status':
+        if (o.status !== 'ended') await report({ status: o.status });
+        break;
+      case 'usage':
+        run.lastUsage = o;
+        break;
+      case 'turn.ended':
+        if (run.lastUsage) {
+          const u = run.lastUsage;
+          await report({
+            status: run.adapter.getStatus(run.handle),
+            usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd },
+          });
+        }
+        break;
+      case 'error':
+        // Pause and alert; the vendor CLI does its own bounded retries, harnessd never loops (F-65).
+        this.log(`${run.agent.name} (${run.taskId}): ${o.error}: ${o.message}`);
+        break;
+      case 'ended':
+        Object.assign(run.record, { pid: null, endedAt: new Date().toISOString(), endReason: o.reason });
+        this.sessions.save(run.record);
+        await report({ status: 'ended', reason: o.reason });
+        break;
+    }
+  }
+
 
   /** Deny by default: only repos listed in the local config are worked on (local-runtime §1). */
   project(projectId: string): ProjectConfig {
@@ -137,9 +269,9 @@ export class Daemon {
     if (active >= limit) throw new Error(`already running ${active} task(s); the limit is ${limit} (D-38)`);
   }
 
-  async report(projectId: string, name: string, args: Record<string, unknown>): Promise<void> {
+  async report(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string): Promise<void> {
     if (!this.link) throw new Error('start() first');
-    await this.link.command(projectId, name, args);
+    await this.link.command(projectId, name, args, asAgent);
   }
 
   async runApprovedSetup(project: ProjectConfig, taskId: string, worktree: string, setup: NonNullable<RepoConfig['setup']>): Promise<void> {

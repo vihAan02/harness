@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 4 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74) and `harnessd` v0 (D-75, D-76).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 5 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) and `AgentAdapter` + `ClaudeAdapter` (D-77).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -654,6 +654,27 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Orphans** (D-62): a recorded agent process is killed on start only if it's still running with the same start time, so a reused PID is never killed. Its task's edits are then reconciled from the worktree (D-70).
   - **The CLI may depend on `@harness/daemon`** for local state such as approvals; `test/structure.test.ts` allows it.
   - *Source:* 0A item 4. *Status:* Proposal.
+- **D-77 How `AgentAdapter` and `ClaudeAdapter` are built (0A item 5).** The interface is in `packages/adapters/src/adapter.ts`; the Claude side in `packages/adapters/src/claude/`.
+  - **Pinning (D-49):** the Agent SDK is pinned at 0.3.287 and the CLI it bundles at 2.1.287, the versions the spike tested. A session refuses to start on any other installed SDK, and capability flags exist only for verified CLI versions.
+  - **Hardening is checked at every turn's `init`:** the CLI version, `apiKeySource` = the API key, `dontAsk`, `cwd` = the worktree, tools only from the base set plus the shim, no MCP server but the harness's, no plugin that isn't a CLI built-in, and no skill outside the CLI's own list. Any failure kills the session.
+    - **Tools wait for the check:** the dead-man PreToolUse holds every tool call until the first `init` has passed, so nothing runs before the check, and a failed check denies everything.
+    - **The env probe of D-64 isn't run per session,** since only the model can run a Bash command. The adapter's test suite runs it against the pinned version instead (`session.test.ts`), and the version pin keeps sessions on that version.
+  - **Defense in depth (D-35):** the dead-man PreToolUse also denies any file-tool write outside the worktree, behind the path-scoped allow rules.
+  - **Child PIDs:** the adapter spawns the CLI itself (`spawnClaudeCodeProcess`), so harnessd records the PID and its start time for orphan supervision (D-62).
+  - **Delivery classification (D-26):** a message pushed while a turn runs, whose `started` receipt arrives before that turn's `result`, landed `between_tools`. Anything else landed as a `new_turn`.
+  - **Session ids are UUIDs** chosen by harnessd, because the SDK requires a UUID for `sessionId`. The vendor's session id is then the same id.
+  - **Sessions in harnessd:**
+    - the first message is the task, from the local owner, in a `[harness task]` envelope (protocol.md §8);
+    - the repo's `CLAUDE.md` and `AGENTS.md` go into the system prompt as labelled context, after the harness's own instructions, as regular files of at most 32 KB (D-45);
+    - the API key comes from harnessd's own `ANTHROPIC_API_KEY` and is passed through untouched (D-48, D-56). `config.toml` may set `[agents] model` and `max_budget_usd`;
+    - the vendor CLI's stderr goes to `~/.harness/logs/session-<id>.log`.
+  - **`session.report`** (protocol.md §4) is how harnessd tells the server about sessions. It's sent as the agent, from the device, so the events are the agent's on behalf of its human (D-18).
+    - The first report creates the session, and only for the task's assignee.
+    - Status changes are `session.status` events; the end is `session.ended`.
+    - Usage is reported at each turn end, as the vendor's running totals (`usage.reported`).
+    - Vendor ids and versions are kept on the session row, not logged.
+  - **Tests** run the real pinned CLI against a scripted stand-in for the Messages API, copied from the spike into `packages/adapters/test/` (never imported, D-44).
+  - *Source:* 0A item 5. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -752,7 +773,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 2, data model v0.~~ **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql`, plus the event log's append and read (D-73, Proposal).
    - ~~Item 3, coordination server v0.~~ **Done 2026-10-02:** the WebSocket server, idempotent commands and NOTIFY fan-out (D-74, Proposal). `npm run server` runs it.
    - ~~Item 4, `harnessd` v0.~~ **Done 2026-10-02:** `packages/daemon`, run with `npm run daemon`, and `harness approve` (D-75; D-76 Proposal).
-   - **Next:** item 5, `AgentAdapter` + `ClaudeAdapter` ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 5, `AgentAdapter` + `ClaudeAdapter`.~~ **Done 2026-10-03:** `packages/adapters`, and harnessd runs agent sessions through it (D-77, Proposal).
+   - **Next:** item 6, the agent-facing tool shim ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

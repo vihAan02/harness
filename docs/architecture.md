@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** design spec. No code yet. [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. Phase 0A code is in `packages/` (see the roadmap for what is built). [PLAN.md](../PLAN.md) wins on any conflict.
 >
 > This doc says **what the pieces are and how they interact.** Semantics are in [coordination.md](coordination.md). Wire formats and storage are in [protocol.md](protocol.md).
 

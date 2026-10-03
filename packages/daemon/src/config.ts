@@ -8,6 +8,7 @@
 //   server_url = "ws://127.0.0.1:7400"
 //   [limits]  max_concurrent_agents = 2, ports_per_agent = 10, port_range = [3100, 3999]
 //   [setup]   allowed_domains = ["registry.npmjs.org"], timeout_seconds = 900
+//   [agents]  model = "claude-sonnet-5-5", max_budget_usd = 5   (both optional; the CLI's default model otherwise)
 //   [[projects]]  id = "prj_…", repo = "/abs/path", base_branch = "main", secrets = ["DATABASE_URL"]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +21,7 @@ export type LocalConfig = {
   projects: ProjectConfig[];
   limits: { maxConcurrentAgents: number; portsPerAgent: number; portRange: [number, number] };
   setup: { allowedDomains: string[]; timeoutSeconds: number };
+  agents: { model: string | null; maxBudgetUsd: number | null };
 };
 
 /** Linux hands out ephemeral ports from 32768 and macOS from 49152; agent port blocks stay below both (D-68). */
@@ -67,6 +69,9 @@ export function parseConfig(raw: Record<string, unknown>, token: string): LocalC
   if (start < 1024 || end < start || end >= EPHEMERAL_FLOOR) throw new Error(`config: limits.port_range must lie within 1024..${EPHEMERAL_FLOOR - 1}`);
 
   const setup = table(raw.setup);
+  const agents = table(raw.agents);
+  const budget = agents.max_budget_usd;
+  if (budget !== undefined && (typeof budget !== 'number' || !(budget > 0) || budget > 1000)) throw new Error('config: agents.max_budget_usd must be a number from 0 to 1000');
   const serverUrl = str(raw.server_url ?? 'ws://127.0.0.1:7400', 'server_url');
   if (!/^wss?:\/\//.test(serverUrl)) throw new Error('config: server_url must be ws:// or wss://');
 
@@ -96,6 +101,10 @@ export function parseConfig(raw: Record<string, unknown>, token: string): LocalC
     setup: {
       allowedDomains: strings(setup.allowed_domains ?? ['registry.npmjs.org'], 'setup.allowed_domains', /^[A-Za-z0-9*.-]{1,253}$/),
       timeoutSeconds: int(setup.timeout_seconds, 'setup.timeout_seconds', 900, 10, 7200),
+    },
+    agents: {
+      model: agents.model === undefined ? null : str(agents.model, 'agents.model', /^[A-Za-z0-9._:@-]{1,100}$/),
+      maxBudgetUsd: (budget as number | undefined) ?? null,
     },
   };
 }

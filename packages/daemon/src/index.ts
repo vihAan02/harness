@@ -1,6 +1,8 @@
 // harnessd, the per-device daemon (docs/local-runtime.md): the execution and security boundary
 // (D-32). It supervises agents only through @harness/adapters and owns every Git write (D-50).
-export { Daemon, type DaemonOptions, type TaskWorkspace } from './daemon.ts';
+export { Daemon, type AgentRef, type DaemonOptions, type RunningAgent, type TaskWorkspace } from './daemon.ts';
+export { renderTask, type TaskForAgent } from './envelope.ts';
+export { sessionInstructions, STANDING_INSTRUCTION } from './instructions.ts';
 export { harnessHome, type Home } from './home.ts';
 export { loadConfig, parseConfig, type LocalConfig } from './config.ts';
 export { Approvals, setupHash, type ApprovalRequest } from './approvals.ts';

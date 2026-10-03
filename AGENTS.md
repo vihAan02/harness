@@ -14,10 +14,11 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 1, the repo skeleton, in `packages/` (D-72);
     - item 2, data model v0, on Postgres 18 (D-73);
     - item 3, coordination server v0 (D-74);
-    - item 4, `harnessd` v0 (D-75, D-76).
-  - **Next:** item 5, `AgentAdapter` + `ClaudeAdapter`.
+    - item 4, `harnessd` v0 (D-75, D-76);
+    - item 5, `AgentAdapter` + `ClaudeAdapter`, with harnessd running agent sessions through it (D-77).
+  - **Next:** item 6, the agent-facing tool shim.
 - **Code:**
-  - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md).
+  - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
   - The spike is throwaway, and product code never imports it.
 - **Stack:** TypeScript (D-55) on Node 24+ (D-72). Experiments use API keys, never subscription login (D-56).
