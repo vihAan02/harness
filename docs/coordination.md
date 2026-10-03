@@ -110,6 +110,8 @@ An observed claim lasts until the task is done or landed, or until the file no l
 - **Codex:** has no read tool, so its reads are command-parsed at best (F-39).
 - **Decided (D-88, resolving Q-06):** agents on vendors with weaker read capture get correspondingly lower-confidence notices, never silence. Shell reads are parsed best-effort, simple forms only.
 
+**As built (D-91):** entries are Git blob ids hashed from disk; Grep hits come from its file list or content lines; shell reads are parsed best-effort; edited files without a captured read get an `edit_base` entry at their merge-base blob.
+
 ### When invalidation fires
 
 | Trigger | Notice (`dependency_changed`) | Phase |
@@ -122,6 +124,8 @@ An observed claim lasts until the task is done or landed, or until the file no l
 - **Exact rule:** notify A about path P if A's read set has P at hash H, and P's new content hash isn't H, while A's task is active or not yet landed.
 - **Deduplication:** one pending notice per (agent, path). Newer notices replace older ones.
 - **Evaluation:** H-02 and H-04 test whether this is worth it. The A/B test measures how many planted dependency changes reach the affected agent before its task finishes ([validation.md](validation.md)).
+
+**As built (D-92):** notices are `dependency_changed` messages, the same news is sent once, and a newer undelivered notice supersedes an older one it fully covers (in-progress news never supersedes landed news). Readers of landed notices include finished-but-unlanded tasks, whose notices are shown to the human.
 
 ### What the agent does with a notice: sync (D-53)
 - **`in_progress` is awareness only.** The peer's new content isn't readable from A's sandbox, and it isn't final. A can carry on, `ask` the peer, or `wait_for` the peer's task.

@@ -23,7 +23,8 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83);
     - item 11, the 0A demo, `npm run demo`, which meets every 0A exit criterion with a scripted model (D-84).
   - **Deferred from 0A:** the real-model checks need an API key (U-1, Q-18, deferred by D-86).
-  - **Now (D-86):** 0B's first stretch: provider integration (D-87), item 1 (read capture), item 2 (invalidation and sync) and the land part of item 5, until the S3 example passes with the scripted model. Then stop and report to an owner.
+  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`). **Stopped for an owner's review** before the rest of 0B.
+  - **Environment caveat:** if the checkout is inside an iCloud-synced folder (such as `~/Desktop`), real-CLI tests flake and iCloud can create `name 2.ext` duplicate files; run them from a clone outside iCloud (see HANDOFF.md).
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.

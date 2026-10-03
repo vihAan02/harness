@@ -9,7 +9,7 @@ The first wedge: **several humans, each running their own AI coding agents on th
 **Phase 0A is built; Phase 0B is approved and under way (D-86).**
 - 0A: the coordination server, harnessd, the Claude adapter, soft claims, typed messages, the CLI, metrics and the benchmark app. Every 0A exit criterion is met with a scripted model (`npm run demo`, D-84).
 - Agents can run on any Anthropic-compatible model endpoint by configuration; DeepSeek `deepseek-flash` is the cheap default for development (D-87). See [Choosing a model provider](#choosing-a-model-provider).
-- 0B in progress: read capture, stale-context notices and sync, and the local land step (PLAN.md §12).
+- 0B's first stretch is built: read capture, stale-context notices with sync at turn end, and the local land step (`harness land`). The S3 example ("Dependency changed: src/types.ts has changed since you read it.", with a diff) passes end to end with the scripted model (PLAN.md §12).
 - The code lives in `packages/`. See [Running locally](#running-locally). The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a); the hand-over notes are in [HANDOFF.md](HANDOFF.md).
 
 ## Running locally
@@ -43,6 +43,7 @@ You need Node 24 or later and PostgreSQL 18.
    - `harness agent add backend`, then `harness task add "Login API" --scope src/api/,src/types.ts --assign backend --text "…"`. Assigning starts the agent in its own worktree.
    - `harness status` shows who's alive, who owns what, what each agent is changing, overlaps and questions. `harness log --follow` streams the event log, and `harness metrics` scores the run (validation.md §4).
    - An agent finishes with its `report_done` tool, or you run `harness task done <task>`. harnessd then commits its work on `harness/task/<task>`. `harness task abandon <task> --reason …` stops it and removes the worktree.
+   - `harness land <task>` merges a finished task into the base branch on the device that ran it: in an integration worktree, after the repo's approved `test.command` (from `harness.yaml`) passes in the sandbox. Agents that read a file it changed are synced at their turn end and told, with a diff. If a sync conflicts, the task is blocked: resolve it in the task's worktree, then `harness task unblock <task>`.
 
 ## Choosing a model provider
 
