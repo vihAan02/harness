@@ -24,6 +24,11 @@ const CREDENTIAL_PATHS = ['.ssh', '.aws', '.gnupg', '.config/gh', '.config/gclou
 export type SetupRun = {
   home: Home; worktree: string; gitCommonDir: string; scratch: string; command: string;
   allowedDomains: string[]; timeoutMs: number; logFile: string;
+  /**
+   * Lets the command bind and reach local ports: a land's test command starts servers on 127.0.0.1 (D-83).
+   * srt then allows binding on every interface and inbound connections, outbound only to localhost (F-58).
+   */
+  allowLocalBinding?: boolean;
 };
 
 const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -41,7 +46,7 @@ export function sandboxSettings(r: SetupRun) {
       denyRead: [real(r.home.root), ...CREDENTIAL_PATHS.map((p) => path.join(realHome, p))],
       allowRead: [worktree, scratch],
     },
-    network: { allowedDomains: r.allowedDomains, deniedDomains: [] },
+    network: { allowedDomains: r.allowedDomains, deniedDomains: [], ...(r.allowLocalBinding ? { allowLocalBinding: true } : {}) },
   };
 }
 

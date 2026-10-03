@@ -80,7 +80,38 @@ test('PostToolUse reports edits as worktree-relative paths, and never throws', a
   await post({ tool_name: 'Write', tool_input: { file_path: `${WT}/src/a.ts` } } as never, undefined, opts);
   await post({ tool_name: 'Read', tool_input: { file_path: `${WT}/src/a.ts` } } as never, undefined, opts);
   assert.deepEqual(await post({ get tool_name(): string { throw new Error('boom'); } } as never, undefined, opts), {});
-  assert.deepEqual(seen, [{ kind: 'edit.observed', paths: ['src/a.ts'], outside: [] }]);
+  assert.deepEqual(seen.filter((o) => o.kind === 'edit.observed'), [{ kind: 'edit.observed', paths: ['src/a.ts'], outside: [] }]);
+});
+
+test('PostToolUse: every call it sees is reported for the missed-hook monitor, and reads are captured (0B item 1)', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const wt = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-hooks-')));
+  fs.mkdirSync(path.join(wt, 'src'));
+  for (const f of ['src/a.ts', 'src/b.ts', 'src/c.ts']) fs.writeFileSync(path.join(wt, f), 'x\n');
+  const seen: Observation[] = [];
+  const hooks = claudeHooks({ worktree: wt }, { observe: (o) => seen.push(o) });
+  const post = hooks.PostToolUse![0]!.hooks[0]!;
+  const fail = hooks.PostToolUseFailure![0]!.hooks[0]!;
+  const opts = { signal: new AbortController().signal };
+  await post({ tool_name: 'Read', tool_use_id: 'r1', tool_input: { file_path: `${wt}/src/a.ts`, offset: 10, limit: 20 } } as never, undefined, opts);
+  await post({ tool_name: 'Read', tool_use_id: 'r2', tool_input: { file_path: '/etc/hosts' } } as never, undefined, opts);
+  await post({ tool_name: 'Grep', tool_use_id: 'g1', tool_input: { pattern: 'x' }, tool_response: { mode: 'files_with_matches', filenames: [`${wt}/src/a.ts`, 'src/b.ts'] } } as never, undefined, opts);
+  await post({ tool_name: 'Grep', tool_use_id: 'g2', tool_input: { pattern: 'x', output_mode: 'content' }, tool_response: { mode: 'content', filenames: [], content: 'src/c.ts:1:x\nnot-a-file:2:x\nsrc/c.ts-2-ctx' } } as never, undefined, opts);
+  await post({ tool_name: 'Glob', tool_use_id: 'gl', tool_input: { pattern: '**' }, tool_response: { filenames: ['src/a.ts'] } } as never, undefined, opts);
+  await post({ tool_name: 'Bash', tool_use_id: 'b1', tool_input: { command: 'cat src/a.ts' }, tool_response: {} } as never, undefined, opts);
+  await fail({ tool_name: 'Read', tool_use_id: 'f1', tool_input: { file_path: `${wt}/nope` }, error: 'missing' } as never, undefined, opts);
+  assert.deepEqual(seen.filter((o) => o.kind === 'hook.seen').map((o) => [o.toolUseId, o.event]), [['r1', 'post'], ['r2', 'post'], ['g1', 'post'], ['g2', 'post'], ['gl', 'post'], ['b1', 'post'], ['f1', 'post_failure']]);
+  const reads = seen.filter((o) => o.kind === 'read.observed');
+  assert.deepEqual(reads.map((o) => [o.toolUseId, o.reads.map((r) => [r.path, r.source, r.confidence, r.range?.start ?? null, r.range?.lines ?? null]), o.outside]), [
+    ['r1', [['src/a.ts', 'read_tool', 'high', 10, 20]], []],
+    ['r2', [], ['/etc/hosts']],
+    ['g1', [['src/a.ts', 'search_hit', 'medium', null, null], ['src/b.ts', 'search_hit', 'medium', null, null]], []],
+    ['g2', [['src/c.ts', 'search_hit', 'medium', null, null]], []],
+  ], 'Glob names files without reading them; text that isn\'t a real file is dropped');
+  assert.deepEqual(seen.filter((o) => o.kind === 'shell.ran'), [{ kind: 'shell.ran', toolUseId: 'b1', command: 'cat src/a.ts' }]);
+  fs.rmSync(wt, { recursive: true, force: true });
 });
 
 test('hardeningProblems flags anything the session config should have ruled out', () => {

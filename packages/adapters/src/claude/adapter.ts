@@ -95,6 +95,8 @@ export class ClaudeSession implements SessionHandle {
   endReason = 'ended';
   /** Settles once the first init is checked: null if the hardening holds, else why it doesn't. Tools wait on it. */
   verdict: Promise<string | null>;
+  /** While set, every tool call is denied with this reason (AgentAdapter.setHold, D-53). */
+  holdReason: string | null = null;
   settleVerdict!: (v: string | null) => void;
 
   constructor(spec: SessionSpec) {
@@ -168,6 +170,7 @@ export class ClaudeSession implements SessionHandle {
     const type = m.type;
     if (type === 'system') this.system(m);
     else if (type === 'assistant') this.assistant(m);
+    else if (type === 'user') this.toolResults(m);
     else if (type === 'result') this.result(m);
     else if (type === 'command_lifecycle') this.lifecycle(m);
   }
@@ -194,8 +197,11 @@ export class ClaudeSession implements SessionHandle {
       } else if (m.state === 'idle') {
         if (this.status === 'working' || this.status === 'waiting') {
           const r = this.lastResult;
-          const denied = Array.isArray(r?.permission_denials) ? r.permission_denials.length : 0;
-          this.emit({ kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true, denied });
+          const denials = Array.isArray(r?.permission_denials) ? (r.permission_denials as { tool_use_id?: unknown }[]) : [];
+          this.emit({
+            kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true,
+            denied: denials.length, deniedIds: denials.map((d) => String(d.tool_use_id ?? '')).filter(Boolean),
+          });
           this.setStatus(r?.is_error === true ? 'errored' : 'idle');
         } else if (this.status === 'starting') this.setStatus('idle');
       } else if (m.state === 'requires_action') {
@@ -218,10 +224,20 @@ export class ClaudeSession implements SessionHandle {
       const raw = [input.file_path, input.notebook_path, input.path].filter((p): p is string => typeof p === 'string');
       const rel = relativize(this.spec.worktree, raw);
       this.emit({
-        kind: 'tool.called', tool, category: categoryOf(tool),
+        kind: 'tool.called', toolUseId: String(block.id ?? ''), tool, category: categoryOf(tool),
         ...(raw.length ? { paths: [...rel.paths, ...rel.outside] } : {}),
         ...(typeof input.command === 'string' ? { command: input.command.slice(0, 500) } : {}),
       });
+    }
+  }
+
+  /** Tool results come back in user messages: which calls finished, and whether they failed (the missed-hook monitor, H-03). */
+  toolResults(m: Record<string, unknown>): void {
+    if (m.parent_tool_use_id) return;
+    const content = (m.message as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content as Record<string, unknown>[]) {
+      if (block.type === 'tool_result') this.emit({ kind: 'tool.result', toolUseId: String(block.tool_use_id ?? ''), isError: block.is_error === true });
     }
   }
 
@@ -317,6 +333,10 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     return this.session(h).stop(mode);
   }
 
+  setHold(h: SessionHandle, reason: string | null): void {
+    this.session(h).holdReason = reason;
+  }
+
   getStatus(h: SessionHandle): SessionStatus {
     return this.session(h).status;
   }
@@ -371,7 +391,7 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     // Sandbox and permission rules match resolved paths; the init check compares cwd too.
     const real = { ...spec, worktree: fs.realpathSync(spec.worktree), gitCommonDir: fs.realpathSync(spec.gitCommonDir) };
     const session = new ClaudeSession(real);
-    const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: () => session.verdict };
+    const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: async () => (await session.verdict) ?? session.holdReason };
     session.start(this.options(real, sink, (pid) => {
       session.pid = pid;
       session.emit({ kind: 'process.started', pid });

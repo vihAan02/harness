@@ -9,18 +9,31 @@ import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { regularFileIn } from './repo-config.ts';
 
 export type ManifestDigest = { path: string; sha256: string | null }; // null: declared but absent
+export type ApprovalKind = 'setup' | 'test';
 export type ApprovalRequest = {
   id: string; projectId: string; taskId: string; command: string; manifests: ManifestDigest[]; hash: string; requestedAt: string;
+  kind?: ApprovalKind; // absent on requests written before 0B: setup
 };
 type Approved = ApprovalRequest & { approvedAt: string };
 
-export function setupHash(worktree: string, command: string, manifests: string[]): { hash: string; manifests: ManifestDigest[] } {
-  const digests = manifests.map((m) => {
+function digests(worktree: string, manifests: string[]): ManifestDigest[] {
+  return manifests.map((m) => {
     const file = regularFileIn(worktree, m);
     return { path: m, sha256: file ? createHash('sha256').update(fs.readFileSync(file)).digest('hex') : null };
   });
-  const hash = createHash('sha256').update(JSON.stringify({ v: 1, command, manifests: digests })).digest('hex');
-  return { hash, manifests: digests };
+}
+
+export function setupHash(worktree: string, command: string, manifests: string[]): { hash: string; manifests: ManifestDigest[] } {
+  const d = digests(worktree, manifests);
+  const hash = createHash('sha256').update(JSON.stringify({ v: 1, command, manifests: d })).digest('hex');
+  return { hash, manifests: d };
+}
+
+/** The test command's approval (D-51). Its hash includes the kind, so approving a setup command never approves the same text as a test. */
+export function testHash(worktree: string, command: string, manifests: string[]): { hash: string; manifests: ManifestDigest[] } {
+  const d = digests(worktree, manifests);
+  const hash = createHash('sha256').update(JSON.stringify({ v: 1, kind: 'test', command, manifests: d })).digest('hex');
+  return { hash, manifests: d };
 }
 
 export class Approvals {

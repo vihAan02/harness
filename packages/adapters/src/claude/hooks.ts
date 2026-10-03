@@ -4,14 +4,17 @@
 //   If harnessd dies, nothing answers it, so an orphaned agent's next tool call times out and is denied.
 // - PostToolUse captures edits: file-tool paths, plus `bashEditDiff` for Bash writes (F-07). It
 //   fails open, so harnessd backs it up with worktree diffs (D-70).
+import fs from 'node:fs';
 import path from 'node:path';
 import type { HookCallbackMatcher, HookEvent } from '@anthropic-ai/claude-agent-sdk';
-import type { HarnessHookSink, SessionSpec } from '../adapter.ts';
+import type { HarnessHookSink, ObservedRead, SessionSpec } from '../adapter.ts';
 
 export const DEAD_MAN_TIMEOUT_S = 5;
 const FILE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 
-type ToolHookInput = { tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
+type ToolHookInput = { tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; tool_use_id?: string };
+/** Search hits recorded per Grep call, at most. */
+const MAX_HITS = 200;
 export type ClaudeHookBundle = Partial<Record<HookEvent, HookCallbackMatcher[]>>;
 
 const deny = (reason: string) => ({
@@ -48,6 +51,58 @@ export function editedPaths(input: ToolHookInput): string[] {
   return [];
 }
 
+/** Is `rel` a regular file in the worktree? Used to tell real paths from text in Grep's content output. */
+function isFileIn(worktree: string, p: string): boolean {
+  try { return fs.statSync(path.resolve(worktree, p)).isFile(); } catch { return false; }
+}
+
+/**
+ * The files a finished tool call read (0B item 1; coordination.md §2). Read gives one file, with its line
+ * range if partial (high confidence). Grep gives the files it returned matches from (medium): its
+ * `filenames`, or, in content and count modes, the paths at the start of its output lines, kept only if
+ * they name a real file. Glob names files without reading them, so it's not a read.
+ */
+export function readsOf(input: ToolHookInput, worktree: string): { reads: ObservedRead[]; outside: string[] } {
+  const ti = input.tool_input ?? {};
+  const found: { p: string; range?: { start: number; lines: number } }[] = [];
+  let source: ObservedRead['source'] = 'read_tool';
+  if (input.tool_name === 'Read' && typeof ti.file_path === 'string') {
+    const limit = Number(ti.limit);
+    const offset = Number(ti.offset);
+    found.push({ p: ti.file_path, ...(Number.isSafeInteger(limit) && limit > 0 ? { range: { start: Number.isSafeInteger(offset) && offset > 0 ? offset : 1, lines: limit } } : {}) });
+  } else if (input.tool_name === 'Grep') {
+    source = 'search_hit';
+    const out = (input.tool_response ?? {}) as { mode?: string; filenames?: unknown; content?: unknown };
+    const target = typeof ti.path === 'string' ? ti.path : null;
+    if (target && isFileIn(worktree, target)) {
+      if ((typeof out.content === 'string' && out.content.trim()) || (Array.isArray(out.filenames) && out.filenames.length)) found.push({ p: target });
+    } else if (Array.isArray(out.filenames) && out.filenames.length) {
+      for (const f of out.filenames.slice(0, MAX_HITS)) if (typeof f === 'string') found.push({ p: f });
+    } else if (typeof out.content === 'string') {
+      const seen = new Set<string>();
+      for (const line of out.content.split('\n')) {
+        // "path:12:text", "path-12-context" or "path:3" (count): the longest prefix that names a real file.
+        const m = line.match(/^(.+?)[:-]\d+(?:[:-]|$)/) ?? line.match(/^(.+):\d+$/);
+        if (!m || seen.has(m[1]!)) continue;
+        const base = target ? path.resolve(worktree, target) : worktree;
+        const candidate = path.isAbsolute(m[1]!) ? m[1]! : path.resolve(base, m[1]!);
+        if (!isFileIn(worktree, candidate)) continue;
+        seen.add(m[1]!);
+        found.push({ p: candidate });
+        if (seen.size >= MAX_HITS) break;
+      }
+    }
+  }
+  const reads: ObservedRead[] = [];
+  const outside: string[] = [];
+  for (const f of found) {
+    const r = relativize(worktree, [path.resolve(worktree, f.p)]);
+    outside.push(...r.outside);
+    for (const p of r.paths) reads.push({ path: p, source, confidence: source === 'read_tool' ? 'high' : 'medium', ...(f.range ? { range: f.range } : {}) });
+  }
+  return { reads, outside };
+}
+
 export function claudeHooks(spec: Pick<SessionSpec, 'worktree'>, sink: HarnessHookSink): ClaudeHookBundle {
   const preToolUse = async (raw: unknown) => {
     try {
@@ -66,15 +121,32 @@ export function claudeHooks(spec: Pick<SessionSpec, 'worktree'>, sink: HarnessHo
   };
   const postToolUse = async (raw: unknown) => {
     try {
-      const paths = editedPaths(raw as ToolHookInput);
+      const input = raw as ToolHookInput;
+      const id = String(input.tool_use_id ?? '');
+      sink.observe({ kind: 'hook.seen', toolUseId: id, tool: String(input.tool_name ?? ''), event: 'post' });
+      const paths = editedPaths(input);
       if (paths.length) sink.observe({ kind: 'edit.observed', ...relativize(spec.worktree, paths) });
+      const r = readsOf(input, spec.worktree);
+      if (r.reads.length || r.outside.length) sink.observe({ kind: 'read.observed', toolUseId: id, ...r });
+      const command = input.tool_input?.command;
+      if (input.tool_name === 'Bash' && typeof command === 'string') sink.observe({ kind: 'shell.ran', toolUseId: id, command: command.slice(0, 10_000) });
     } catch {
-      // Fails open by design; worktree diffs catch what this misses (D-70).
+      // Fails open by design; worktree diffs catch missed edits (D-70), and the monitor counts missed hooks (H-03).
+    }
+    return {};
+  };
+  const postToolUseFailure = async (raw: unknown) => {
+    try {
+      const input = raw as ToolHookInput;
+      sink.observe({ kind: 'hook.seen', toolUseId: String(input.tool_use_id ?? ''), tool: String(input.tool_name ?? ''), event: 'post_failure' });
+    } catch {
+      // Fails open, like PostToolUse.
     }
     return {};
   };
   return {
     PreToolUse: [{ timeout: DEAD_MAN_TIMEOUT_S, hooks: [preToolUse] }],
     PostToolUse: [{ hooks: [postToolUse] }],
+    PostToolUseFailure: [{ hooks: [postToolUseFailure] }],
   };
 }

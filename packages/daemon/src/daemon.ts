@@ -10,9 +10,9 @@ import {
   ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec, type SessionStatus,
 } from '@harness/adapters';
 import type { EventMessage } from '@harness/protocol';
-import { Approvals, setupHash } from './approvals.ts';
+import { Approvals, setupHash, testHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
-import { branchTip, changedPaths, commitAll, createWorktree, gitCommonDir, removeWorktree, TASK_ID } from './git.ts';
+import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, removeWorktree, TASK_ID, taskBranch } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink } from './link.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -20,6 +20,12 @@ import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resour
 import { runSetup } from './setup.ts';
 import { renderMessage, renderTask, type MessageForAgent, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
+import {
+  addIntegrationWorktree, advanceBase, blobsAt, changedBetween, deleteMergedBranch, diffExcerpt, mergeCommit, removeIntegrationWorktree,
+} from './integrate.ts';
+import { contains, syncWorktree } from './sync.ts';
+import { ReadTracker, type ReadReport } from './reads.ts';
+import { parseShellReads } from './shellreads.ts';
 import { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 import { harnessTools } from './tools.ts';
@@ -43,8 +49,23 @@ export type RunningAgent = {
   status: SessionStatus;
   /** Observed-claim reconciliation (D-70): the last full set reported, and whether hooks reported since. */
   diff: { last: string | null; hooksSince: boolean; running: Promise<void> | null; timer: NodeJS.Timeout | null }; // running: the queue of diffs
+  /** Read capture (0B item 1, D-88): what the agent read, hashed and reported with readset.add. */
+  reads: ReadTracker;
+  /**
+   * The missed-hook monitor (D-47, H-03): every tool call from the stream, whether a post hook saw it, and
+   * how it ended. A call that succeeded with no hook means read or edit capture missed it.
+   */
+  monitor: { calls: Map<string, { tool: string; hooked: boolean; result: 'ok' | 'error' | null }>; observed: number; missed: number; rejected: number; unparsedShell: number };
+  /**
+   * Sync at turn end (D-53): landed notices held until the branch has the new base; whether a sync is due;
+   * the one running (deliveries wait for it); and, after a conflict, what the human must resolve.
+   */
+  sync: { held: MessageInfo[]; pending: boolean; running: Promise<void> | null; blocked: { target: string; oldBase: string } | null };
   done: Promise<void>;
 };
+
+const SYNC_HOLD = 'The harness is updating your branch with work that just landed. Wait for its notice, then carry on.';
+const BLOCKED_HOLD = 'This task is paused: updating your branch with work that landed conflicted, and your human is resolving it. Stop and wait.';
 export type DaemonOptions = {
   home: Home; config?: LocalConfig;
   log?: (msg: string) => void; onEvent?: (e: EventMessage) => void;
@@ -78,6 +99,7 @@ export class Daemon {
   delivering = new Set<string>(); // message ids being injected right now
   delivered = new Set<string>(); // acknowledged in this process, before the server's event comes back
   lifecycles = new Map<string, Promise<void>>(); // per task while in flight, so assigned → completed never overlap
+  landing = new Map<string, Promise<void>>(); // per project: lands run one at a time (D-93)
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -114,6 +136,7 @@ export class Daemon {
     if (!this.link) throw new Error('start() first');
     await this.link.whenReady();
     await this.link.whenCaughtUp();
+    this.recoverLands();
   }
 
   view(projectId: string): ProjectView {
@@ -139,6 +162,14 @@ export class Daemon {
       const m = this.view(e.project_id).messages.get((e.data as { message_id: string }).message_id);
       const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to) : undefined;
       if (m && run) void this.deliver(run, m);
+    }
+    if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
+      const d = e.data as { land_id: string; task_id: string; run_tests?: boolean };
+      this.queueLand(e.project_id, () => this.land(e.project_id, d.land_id, d.task_id, d.run_tests !== false));
+    }
+    if (e.kind === 'task.unblocked') {
+      const run = this.running.get((e.data as { task_id: string }).task_id);
+      if (run?.sync.blocked) void this.resumeAfterConflict(run);
     }
   }
 
@@ -200,7 +231,13 @@ export class Daemon {
    * delivered. Messages for an agent with no live session wait in the log until its session starts.
    */
   async deliver(run: RunningAgent, m: MessageInfo): Promise<void> {
-    if (m.held || m.deliveredAt || this.delivering.has(m.id) || this.delivered.has(m.id)) return;
+    if (m.held || m.deliveredAt || m.supersededBy || this.delivering.has(m.id) || this.delivered.has(m.id)) return;
+    if (m.toTask && m.toTask !== run.taskId) return; // news for an earlier task never reaches a later one
+    // A landed change is told only after this branch has it: held for the sync at turn end (D-53).
+    if (m.kind === 'dependency_changed' && m.data.stage === 'landed') return this.holdForSync(run, m);
+    await run.sync.running; // nothing is injected while the branch is being synced (D-28, D-53)
+    if (run.sync.blocked) return; // paused on a conflict: delivered after the human unblocks it
+    if (m.deliveredAt || m.supersededBy || this.delivering.has(m.id) || this.delivered.has(m.id)) return;
     this.delivering.add(m.id);
     try {
       const view = this.view(run.projectId);
@@ -236,11 +273,255 @@ export class Daemon {
     return paths.filter((p) => !bad.includes(p));
   }
 
-  /** Messages that arrived while the agent had no live session. */
+  /** Messages that arrived while the agent had no live session, or while it was paused. */
   deliverPending(run: RunningAgent): void {
     const view = this.view(run.projectId);
-    const pending = [...view.messages.values()].filter((m) => m.to === run.agent.id && !m.held && !m.deliveredAt).sort((a, b) => a.seq - b.seq);
+    const pending = [...view.messages.values()]
+      .filter((m) => m.to === run.agent.id && (!m.toTask || m.toTask === run.taskId) && !m.held && !m.deliveredAt && !m.supersededBy)
+      .sort((a, b) => a.seq - b.seq);
     for (const m of pending) void this.deliver(run, m);
+  }
+
+  // ---------- the land step (0B item 5; D-51, D-54; local-runtime.md §4) ----------
+
+  queueLand(projectId: string, job: () => Promise<void>): void {
+    const next = (this.landing.get(projectId) ?? Promise.resolve()).then(job).catch((e: Error) => this.log(`land: ${e.message}`));
+    this.landing.set(projectId, next);
+  }
+
+  landFile(landId: string): string {
+    return path.join(this.home.root, 'lands', `${landId}.json`);
+  }
+
+  /**
+   * Lands a finished task (D-51): sends what it will merge for the fencing check; merges the task's commit
+   * into the base tip in an integration worktree; runs the approved setup and test commands there under
+   * srt (tests may use local ports, nothing else on the network, D-83); then moves the base branch, only
+   * if green and only by compare-and-swap or a fast-forward of a clean checkout. Reports each step.
+   */
+  async land(projectId: string, landId: string, taskId: string, runTests: boolean): Promise<void> {
+    const project = this.project(projectId);
+    const fail = (reason: string, detail?: string, conflicts?: string[]) => this.report(projectId, 'land.fail', {
+      land_id: landId, reason, ...(detail ? { detail: detail.slice(-1000) } : {}), ...(conflicts?.length ? { conflict_paths: conflicts } : {}),
+    });
+    const step = (s: string, detail?: string) => this.report(projectId, 'land.report', { land_id: landId, step: s, ...(detail ? { detail } : {}) });
+    let head: string;
+    let baseSha: string;
+    let changed: string[];
+    try {
+      head = await branchTip(project.repo, taskBranch(taskId));
+      baseSha = await branchTip(project.repo, project.baseBranch);
+      const mergeBase = await git(project.repo, 'merge-base', baseSha, head);
+      changed = await changedBetween(project.repo, mergeBase, head);
+      const r = await this.link!.command(projectId, 'land', {
+        land_id: landId, base_branch: project.baseBranch, base_sha: baseSha, merge_base_sha: mergeBase, head_sha: head,
+        changed_paths: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)), lease_tokens: [],
+      });
+      if (!(r.result as { accepted?: boolean } | null)?.accepted) {
+        this.log(`land of ${taskId} rejected by the fencing check: ${JSON.stringify((r.result as { problems?: unknown }).problems)}`);
+        return;
+      }
+    } catch (e) {
+      await fail('error', (e as Error).message).catch(() => {});
+      return;
+    }
+    const dir = path.join(this.home.root, 'integration', projectId, landId);
+    writeJsonAtomic(this.landFile(landId), { projectId, landId, taskId, baseSha, head, dir, merge: null });
+    try {
+      await addIntegrationWorktree(project.repo, dir, baseSha);
+      const title = this.view(projectId).tasks.get(taskId)?.title ?? taskId;
+      const m = await mergeCommit(dir, head, `Land ${taskId}: ${title}\n\nHarness-Land: ${landId}\nHarness-Task: ${taskId}`);
+      if (!m.ok) return void await fail('conflict', `merging ${taskId} into ${project.baseBranch} conflicts`, m.conflicts);
+      await step('merged');
+      if (runTests) {
+        const repo = readRepoConfig(dir);
+        if (!repo.test) return void await fail('not_approved', `harness.yaml has no test.command; land with --no-tests to skip tests`);
+        if (repo.setup) {
+          await step('setup');
+          await this.runApprovedSetup(project, taskId, dir, repo.setup, `land-${landId}`);
+        }
+        const { hash, manifests } = testHash(dir, repo.test.command, repo.test.manifests);
+        if (!this.approvals.isApproved(project.id, hash)) {
+          const req = this.approvals.request({ projectId: project.id, taskId, command: repo.test.command, manifests, hash, kind: 'test' });
+          this.log(`the test command for landing ${taskId} needs your approval. Review it with: harness approve ${req.id}`);
+          await step('awaiting_approval', `harness approve ${req.id}`);
+          await this.waitForApproval(project.id, hash);
+        }
+        await step('testing');
+        const logFile = path.join(this.home.logs, `land-${landId}.log`);
+        const timeout = Math.min(repo.test.timeoutSeconds ?? this.config.setup.timeoutSeconds, this.config.setup.timeoutSeconds);
+        const result = await runSetup({
+          home: this.home, worktree: dir, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, `land-${landId}`),
+          command: repo.test.command, allowedDomains: [], allowLocalBinding: true, timeoutMs: timeout * 1000, logFile,
+        });
+        if (result.exitCode !== 0) {
+          const tail = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').slice(-20).join('\n') : '';
+          return void await fail('tests', `${result.timedOut ? 'timed out' : `exit ${result.exitCode}`}\n${tail}`);
+        }
+        await step('tested');
+      }
+      writeJsonAtomic(this.landFile(landId), { projectId, landId, taskId, baseSha, head, dir, merge: m.commit });
+      const adv = await advanceBase(project.repo, project.baseBranch, baseSha, m.commit);
+      if (!adv.ok) return void await fail(adv.reason, adv.detail);
+      await this.completeLand(projectId, landId, taskId, baseSha, m.commit, head);
+    } catch (e) {
+      await fail('error', (e as Error).message).catch(() => {});
+    } finally {
+      await removeIntegrationWorktree(project.repo, dir).catch(() => {});
+      fs.rmSync(path.join(this.home.scratch, project.id, `land-${landId}`), { recursive: true, force: true });
+      fs.rmSync(this.landFile(landId), { force: true });
+    }
+  }
+
+  /** The base has moved: tell the server what changed (with blob ids, for landed notices), then retire the task's worktree. */
+  async completeLand(projectId: string, landId: string, taskId: string, baseSha: string, merge: string, head: string): Promise<void> {
+    const project = this.project(projectId);
+    const changed = await changedBetween(project.repo, baseSha, merge);
+    const blobs = await blobsAt(project.repo, merge, changed);
+    await this.report(projectId, 'land.complete', {
+      land_id: landId, old_base_sha: baseSha, new_base_sha: merge,
+      changed: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
+    });
+    this.log(`landed ${taskId}: ${project.baseBranch} is now ${merge.slice(0, 12)}`);
+    if (fs.existsSync(this.worktreeOf(projectId, taskId)) && !this.running.has(taskId)) await this.teardownTask({ projectId, taskId });
+    await deleteMergedBranch(project.repo, taskBranch(taskId), head, merge);
+  }
+
+  /**
+   * After a restart: lands this device was asked to run while it was away start now; one interrupted after
+   * the base moved is completed; one interrupted before is failed, with the base untouched.
+   */
+  recoverLands(): void {
+    for (const p of this.config.projects) {
+      for (const l of this.view(p.id).lands.values()) {
+        if (l.deviceId !== this.config.deviceId) continue;
+        if (l.status === 'requested') this.queueLand(p.id, () => this.land(p.id, l.id, l.taskId, l.runTests));
+        if (l.status !== 'accepted') continue;
+        this.queueLand(p.id, async () => {
+          const saved = readJson<{ baseSha: string; head: string; dir: string; merge: string | null } | null>(this.landFile(l.id), null);
+          const tip = await branchTip(p.repo, p.baseBranch).catch(() => '');
+          if (saved?.merge && tip === saved.merge) {
+            await this.completeLand(p.id, l.id, l.taskId, saved.baseSha, saved.merge, saved.head);
+          } else {
+            await this.report(p.id, 'land.fail', { land_id: l.id, reason: 'interrupted', detail: 'harnessd restarted before the base moved' });
+          }
+          if (saved) await removeIntegrationWorktree(p.repo, saved.dir).catch(() => {});
+          fs.rmSync(this.landFile(l.id), { force: true });
+        });
+      }
+    }
+  }
+
+  // ---------- sync at turn end (0B item 2; D-53; coordination.md §2) ----------
+
+  holdForSync(run: RunningAgent, m: MessageInfo): void {
+    if (!run.sync.held.some((x) => x.id === m.id)) run.sync.held.push(m);
+    run.sync.pending = true;
+    if (!run.sync.running && !run.sync.blocked && run.adapter.getStatus(run.handle) === 'idle') void this.runSync(run); // idle: now
+  }
+
+  /**
+   * Holds the agent, commits its work in progress, merges the base tip into its branch, reports the sync
+   * (which marks the synced reads stale), and only then tells it what landed, with a diff excerpt. On a
+   * conflict the merge is aborted, the task blocked, and the agent stays held until the human resolves it.
+   */
+  runSync(run: RunningAgent): Promise<void> {
+    if (run.sync.running || run.sync.blocked || !run.sync.pending) return run.sync.running ?? Promise.resolve();
+    if (run.adapter.getStatus(run.handle) !== 'idle') return Promise.resolve(); // mid-turn: at its turn end (D-28)
+    run.sync.pending = false;
+    const job = (async () => {
+      const view = this.view(run.projectId);
+      const held = run.sync.held.splice(0).map((m) => view.messages.get(m.id) ?? m).filter((m) => !m.deliveredAt && !m.supersededBy);
+      if (!held.length) return;
+      const project = this.project(run.projectId);
+      run.adapter.setHold(run.handle, SYNC_HOLD);
+      let release = true;
+      try {
+        const target = await branchTip(project.repo, project.baseBranch);
+        const r = await syncWorktree({ worktree: run.workspace.worktree, target, taskId: run.taskId, agent: { name: run.agent.name, email: `${run.agent.id}@harness.invalid` } });
+        if (!r.ok) {
+          await this.report(run.projectId, 'sync.report', {
+            session_id: run.sessionId, event: 'conflict', old_base_sha: r.oldBase, new_base_sha: r.newBase, conflict_paths: this.reportablePaths(run, r.conflicts),
+          }, run.agent.id);
+          run.sync.blocked = { target, oldBase: r.oldBase };
+          run.sync.held.unshift(...held);
+          run.adapter.setHold(run.handle, BLOCKED_HOLD);
+          release = false;
+          this.log(`${run.agent.name} (${run.taskId}): syncing with ${project.baseBranch} conflicts in ${r.conflicts.join(', ')}; the task is blocked until you resolve it in ${run.workspace.worktree} and run: harness task unblock ${run.taskId}`);
+          return;
+        }
+        await this.finishSync(run, held, r.oldBase, r.newBase, r.changed);
+      } finally {
+        if (release) run.adapter.setHold(run.handle, null);
+      }
+    })().catch((e: Error) => {
+      run.adapter.setHold(run.handle, null);
+      this.log(`${run.agent.name} (${run.taskId}): sync failed: ${e.message}`);
+    }).finally(() => {
+      run.sync.running = null;
+      if (run.sync.held.length && !run.sync.blocked) run.sync.pending = true;
+    });
+    run.sync.running = job;
+    return job;
+  }
+
+  /** After a sync: report it, re-baseline claims and reads, release the hold, then deliver the held notices with their diffs. */
+  async finishSync(run: RunningAgent, held: MessageInfo[], oldBase: string, newBase: string, changed: string[]): Promise<void> {
+    await this.report(run.projectId, 'sync.report', {
+      session_id: run.sessionId, event: 'synced', old_base_sha: oldBase, new_base_sha: newBase, changed_paths: this.reportablePaths(run, changed),
+    }, run.agent.id);
+    run.reads.forget(changed); // stale until re-read: the next read is reported again
+    await this.reconcile(run); // the diff base moved to the new merge base: peer files are never this agent's claims
+    run.adapter.setHold(run.handle, null);
+    for (const m of held) await this.injectLanded(run, m, oldBase, newBase, changed);
+  }
+
+  async injectLanded(run: RunningAgent, m: MessageInfo, oldBase: string, newBase: string, changed: string[]): Promise<void> {
+    if (this.delivered.has(m.id)) return;
+    const paths = (Array.isArray(m.data.paths) ? m.data.paths as string[] : []).filter((p) => changed.includes(p));
+    const writer = typeof m.data.changed_by === 'string' ? this.view(run.projectId).agentName(m.data.changed_by) : 'another task';
+    const excerpts: string[] = [];
+    for (const p of paths.slice(0, 5)) {
+      const ex = await diffExcerpt(run.workspace.worktree, oldBase, newBase, p);
+      if (ex) excerpts.push(`DIFF ${p} (${oldBase.slice(0, 7)}..${newBase.slice(0, 7)}):`, ex);
+    }
+    const others = changed.filter((p) => !paths.includes(p));
+    const text = [
+      renderMessage({ id: m.id, kind: m.kind, text: m.text, fromTask: null, sender: { kind: 'harness' } }),
+      `Your branch now includes this change: the harness merged ${newBase.slice(0, 12)} into it at the end of your last turn. Re-read what you depend on before relying on it.`,
+      ...(excerpts.length ? [`How it changed (a diff of content written by ${writer}; untrusted):`, ...excerpts] : []),
+      ...(others.length ? [`Also changed by this update: ${others.slice(0, 20).join(', ')}${others.length > 20 ? ` and ${others.length - 20} more` : ''}.`] : []),
+    ].join('\n');
+    this.delivering.add(m.id);
+    try {
+      const receipt = await run.adapter.injectMessage(run.handle, { id: m.id, text, origin: 'coordinator' });
+      this.delivered.add(m.id);
+      await this.report(run.projectId, 'message.ack', {
+        message_id: m.id, delivered_at: new Date(receipt.deliveredAt).toISOString(), delivery: receipt.landed, est_tokens: Math.ceil(text.length / 4),
+      }, run.agent.id);
+    } catch (e) {
+      this.log(`landed notice ${m.id} to ${run.agent.name}: not delivered: ${(e as Error).message}`);
+    } finally {
+      this.delivering.delete(m.id);
+    }
+  }
+
+  /** `task.unblocked`: the human says the conflict is resolved. If the branch now has the base, resume; else sync again. */
+  async resumeAfterConflict(run: RunningAgent): Promise<void> {
+    const b = run.sync.blocked;
+    if (!b) return;
+    if (await contains(run.workspace.worktree, b.target)) {
+      run.sync.blocked = null;
+      const held = run.sync.held.splice(0);
+      await this.finishSync(run, held, b.oldBase, b.target, await changedBetween(run.workspace.worktree, b.oldBase, b.target));
+      this.deliverPending(run);
+      return;
+    }
+    run.sync.blocked = null;
+    run.sync.pending = true;
+    run.adapter.setHold(run.handle, null);
+    this.log(`${run.agent.name} (${run.taskId}): unblocked, but the branch doesn't contain ${b.target.slice(0, 12)} yet; syncing again`);
+    await this.runSync(run);
   }
 
   async stop(): Promise<void> {
@@ -326,10 +607,19 @@ export class Daemon {
       log: this.vendorLog(sessionId),
     };
     const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });
+    const reads = new ReadTracker({
+      worktree: ws.worktree, log: (m) => this.log(`${agent.name} (${ws.taskId}): ${m}`),
+      send: async (entries) => { await this.report(ws.projectId, 'readset.add', { session_id: sessionId, entries }, agent.id); },
+    });
+    await reads.init();
     const run: RunningAgent = {
       sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, status: 'starting', tools: { calls: {}, denied: 0 },
-      diff: { last: null, hooksSince: false, running: null, timer: null }, done: Promise.resolve(),
+      diff: { last: null, hooksSince: false, running: null, timer: null }, reads,
+      monitor: { calls: new Map(), observed: 0, missed: 0, rejected: 0, unparsedShell: 0 },
+      sync: { held: [], pending: false, running: null, blocked: null }, done: Promise.resolve(),
     };
+    // The repo instruction files harnessd put in the system prompt were read too (coordination §2).
+    reads.record(readRepoInstructions(ws.worktree).map((r) => ({ path: r.file, source: 'instructions' as const, confidence: 'high' as const })));
     this.running.set(ws.taskId, run);
     run.diff.timer = setInterval(() => void this.reconcile(run), this.o.diffIntervalMs ?? 15_000);
     run.done = this.watch(run);
@@ -425,24 +715,55 @@ export class Daemon {
         break;
       case 'tool.called':
         run.tools.calls[o.tool] = (run.tools.calls[o.tool] ?? 0) + 1;
+        if (o.toolUseId) run.monitor.calls.set(o.toolUseId, { tool: o.tool, hooked: run.monitor.calls.get(o.toolUseId)?.hooked ?? false, result: null });
         break;
+      case 'hook.seen': {
+        const c = run.monitor.calls.get(o.toolUseId);
+        if (c) c.hooked = true;
+        else run.monitor.calls.set(o.toolUseId, { tool: o.tool, hooked: true, result: null });
+        break;
+      }
+      case 'tool.result': {
+        const c = run.monitor.calls.get(o.toolUseId);
+        if (c) c.result = o.isError ? 'error' : 'ok';
+        break;
+      }
+      case 'read.observed':
+        if (o.outside.length) this.log(`${run.agent.name} (${run.taskId}): read outside its worktree: ${o.outside.join(', ')}`);
+        run.reads.record(o.reads.filter((r) => this.reportablePaths(run, [r.path]).length));
+        break;
+      case 'shell.ran': {
+        // Best-effort shell reads (D-88): low confidence, and what can't be parsed is counted (H-03).
+        const parsed = parseShellReads(o.command);
+        run.monitor.unparsedShell += parsed.unparsed;
+        const inside = parsed.reads.flatMap((r) => {
+          const rel = path.relative(run.workspace.worktree, path.resolve(run.workspace.worktree, r.path)).split(path.sep).join('/');
+          return !rel || rel.startsWith('..') || path.isAbsolute(rel) ? [] : [{ path: rel, source: 'shell_heuristic' as const, confidence: 'low' as const, ...(r.range ? { range: r.range } : {}) }];
+        });
+        run.reads.record(inside.filter((r) => this.reportablePaths(run, [r.path]).length));
+        break;
+      }
       case 'edit.observed':
         if (o.outside.length) this.log(`${run.agent.name} (${run.taskId}): edit outside its worktree reported: ${o.outside.join(', ')}`);
         if (o.paths.length) {
           run.diff.hooksSince = true;
           const paths = this.reportablePaths(run, o.paths);
           if (paths.length) await this.report(run.projectId, 'claim.observe', { session_id: run.sessionId, paths, source: 'hook' }, run.agent.id);
+          await this.recordEditBases(run, paths);
         }
         break;
       case 'turn.ended': {
         await this.reconcile(run);
+        await run.reads.flush();
         run.tools.denied += o.denied;
+        this.settleMonitor(run, o.deniedIds);
         const u = run.lastUsage;
         await report({
           status: run.status,
           ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd, cost_basis: u.costBasis, models: u.models } } : {}),
-          tools: { calls: { ...run.tools.calls }, denied: run.tools.denied },
+          tools: this.toolStats(run),
         });
+        if (run.sync.pending) void this.runSync(run); // a landed change is waiting for this turn end (D-53)
         break;
       }
       case 'error':
@@ -457,13 +778,52 @@ export class Daemon {
         await report({
           status: 'ended', reason: o.reason,
           ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd, cost_basis: u.costBasis, models: u.models } } : {}),
-          tools: { calls: { ...run.tools.calls }, denied: run.tools.denied },
+          tools: this.toolStats(run),
         });
         break;
       }
     }
   }
 
+
+  /**
+   * An edited file the agent never read through a tool still had content it relied on: its base version
+   * (D-88: notices from edits, for capture that misses reads). Recorded as `edit_base` at the merge-base blob.
+   */
+  async recordEditBases(run: RunningAgent, paths: string[]): Promise<void> {
+    const fresh = paths.filter((p) => !run.reads.knows(p));
+    if (!fresh.length) return;
+    try {
+      const base = await git(run.workspace.worktree, 'merge-base', 'HEAD', this.project(run.projectId).baseBranch);
+      const blobs = await blobsAt(run.workspace.worktree, base, fresh);
+      const entries: ReadReport[] = fresh.map((p) => ({ path: p, hash: blobs.get(p) ?? null, source: 'edit_base', confidence: 'high' }));
+      run.reads.recordHashed(entries.filter((e) => e.hash !== null)); // a new file has no base to depend on
+    } catch (e) {
+      this.log(`${run.agent.name} (${run.taskId}): edit-base read entries failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** The missed-hook monitor at turn end: classify every call that has finished (C-20: deny-rule rejections never reach hooks). */
+  settleMonitor(run: RunningAgent, deniedIds: string[]): void {
+    const denied = new Set(deniedIds);
+    for (const [id, c] of run.monitor.calls) {
+      if (c.result === null && !denied.has(id)) continue; // still running, or its result hasn't arrived
+      if (c.hooked) run.monitor.observed++;
+      else if (denied.has(id) || c.result === 'error') run.monitor.rejected++;
+      else run.monitor.missed++;
+      run.monitor.calls.delete(id);
+    }
+  }
+
+  /** Tool counts (H-07, M5b) and capture coverage (H-03) for session.report. */
+  toolStats(run: RunningAgent) {
+    const m = run.monitor;
+    return {
+      calls: { ...run.tools.calls }, denied: run.tools.denied,
+      hooks: { observed: m.observed, missed: m.missed, rejected: m.rejected },
+      reads: { ...run.reads.counts, unparsed_shell: m.unparsedShell },
+    };
+  }
 
   /** Deny by default: only repos listed in the local config are worked on (local-runtime §1). */
   project(projectId: string): ProjectConfig {
@@ -487,7 +847,7 @@ export class Daemon {
     await this.link.command(projectId, name, args, asAgent);
   }
 
-  async runApprovedSetup(project: ProjectConfig, taskId: string, worktree: string, setup: NonNullable<RepoConfig['setup']>): Promise<void> {
+  async runApprovedSetup(project: ProjectConfig, taskId: string, worktree: string, setup: NonNullable<RepoConfig['setup']>, scratchName = taskId): Promise<void> {
     const { hash, manifests } = setupHash(worktree, setup.command, setup.manifests);
     const report = (event: string, extra: Record<string, unknown> = {}) =>
       this.report(project.id, 'setup.report', { task_id: taskId, command_hash: hash, event, ...extra });
@@ -500,7 +860,7 @@ export class Daemon {
     }
     const logFile = path.join(this.home.logs, `setup-${project.id}-${taskId}.log`);
     const result = await runSetup({
-      home: this.home, worktree, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, taskId),
+      home: this.home, worktree, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, scratchName),
       command: setup.command, allowedDomains: this.config.setup.allowedDomains, timeoutMs: this.config.setup.timeoutSeconds * 1000, logFile,
     });
     if (result.exitCode !== 0) {

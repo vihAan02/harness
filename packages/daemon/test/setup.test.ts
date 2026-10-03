@@ -8,7 +8,7 @@ import { runSetup, type SetupRun } from '../src/setup.ts';
 import { makeRepo, tempDir, tempHome, TOKEN } from './fixtures.ts';
 
 let t: ReturnType<typeof tempDir>;
-let run: (command: string) => Promise<{ exitCode: number; out: string }>;
+let run: (command: string, extra?: Partial<SetupRun>) => Promise<{ exitCode: number; out: string }>;
 let wt: string;
 let sibling: string;
 let repo: string;
@@ -27,9 +27,9 @@ before(async () => {
   fs.writeFileSync(path.join(sibling, 'secret-in-sibling.txt'), 'SIBLING-SECRET');
   const common = await gitCommonDir(repo);
   let n = 0;
-  run = async (command) => {
+  run = async (command, extra = {}) => {
     const logFile = path.join(home.logs, `setup-${++n}.log`);
-    const r: SetupRun = { home, worktree: wt, gitCommonDir: common, scratch: path.join(home.scratch, 'prj', 'task-a'), command, allowedDomains: [], timeoutMs: 30_000, logFile };
+    const r: SetupRun = { home, worktree: wt, gitCommonDir: common, scratch: path.join(home.scratch, 'prj', 'task-a'), command, allowedDomains: [], timeoutMs: 30_000, logFile, ...extra };
     const { exitCode } = await runSetup(r);
     return { exitCode, out: fs.readFileSync(logFile, 'utf8') };
   };
@@ -92,4 +92,20 @@ test('the shared .git stays readable, so read-only git works', async () => {
   const r = await run('git status --porcelain && git log --oneline -1');
   assert.equal(r.exitCode, 0, r.out);
   assert.match(r.out, /base/);
+});
+
+test('a land\'s test command may serve and reach 127.0.0.1 with allowLocalBinding, and only then (D-83)', async () => {
+  // A server on loopback and a request to it: what Shelf's tests do.
+  const script = "const s=require('http').createServer((q,r)=>r.end('ok')).listen(0,'127.0.0.1',()=>fetch('http://127.0.0.1:'+s.address().port).then(r=>r.text()).then(t=>{console.log('LOOPBACK', t);process.exit(0)},e=>{console.log('FAILED', e.cause?.code ?? e.message);process.exit(3)}));setTimeout(()=>{console.log('TIMEOUT');process.exit(4)},8000)";
+  fs.writeFileSync(path.join(wt, 'loop.cjs'), script);
+  const on = await run('echo STARTED && node loop.cjs', { allowLocalBinding: true });
+  assert.equal(on.exitCode, 0, on.out);
+  assert.match(on.out, /LOOPBACK ok/);
+  // Negative control: without it, the sandbox refuses (the D-83 finding), so the setting is what makes it work.
+  const off = await run('echo STARTED && node loop.cjs');
+  assert.match(off.out, /STARTED/, 'the command ran');
+  assert.notEqual(off.exitCode, 0, off.out);
+  // Still no network beyond loopback.
+  const net = await run('echo STARTED && curl -s -m 5 -o /dev/null https://example.com/', { allowLocalBinding: true });
+  assert.notEqual(net.exitCode, 0, net.out);
 });

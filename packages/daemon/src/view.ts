@@ -17,11 +17,19 @@ export type UsageInfo = {
   input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number;
   costBasis?: string; models: string[]; // where the cost came from, and the models the tokens went to (D-87)
   toolCalls: Record<string, number>; deniedCalls: number;
+  hookCoverage?: { observed: number; missed: number; rejected: number }; // the missed-hook monitor (H-03)
+  readCoverage?: Record<string, number>; // reads by source, and unparsed shell reads (H-03, D-88)
+};
+export type ReadInfo = { hash: string | null; source: string; confidence: string; stale: boolean; at: string };
+export type LandInfo = {
+  id: string; taskId: string; deviceId: string; status: 'requested' | 'accepted' | 'rejected' | 'completed' | 'failed';
+  runTests: boolean; requestedAt: string; finishedAt?: string; reason?: string; detail?: string; changedPaths?: string[]; newBaseSha?: string;
 };
 export type MessageInfo = {
   id: string; kind: string; from: string; to: string | null; inReplyTo?: string; text: string; data: Record<string, unknown>;
   fromTask: string | null; toTask: string | null; priority: string; sentAt: string; seq: number;
   held?: boolean; deliveredAt?: string; delivery?: string; latencyMs?: number;
+  supersededBy?: string; // a newer notice replaced it before delivery (coordination §2)
 };
 export type OverlapInfo = { id: string; level: 'prospective' | 'observed'; paths: string[]; tasks: [string, string]; at: string };
 
@@ -39,6 +47,9 @@ export class ProjectView {
   overlaps: OverlapInfo[] = [];
   messages = new Map<string, MessageInfo>();
   usage = new Map<string, UsageInfo>(); // by session: the vendor's running totals
+  /** Per task: what its agent read (path → hash), as reported (0B item 1). */
+  reads = new Map<string, Map<string, ReadInfo>>();
+  lands = new Map<string, LandInfo>();
   events: EventMessage[] = [];
 
   constructor(projectId: string) {
@@ -100,6 +111,8 @@ export class ProjectView {
           cacheCreation: Number(d.cache_creation ?? prev?.cacheCreation ?? 0), costUsd: Number(d.cost_usd ?? prev?.costUsd ?? 0),
           ...((d.cost_basis ?? prev?.costBasis) ? { costBasis: String(d.cost_basis ?? prev?.costBasis) } : {}),
           models: d.models !== undefined ? asStrings(d.models) : prev?.models ?? [],
+          ...((d.hook_coverage ?? prev?.hookCoverage) ? { hookCoverage: (d.hook_coverage ?? prev?.hookCoverage) as UsageInfo['hookCoverage'] } : {}),
+          ...((d.read_coverage ?? prev?.readCoverage) ? { readCoverage: (d.read_coverage ?? prev?.readCoverage) as Record<string, number> } : {}),
           toolCalls: (d.tool_calls as Record<string, number> | undefined) ?? prev?.toolCalls ?? {},
           deniedCalls: Number(d.denied_calls ?? prev?.deniedCalls ?? 0),
         });
@@ -131,6 +144,50 @@ export class ProjectView {
         if (m) Object.assign(m, { deliveredAt: s('delivered_at') || e.at, delivery: s('delivery'), latencyMs: Number(d.latency_ms ?? 0) });
         break;
       }
+      case 'message.superseded': {
+        const m = this.messages.get(s('message_id'));
+        if (m) m.supersededBy = s('by');
+        break;
+      }
+      case 'readset.added': {
+        const r = this.reads.get(s('task_id')) ?? new Map<string, ReadInfo>();
+        this.reads.set(s('task_id'), r);
+        for (const x of (Array.isArray(d.entries) ? d.entries : []) as Record<string, unknown>[]) {
+          r.set(String(x.path), { hash: typeof x.hash === 'string' ? x.hash : null, source: String(x.source), confidence: String(x.confidence), stale: false, at: e.at });
+        }
+        break;
+      }
+      case 'worktree.synced': {
+        const r = this.reads.get(s('task_id'));
+        for (const p of asStrings(d.stale_paths)) { const x = r?.get(p); if (x) x.stale = true; }
+        break;
+      }
+      case 'task.blocked':
+        this.patchTask(s('task_id'), { status: 'blocked' });
+        break;
+      case 'task.unblocked':
+        this.patchTask(s('task_id'), { status: 'in_progress' });
+        break;
+      case 'land.requested':
+        this.lands.set(s('land_id'), { id: s('land_id'), taskId: s('task_id'), deviceId: s('device_id'), status: 'requested', runTests: d.run_tests !== false, requestedAt: e.at });
+        break;
+      case 'land.accepted':
+      case 'land.rejected': {
+        const l = this.lands.get(s('land_id'));
+        if (l) Object.assign(l, { status: e.kind === 'land.accepted' ? 'accepted' : 'rejected', changedPaths: asStrings(d.changed_paths), ...(e.kind === 'land.rejected' ? { finishedAt: e.at, reason: 'fencing' } : {}) });
+        break;
+      }
+      case 'land.completed': {
+        const l = this.lands.get(s('land_id'));
+        if (l) Object.assign(l, { status: 'completed', finishedAt: e.at, newBaseSha: s('new_base_sha'), changedPaths: asStrings(d.changed_paths) });
+        this.patchTask(s('task_id'), { status: 'landed' });
+        break;
+      }
+      case 'land.failed': {
+        const l = this.lands.get(s('land_id'));
+        if (l) Object.assign(l, { status: 'failed', finishedAt: e.at, reason: s('reason'), ...(d.detail ? { detail: s('detail') } : {}) });
+        break;
+      }
     }
   }
 
@@ -158,9 +215,9 @@ export class ProjectView {
     return [...this.sessions.values()].reverse().find((s) => s.agentId === agentId && s.status !== 'ended');
   }
 
-  /** The agent's task in progress, if any. */
+  /** The agent's active task (in progress, or blocked on a sync conflict), if any. */
   activeTask(agentId: string): TaskInfo | undefined {
-    return [...this.tasks.values()].reverse().find((t) => t.assignee === agentId && t.status === 'in_progress');
+    return [...this.tasks.values()].reverse().find((t) => t.assignee === agentId && (t.status === 'in_progress' || t.status === 'blocked'));
   }
 
   /** Questions to this principal that have no answer yet. */

@@ -16,10 +16,14 @@ const USAGE = `usage: harness <command> [--project <id>]
   task assign <task> <agent>                  assign an open task; harnessd on the agent's device starts it
   task done <task> [--summary <text>]         mark a task done; harnessd commits its work and stops the agent
   task abandon <task> --reason <text>         abandon a task; harnessd stops the agent and removes the worktree
+  task unblock <task>                         after you've resolved a sync conflict in the task's worktree: resume the agent
+  land <task> [--no-tests] [--no-wait]        land a finished task: its device merges it, runs the approved test command,
+                                              and moves the base branch only if green (D-51)
+  land --cancel <task>                        give up on a land that hasn't started
   status                                      agents, tasks, what each agent is changing, overlaps, questions
   log [--follow] [--kind <prefix>]            the project's event log
   metrics [--json]                            A/B metrics for this run, from the event log (validation.md §4)
-  approve [<id>] [--yes]                      review and approve a repo's setup command (D-52)
+  approve [<id>] [--yes]                      review and approve a repo's setup or test command (D-52)
   --version`;
 
 type Args = { positional: string[]; flags: Record<string, string | true> };
@@ -135,6 +139,26 @@ async function main(argv: string[]): Promise<void> {
     });
   }
 
+  if (command === 'task' && sub === 'unblock') {
+    const task = rest[0] ?? fail('usage: harness task unblock <task>');
+    return withServer(a, async (c) => {
+      await c.command('task.unblock', { task_id: task });
+      console.log(`${task} is unblocked. harnessd checks the worktree contains the new base, then resumes its agent.`);
+    });
+  }
+
+  if (command === 'land') {
+    const cancel = flag(a, 'cancel');
+    if (cancel) {
+      return withServer(a, async (c) => {
+        await c.command('land.cancel', { task_id: cancel });
+        console.log(`Cancelled the land of ${cancel}.`);
+      });
+    }
+    const task = sub ?? fail('usage: harness land <task> [--no-tests] [--no-wait]');
+    return withServer(a, async (c) => land(c, task, { tests: !a.flags['no-tests'], wait: !a.flags['no-wait'], timeoutMs: Number(flag(a, 'timeout') ?? 1800) * 1000 }));
+  }
+
   if (command === 'status') return withServer(a, async (c) => void console.log(renderHumanStatus(c.view)));
 
   if (command === 'metrics') {
@@ -160,13 +184,58 @@ async function main(argv: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
+/**
+ * `harness land <task>` (D-51, D-54): asks the server, then follows the land on the log until it lands or
+ * fails. The merge and tests run on the device that ran the task; its harnessd asks for approval of the
+ * test command the first time, like setup (`harness approve`).
+ */
+async function land(c: CliClient, task: string, o: { tests: boolean; wait: boolean; timeoutMs: number }): Promise<void> {
+  let landId = '';
+  let settle: (code: number) => void = () => {};
+  const finished = new Promise<number>((r) => { settle = r; });
+  const backlog: EventMessage[] = [];
+  const show = (e: EventMessage) => {
+    const d = (e.data ?? {}) as Record<string, any>;
+    if (!landId) { backlog.push(e); return; }
+    if (d.land_id !== landId) return;
+    if (e.kind === 'land.accepted') console.log(`Accepted: no lease conflicts on ${d.changed_paths?.length ?? 0} changed file(s). Merging in an integration worktree on its device…`);
+    else if (e.kind === 'land.progress') console.log(`  ${d.step}${d.detail ? `: ${d.detail}` : ''}${d.step === 'awaiting_approval' ? ' (run `harness approve` on that device)' : ''}`);
+    else if (e.kind === 'land.rejected') {
+      const problems = (d.problems as any[]).map((p) => `  ${p.path || '(token)'}: ${p.reason}${p.lease_id ? ` (${p.lease_id})` : ''}`);
+      console.error(['Rejected by the fencing check:', ...problems].join('\n'));
+      settle(1);
+    } else if (e.kind === 'land.completed') {
+      console.log(`Landed ${task}: the base is now ${String(d.new_base_sha).slice(0, 12)}. ${d.changed_paths?.length ?? 0} file(s) changed; agents that read them are told (stale-context notices).`);
+      settle(0);
+    } else if (e.kind === 'land.failed') {
+      console.error([
+        `The land failed (${d.reason})${d.detail ? ':' : '.'}`,
+        ...(d.detail ? [String(d.detail)] : []),
+        ...(d.conflict_paths ? [`Conflicting files: ${d.conflict_paths.join(', ')}`] : []),
+        "The task stays done; the base branch didn't move.",
+      ].join('\n'));
+      settle(1);
+    }
+  };
+  c.onEvent = show;
+  const r = await c.command('land.request', { task_id: task, run_tests: o.tests });
+  landId = String(r.land_id);
+  console.log(`Landing ${task} (${landId}) on device ${String(r.device_id)}${o.tests ? '' : ', without running tests'}.`);
+  for (const e of backlog.splice(0)) show(e);
+  if (!o.wait) return;
+  const timer = setTimeout(() => { console.error(`Still landing after ${o.timeoutMs / 1000} s; follow it with: harness log --follow --kind land`); settle(1); }, o.timeoutMs);
+  const code = await Promise.race([finished, c.closed.then(() => { console.error('Lost the connection to the server.'); return 1; })]);
+  clearTimeout(timer);
+  process.exitCode = code;
+}
+
 /** D-52: the local human approves a repo's setup command (and its manifests) before harnessd runs it. */
 async function approve(args: string[]) {
   const approvals = new Approvals(harnessHome());
   const id = args.find((a) => !a.startsWith('-'));
   const pending = approvals.pending();
   if (!id) {
-    if (pending.length === 0) return console.log('No setup commands are waiting for approval.');
+    if (pending.length === 0) return console.log('No setup or test commands are waiting for approval.');
     for (const r of pending) describe(r);
     return console.log('Approve one with: harness approve <id>');
   }
@@ -190,11 +259,13 @@ async function approve(args: string[]) {
     if (!/^y(es)?$/i.test(answer.trim())) return console.log('Not approved.');
   }
   approvals.approve(req.id);
-  console.log(`Approved ${req.id}. harnessd will run it in the sandbox: writes only in the worktree, no secrets, network limited to your allowlist.`);
+  console.log(req.kind === 'test'
+    ? `Approved ${req.id}. harnessd will run it in the sandbox when landing: writes only in the integration worktree, no secrets, no network but local ports.`
+    : `Approved ${req.id}. harnessd will run it in the sandbox: writes only in the worktree, no secrets, network limited to your allowlist.`);
 }
 
 function describe(r: ApprovalRequest) {
-  console.log(`\n${r.id}  project ${r.projectId}, first requested for task ${r.taskId}`);
+  console.log(`\n${r.id}  ${r.kind === 'test' ? 'TEST command (runs when a task lands)' : 'setup command'}; project ${r.projectId}, first requested for task ${r.taskId}`);
   console.log(`  command:   ${r.command}`);
   for (const m of r.manifests) console.log(`  manifest:  ${m.path}  ${m.sha256 ? m.sha256.slice(0, 12) : '(absent)'}`);
   console.log('  This command comes from the repo, so anyone who can commit can change it. Approving covers exactly this text and these manifests.\n');

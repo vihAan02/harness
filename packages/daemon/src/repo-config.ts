@@ -1,20 +1,24 @@
 // harness.yaml is committed, so teammates control it: it is untrusted input (D-52).
-// - It can name a setup command, which runs only after local approval, inside the sandbox.
+// - It can name a setup command, and a test command for the land step (0B, D-51), each of which runs
+//   only after local approval, inside the sandbox.
 // - It can ask for secrets by name; only names on the local allowlist get through.
 // - It can lower numeric limits, never raise them.
-// Unknown keys are ignored (test, services and contracts belong to later phases).
+// Unknown keys are ignored (services and contracts belong to later phases).
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse } from 'yaml';
 import type { LocalConfig, ProjectConfig } from './config.ts';
 
+export type RepoCommand = { command: string; manifests: string[] };
 export type RepoConfig = {
-  setup: { command: string; manifests: string[] } | null;
+  setup: RepoCommand | null;
+  /** Run in the land step's integration worktree before the base moves (D-51). `timeoutSeconds` is capped locally. */
+  test: (RepoCommand & { timeoutSeconds: number | null }) | null;
   envRefs: string[];
   portsPerAgent: number | null;
   maxConcurrentAgents: number | null;
 };
-export const NO_REPO_CONFIG: RepoConfig = { setup: null, envRefs: [], portsPerAgent: null, maxConcurrentAgents: null };
+export const NO_REPO_CONFIG: RepoConfig = { setup: null, test: null, envRefs: [], portsPerAgent: null, maxConcurrentAgents: null };
 
 const MAX_BYTES = 64 * 1024;
 
@@ -48,18 +52,22 @@ export function readRepoConfig(worktree: string): RepoConfig {
     return v as number;
   };
 
-  let setupCfg: RepoConfig['setup'] = null;
-  if (setup.command !== undefined) {
-    if (typeof setup.command !== 'string' || !setup.command.trim() || setup.command.length > 2000 || setup.command.includes('\0')) {
-      throw new Error('harness.yaml: setup.command must be a non-empty string');
+  const command = (section: Record<string, unknown>, name: string): RepoCommand | null => {
+    if (section.command === undefined) return null;
+    if (typeof section.command !== 'string' || !section.command.trim() || section.command.length > 2000 || section.command.includes('\0')) {
+      throw new Error(`harness.yaml: ${name}.command must be a non-empty string`);
     }
-    const manifests = setup.manifests ?? [];
+    const manifests = section.manifests ?? [];
     if (!Array.isArray(manifests) || manifests.length > 50 || !manifests.every((m) => typeof m === 'string' && m.length > 0)) {
-      throw new Error('harness.yaml: setup.manifests must be a list of paths');
+      throw new Error(`harness.yaml: ${name}.manifests must be a list of paths`);
     }
     for (const m of manifests as string[]) regularFileIn(worktree, m); // reject traversal and symlinks up front
-    setupCfg = { command: setup.command, manifests: manifests as string[] };
-  }
+    return { command: section.command, manifests: manifests as string[] };
+  };
+  const setupCfg = command(setup, 'setup');
+  const testSection = obj(top.test, 'test');
+  const testCmd = command(testSection, 'test');
+  const testCfg = testCmd ? { ...testCmd, timeoutSeconds: limit(testSection.timeout_seconds, 'test.timeout_seconds') } : null;
 
   const refs = obj(top.env, 'env').refs ?? [];
   if (!Array.isArray(refs) || !refs.every((r) => typeof r === 'string' && /^[A-Z_][A-Z0-9_]{0,63}$/.test(r))) {
@@ -67,6 +75,7 @@ export function readRepoConfig(worktree: string): RepoConfig {
   }
   return {
     setup: setupCfg,
+    test: testCfg,
     envRefs: refs as string[],
     portsPerAgent: limit(obj(top.ports, 'ports').per_agent, 'ports.per_agent'),
     maxConcurrentAgents: limit(obj(top.limits, 'limits').max_concurrent_agents, 'limits.max_concurrent_agents'),

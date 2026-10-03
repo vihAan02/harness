@@ -91,14 +91,23 @@ export type ErrorKind = 'rate_limit' | 'billing' | 'auth' | 'sandbox' | 'hardeni
 /** Where a usage report's cost came from: configured prices, the vendor's list prices, or the vendor's guess for a model it doesn't know. */
 export type CostBasis = 'config' | 'list' | 'unknown';
 
+/** A file read the vendor's tools reported (0B item 1; D-88). Shell reads are parsed by harnessd, vendor-neutrally. */
+export type ObservedRead = { path: string; source: 'read_tool' | 'search_hit'; confidence: 'high' | 'medium'; range?: { start: number; lines: number } };
+
 /** The normalized stream every adapter produces (agent-adapters.md §3). Paths are relative to the worktree. */
 export type Observation =
   | { kind: 'process.started'; pid: number }
   | { kind: 'session.init'; vendorSessionId: string; vendorVersion: string; model: string }
   | { kind: 'status'; status: SessionStatus }
   | { kind: 'turn.started' }
-  | { kind: 'turn.ended'; reason: string; isError: boolean; denied: number } // denied: tool calls the permission rules refused this turn
-  | { kind: 'tool.called'; tool: string; category: ToolCategory; paths?: string[]; command?: string }
+  | { kind: 'turn.ended'; reason: string; isError: boolean; denied: number; deniedIds: string[] } // tool calls the permission rules refused this turn
+  | { kind: 'tool.called'; toolUseId: string; tool: string; category: ToolCategory; paths?: string[]; command?: string }
+  /** A post-tool hook ran for this call. Calls with a result and no hook are the missed-hook monitor's count (D-47, H-03). */
+  | { kind: 'hook.seen'; toolUseId: string; tool: string; event: 'post' | 'post_failure' }
+  | { kind: 'tool.result'; toolUseId: string; isError: boolean }
+  | { kind: 'read.observed'; toolUseId: string; reads: ObservedRead[]; outside: string[] }
+  /** A shell command the agent ran, for harnessd's best-effort read parsing (D-88). */
+  | { kind: 'shell.ran'; toolUseId: string; command: string }
   | { kind: 'edit.observed'; paths: string[]; outside: string[] }
   | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; costBasis: CostBasis; models: string[]; cumulative: true }
   | { kind: 'error'; error: ErrorKind; message: string }
@@ -127,6 +136,11 @@ export interface AgentAdapter<PolicyBundle = unknown, HookBundle = unknown> {
   resumeSession(ref: VendorSessionRef, spec: SessionSpec, message?: EnvelopedMessage): Promise<SessionHandle>;
   injectMessage(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
   stopSession(h: SessionHandle, mode: 'graceful' | 'kill'): Promise<void>;
+  /**
+   * Holds the agent: while a reason is set, every tool call is denied with it (fail closed). harnessd holds
+   * an agent while it syncs its branch, and while a sync conflict waits for the human (D-53).
+   */
+  setHold(h: SessionHandle, reason: string | null): void;
   getStatus(h: SessionHandle): SessionStatus;
   /** Pure: the vendor's permission and sandbox config for this session. */
   compilePermissions(spec: SessionSpec): PolicyBundle;
