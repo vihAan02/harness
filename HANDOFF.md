@@ -4,7 +4,7 @@
 This section is the current state. The original 0A handoff from vihAan02 follows it and is still accurate unless this section says otherwise.
 
 ### Where the work is
-- **Branch:** `0b/stale-context` in `~/Desktop/harness-ai`, from `main` @ `1a94660`. **Committed locally only; nothing is pushed** (D-86: push when an owner asks).
+- **Branch:** `0b/stale-context` in `~/Desktop/harness-ai`, from `main` @ `1a94660`. **Pushed to GitHub on 2026-10-03 at Daniyal's request, as pull request [vihAan02/harness#1](https://github.com/vihAan02/harness/pull/1)** into `main`. `main` itself is unchanged until the PR is merged.
 - **harness-bench:** cloned at `~/Desktop/harness-bench` (`main` @ `8c6ea60`), unchanged.
 - **Commits on the branch,** oldest first:
   1. `e6340f3` S9 + D-86 to D-89: 0B approved (U-1 deferred), provider direction, Q-06 and Q-07 resolved.
@@ -24,7 +24,8 @@ This section is the current state. The original 0A handoff from vihAan02 follows
   15. `97ddc3c` adapter: every Bash command starts in the worktree (F-97).
   16. `85ae6d9` harnessd: read capture stays confined to the worktree.
   17. `6dfa9e7` harnessd: sync and land review fixes, never destroying work; `test/sync-land.integration.test.ts`.
-  18. This HANDOFF update.
+  18. `fcc8cdd` HANDOFF: the 0B review outcome.
+  19. This HANDOFF update: the branch is pushed, and the PR is open.
 
 ### What was decided (S9, PLAN.md)
 - **D-86:** Phase 0B approved by Daniyal; U-1 deferred until a key exists; this stretch stops at the S3 example.
@@ -95,7 +96,7 @@ A good place: a `chmod 600` file, e.g. `~/.config/harness/keys.env` containing `
 1. Read this section and PLAN.md D-86 to D-93; review the branch (`git log main..0b/stale-context`).
 2. Optionally move the repo out of iCloud; run `npm run check` and `npm run demo:0b` from there.
 3. Get a DeepSeek key, export `DEEPSEEK_API_KEY`, run `npm run demo:0b -- --real --provider deepseek`, then e17 on DeepSeek; record results (Q-18) in docs/research/spike-0a.md §5.
-4. Decide (owner) whether to push the branch and continue 0B: items 3, 4, the rest of 5 (D-89), 6, 7, 8, then 9 and 10 (the A/B on harness-bench, one fixed model in both arms, D-87).
+4. Review and merge [vihAan02/harness#1](https://github.com/vihAan02/harness/pull/1) (owner), then decide whether to continue 0B: items 3, 4, the rest of 5 (D-89), 6, 7, 8, then 9 and 10 (the A/B on harness-bench, one fixed model in both arms, D-87).
 
 ### Progress on this stretch
 - [x] M0 environment and baselines.
