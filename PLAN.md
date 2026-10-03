@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 11 are built, and the 0A exit criteria are met with a scripted model (`npm run demo`, D-84):** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key), the human CLI with the task lifecycle (D-81), metrics capture (D-82), the benchmark repo's base app (D-83) and the demo (D-84). **Still open for 0A:** the real-model checks (U-1, [Q-18](docs/open-questions.md#q-18)), and the owner's review before 0B (D-44).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 11 are built, and the 0A exit criteria are met with a scripted model (`npm run demo`, D-84):** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key), the human CLI with the task lifecycle (D-81), metrics capture (D-82), the benchmark repo's base app (D-83) and the demo (D-84). **Still open for 0A:** the real-model checks (U-1, [Q-18](docs/open-questions.md#q-18)), and an owner's review before 0B (D-44). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -36,6 +36,7 @@ Six sources define this plan. Later sources win where they sharpen or override e
 | **S5** | [Owner accepts the spike](docs/source/2026-10-02-S5-owner-accepts-spike.md) | Accepted the spike results and D-60 to D-70, and approved going deeper into 0A from item 1 (D-71). Identified the owner (GitHub `vihAan02`, working with Daniyal Mughal). |
 | **S6** | [Owner's picks for item 4](docs/source/2026-10-02-S6-owner-item4-picks.md) | Approved four choices for `harnessd` v0: TOML/YAML config, `harness approve` now, presence-only heartbeat events, a foreground daemon (D-75). |
 | **S7** | [Owner's choice of the benchmark repo](docs/source/2026-10-03-S7-owner-bench-repo.md) | The benchmark app lives in its own repo, github.com/vihAan02/harness-bench, built in TypeScript on Node 24 with Node's built-in SQLite (D-83). |
+| **S8** | [Owner records a co-owner](docs/source/2026-10-03-S8-owner-coowner.md) | Daniyal Mughal (GitHub `DaniyalMughal1`) is a co-owner. Either owner can approve an owner gate, and Daniyal continues from the handoff (D-85). |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -585,7 +586,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 - **D-71 The spike results and D-60 to D-70 are accepted, and 0A continues from item 1.** This clears the stop point D-59 set after the spike.
   - The real-model checks U-1 to U-3 stay open ([Q-18](docs/open-questions.md#q-18)). They still have to close before 0A item 8's exit.
   - The owner is GitHub `vihAan02`, who owns the repo and works on it with Daniyal Mughal.
-  - *Source:* S5. *Status:* Locked.
+  - *Source:* S5. *Status:* Locked. *The owner line is superseded by D-85 (Daniyal Mughal is a co-owner).*
 - **D-72 Runtime and tooling for 0A.** These are the details D-55 left to 0A item 1.
   - **Runtime:** Node.js 24 LTS or later (`engines`, `.nvmrc`). The spike also ran on 26.
   - **Repo layout:** one repo with npm workspaces, `packages/{protocol,server,daemon,adapters,cli}` (roadmap 0A item 1). The spike stays outside the workspace, and product code never imports it.
@@ -789,6 +790,13 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Result (2026-10-03, scripted model):** all six criteria met, in three runs out of three. Both agents' work was committed by harnessd, and Shelf's 18 tests passed in the backend agent's sandbox. `--real` hasn't run yet, for lack of a key.
   - *Source:* 0A item 11. *Status:* Proposal.
 
+### Owner decision of 2026-10-03 (S8)
+- **D-85 Daniyal Mughal is a co-owner.** Supersedes D-71's owner line.
+  - **The owners** are GitHub `vihAan02`, who owns the repo, and Daniyal Mughal (GitHub `DaniyalMughal1`), co-owner.
+  - **Owner gates:** a gate the docs mark "owner" needs the approval of either one. That covers phase go-aheads (D-44), answers to open questions, and approvals of pass bars and Proposals.
+  - **Continuity:** Daniyal continues the work from [HANDOFF.md](HANDOFF.md).
+  - *Source:* S8. *Status:* Locked.
+
 ## 8. Hypotheses (what we're testing, not assuming)
 
 | ID | Hypothesis | Tested by |
@@ -895,7 +903,7 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 11, the 0A demo script.~~ **Done 2026-10-03:** `npm run demo` meets every exit criterion with the scripted model (D-84, Proposal).
 5. **To close 0A:**
    - **The real-model checks** need an API key ([Q-18](docs/open-questions.md#q-18)): `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and `npm run demo -- --real` for the whole loop with real agents.
-   - **The owner reviews 0A and gives the 0B go-ahead** (D-44).
+   - **An owner (vihAan02 or Daniyal Mughal, D-85) reviews 0A and gives the 0B go-ahead** (D-44).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - ~~Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).~~ **Done 2026-10-03:** [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
 6. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
@@ -946,4 +954,4 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 | [docs/roadmap.md](docs/roadmap.md) | Ordered checklists and exit criteria per phase |
 | [docs/open-questions.md](docs/open-questions.md) | What's undecided, and what it blocks |
 | [docs/research/](docs/research/) | Researched facts (F-IDs), the 0A adapter spike results, and the competitive landscape |
-| [docs/source/](docs/source/) | The raw S1 to S7 records. Never edit these. |
+| [docs/source/](docs/source/) | The raw S1 to S8 records. Never edit these. |

@@ -7,7 +7,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
 - **The first wedge:** several humans, each with their own agents on their own machines, coordinating on one repo.
 
 ## Current state
-- **The owner:** GitHub `vihAan02`, who owns the repo and works on it with Daniyal Mughal (D-71). Gates marked "owner" need their approval.
+- **The owners:** GitHub `vihAan02`, who owns the repo, and Daniyal Mughal (GitHub `DaniyalMughal1`), co-owner (D-85, superseding D-71's owner line). A gate marked "owner" needs the approval of either one. Daniyal continues the work from [HANDOFF.md](HANDOFF.md).
 - **Phase:** 0A, approved 2026-10-01 (D-59).
   - **Done:**
     - the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`, accepted by the owner (D-71). Results are in [docs/research/spike-0a.md](docs/research/spike-0a.md); the architecture changes are D-60 to D-70.
@@ -22,7 +22,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 9, the human CLI and the task lifecycle (D-81);
     - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83);
     - item 11, the 0A demo, `npm run demo`, which meets every 0A exit criterion with a scripted model (D-84).
-  - **Still open for 0A:** the real-model checks need an API key (U-1, Q-18), and the owner reviews 0A before 0B starts (D-44).
+  - **Still open for 0A:** the real-model checks need an API key (U-1, Q-18), and an owner reviews 0A before 0B starts (D-44).
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
@@ -71,7 +71,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   
   Never present a hypothesis or an unverified vendor behavior as fact.
 - **Re-verify vendor facts before relying on them in code.** Agent CLIs change fast. If a fact is more than about 60 days old, re-check it and update its F-ID.
-- **`docs/source/` holds raw records of the owner's instructions (S1–S7).** Never edit them.
+- **`docs/source/` holds raw records of the owners' instructions (S1–S8).** Never edit them.
 - **Keep the docs clear, not bureaucratic.** Don't add documents that duplicate others.
 - **Git:** don't commit or push unless the owner asks. Never commit secrets or `.env` files.
 - **Security defaults you must not weaken:**

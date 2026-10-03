@@ -9,12 +9,11 @@
 - **AgentAdapter:** the vendor boundary. ClaudeAdapter (Claude Agent SDK) is built; Codex comes in Phase 1.
 - **The core thesis:** catching stale context matters more than file locks. Claims are awareness signals only; peer messages are typed and untrusted.
 
-**Owners:** vihAan02 (GitHub, repo owner) and Daniyal Mughal (co-owner, GitHub `DaniyalMughal1`). A gate marked "owner" in the docs needs approval from either of them.
-> The repo docs still name only vihAan02 as owner (AGENTS.md, PLAN.md D-71). Recording Daniyal as co-owner is a pending docs change: a new D-ID that supersedes D-71's owner line, plus source record S8.
+**Owners:** vihAan02 (GitHub, repo owner) and Daniyal Mughal (co-owner, GitHub `DaniyalMughal1`). A gate marked "owner" in the docs needs approval from either of them. This is recorded as D-85 (from source record S8), which supersedes D-71's owner line.
 
 ## Read before doing anything (in this order)
 1. `AGENTS.md`: working rules for every agent. `CLAUDE.md` imports it.
-2. `PLAN.md`: the source of truth. Decisions D-01 to D-84; §12 is the canonical "what's next".
+2. `PLAN.md`: the source of truth. Decisions D-01 to D-85; §12 is the canonical "what's next".
 3. `docs/roadmap.md`: what each phase builds, and what it must not build.
 4. The doc for the area you're touching: `docs/{architecture,coordination,agent-adapters,local-runtime,protocol,security,validation}.md`. Before touching the Claude adapter, also read `docs/research/spike-0a.md` (what the vendor actually does) and the F-IDs in `docs/research/vendor-capabilities.md`.
 5. `docs/open-questions.md`: never silently decide an open question; ask an owner.
@@ -106,7 +105,7 @@
   - Commit under your own identity. Everything so far was authored as `vihAan02`.
   - End commit messages with: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
 - **Decisions:** a new D-ID supersedes an old one; never silently edit an existing decision.
-- **Records:** `docs/source/` (S1 to S7) holds raw records of the owners' instructions. Never edit them.
+- **Records:** `docs/source/` (S1 to S8) holds raw records of the owners' instructions. Never edit them.
 - **Vendor facts:** keep them as F-IDs in `docs/research/vendor-capabilities.md`, and re-verify anything older than about 60 days. Most were checked on 2026-10-01.
 - **Pinned vendor versions (D-49):** ClaudeAdapter refuses any Agent SDK other than 0.3.287 (CLI 2.1.287). To move the pin:
   1. re-run the spike's experiments on the new version (`spikes/0a-adapter/README.md`) and the adapter tests;
