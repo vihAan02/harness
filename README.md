@@ -9,10 +9,12 @@ The first wedge: **several humans, each running their own AI coding agents on th
 **Phase 0A is under way. The repo skeleton, the data model, the coordination server and harnessd exist; running agents and the coordination features don't yet.**
 - The architecture, decisions, risks, roadmap and validation plan are written down.
 - Phase 0A is approved (D-59). Its throwaway adapter spike is done and accepted ([docs/research/spike-0a.md](docs/research/spike-0a.md)), with architecture changes D-60 to D-70 (D-71).
-- The code lives in `packages/` (D-72 to D-83). See [Running locally](#running-locally).
+- The code lives in `packages/` (D-72 to D-84). See [Running locally](#running-locally).
 - The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a).
 
 ## Running locally
+
+**The quickest look:** with Postgres running (steps 1–3 below), `npm run demo` brings up the whole stack. Two Claude Code agents work on the benchmark app, and the demo checks every 0A exit criterion. By default a scripted model stands in for Claude, so it's free and takes about 15 seconds. With `ANTHROPIC_API_KEY` exported, `npm run demo -- --real` uses real agents (a few dollars at most).
 
 You need Node 24 or later and PostgreSQL 18.
 1. **Install dependencies:** `npm install`.

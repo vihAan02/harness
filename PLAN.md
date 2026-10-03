@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 10 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key), the human CLI with the task lifecycle (D-81), metrics capture (D-82) and the benchmark repo's base app (D-83).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 11 are built, and the 0A exit criteria are met with a scripted model (`npm run demo`, D-84):** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79), typed message delivery (D-80; its real-model check, U-1, still needs an API key), the human CLI with the task lifecycle (D-81), metrics capture (D-82), the benchmark repo's base app (D-83) and the demo (D-84). **Still open for 0A:** the real-model checks (U-1, [Q-18](docs/open-questions.md#q-18)), and the owner's review before 0B (D-44).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -767,6 +767,27 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Found for 0B:** under the setup sandbox, `srt` blocks a server binding or reaching `127.0.0.1`. So Shelf's server tests hang there, and the land step's `test.command` (0B item 5) will need loopback binding in its `srt` config.
   - **Scenario tags, task cards and hidden checks** are 0B item 9.
   - *Source:* S7, 0A item 10. *Status:* Locked (S7) for the location and stack; Proposal for the app's design.
+- **D-84 The 0A demo (0A item 11).** `npm run demo` (`scripts/demo-0a.ts`).
+  - **What runs:** the whole stack on one machine:
+    - a coordination server on a throwaway Postgres schema;
+    - harnessd with its own home;
+    - the real `harness` CLI;
+    - Shelf cloned from harness-bench;
+    - two Claude Code agents.
+  - **What happens:**
+    1. `agent/backend` adds `expiresAt` to the login response.
+    2. `agent/frontend` asks it about the response, then shows the expiry in the welcome header.
+    3. Both change `src/shared/types.ts`.
+  - **What it checks:** each 0A exit criterion, from harnessd's view of the log, with the evidence printed. The status snapshot is taken at the event where the overlap appears, while both agents are at work. The demo exits non-zero if any criterion fails.
+  - **Two modes:**
+    - **Scripted (the default):** the scripted stand-in plays the model, and everything else is real. It takes about 15 seconds and costs nothing.
+    - **`--real`:** real agents on `ANTHROPIC_API_KEY` (D-56), capped at $2 per session.
+  - **Shortcuts the demo takes, on purpose, and says so as it runs:**
+    - it registers the human, the device and the project directly, since 0A has no sign-up;
+    - it approves Shelf's setup command itself, and prints the `harness approve` command a person would run.
+  - **Cleanup:** it removes its schema and temp dir afterwards, unless `--keep`.
+  - **Result (2026-10-03, scripted model):** all six criteria met, in three runs out of three. Both agents' work was committed by harnessd, and Shelf's 18 tests passed in the backend agent's sandbox. `--real` hasn't run yet, for lack of a key.
+  - *Source:* 0A item 11. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -871,11 +892,14 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 8, typed messages.~~ **Done 2026-10-03, except U-1:** envelopes, budgets, delivery at safe boundaries and `message.ack` (D-80, Proposal). U-1 still needs the API key (Q-18).
    - ~~Item 9, the human CLI and lifecycle.~~ **Done 2026-10-03:** `harness agent/task/status/log`, and harnessd starts, stops and commits agents as tasks move (D-81, Proposal).
    - ~~Item 10, metrics capture and the benchmark repo's base app.~~ **Done 2026-10-03:** `harness metrics` (D-82, Proposal), and Shelf in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
-   - **Next:** item 11, the 0A demo script ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 11, the 0A demo script.~~ **Done 2026-10-03:** `npm run demo` meets every exit criterion with the scripted model (D-84, Proposal).
+5. **To close 0A:**
+   - **The real-model checks** need an API key ([Q-18](docs/open-questions.md#q-18)): `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and `npm run demo -- --real` for the whole loop with real agents.
+   - **The owner reviews 0A and gives the 0B go-ahead** (D-44).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - ~~Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).~~ **Done 2026-10-03:** [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
-5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
-6. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
+6. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
+7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
 ## 13. Glossary
 

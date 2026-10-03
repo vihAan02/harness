@@ -3,6 +3,7 @@
 // Metrics that need a diff review, the land step's tests or a human timer (M2, M3, M4, M6, M9, M10)
 // aren't computed here; they're listed so a report shows what's still to be scored.
 import type { EventMessage } from '@harness/protocol';
+import { duration } from './status.ts';
 import type { ProjectView } from './view.ts';
 
 export type TaskMetrics = {
@@ -154,7 +155,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
   };
 }
 
-const secs = (ms: number | null) => (ms === null ? '—' : `${(ms / 1000).toFixed(1)}s`);
+const secs = (ms: number | null) => (ms === null ? '—' : duration(ms));
 
 export function renderMetrics(m: RunMetrics): string {
   const lines = [

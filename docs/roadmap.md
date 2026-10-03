@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 10 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82) and the benchmark app (D-83). Item 8's real-model check, U-1, still needs an API key. Next: item 11.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 11 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82), the benchmark app (D-83) and the demo (D-84). **The exit criteria are met with a scripted model** (`npm run demo`). Still open: the real-model checks (U-1, Q-18) and the owner's review before 0B.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -157,14 +157,16 @@
     
     Found for 0B: the land step's `test.command` needs loopback binding in its `srt` config.
 11. **A 0A demo script** that exercises every exit criterion below.
+    
+    **Done 2026-10-03:** `npm run demo` (D-84). The whole stack runs on Shelf, and two agents change the login contract from both sides. It checks every criterion below and prints the evidence. With the scripted model it passed three runs out of three in about 15 seconds; `--real` runs real agents once there's an API key.
 
-**Exit criteria (from S3).** The harness reliably shows:
-- [ ] which agents are alive;
-- [ ] which task each agent owns;
-- [ ] what each agent is currently modifying (observed claims);
-- [ ] what the other agents are working on;
-- [ ] when work likely overlaps (prospective × observed);
-- [ ] A asking B a question, and B's answer reaching A at a safe boundary, with the latency and delivery point recorded.
+**Exit criteria (from S3).** The harness reliably shows the following. Each is met in `npm run demo` with the scripted model (2026-10-03, D-84); with real agents, once the real-model checks run (Q-18).
+- [x] which agents are alive;
+- [x] which task each agent owns;
+- [x] what each agent is currently modifying (observed claims);
+- [x] what the other agents are working on;
+- [x] when work likely overlaps (prospective × observed);
+- [x] A asking B a question, and B's answer reaching A at a safe boundary, with the latency and delivery point recorded.
 
 **Not in 0A:**
 - read sets;

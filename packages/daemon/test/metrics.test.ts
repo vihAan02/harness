@@ -58,7 +58,7 @@ test('metrics while a task is still running, then once every task is finished', 
   assert.deepEqual(m.shimCalls, { 'agent/backend': { ask: 1, report_done: 1 }, 'agent/frontend': { answer: 1 } });
   assert.deepEqual(m.overlaps, { observed: 1, prospective: 0 });
   const text = renderMetrics(m);
-  assert.match(text, /M1  completion time: 40\.0s/);
-  assert.match(text, /question → answer round trips: 7\.0s/);
+  assert.match(text, /M1  completion time: 40\.0 s/);
+  assert.match(text, /question → answer round trips: 7\.0 s/);
   assert.match(text, /Not computed from the log:\n  M2 /);
 });

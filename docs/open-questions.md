@@ -185,4 +185,5 @@
   - U-3: what is the real token overhead?
 - **Needed:** the owner exports an Anthropic API key in the environment that runs the spike (D-56: API keys only). The harness never reads or stores it (D-48, D-64).
 - **Ready (2026-10-02):** with the key exported, run `node experiments/e17-real-model.ts` in `spikes/0a-adapter/`. It runs seven short Haiku 4.5 sessions, estimated at $0.10 to $0.30, each capped at $0.25 by the SDK. Its plumbing is verified against the mock (SP-15). Details: [spike-0a.md §5](research/spike-0a.md#5-still-unverified-needs-a-real-model-other-platforms-or-other-modes).
+- **Also with the key (2026-10-03):** `npm run demo -- --real` runs the same round trip through the built product, with two real agents on the benchmark app (D-84).
 - **Blocks:** U-1 must close before 0A item 8's exit (the `question` → `answer` round trip). U-2 feeds T-1 in 0B.

@@ -72,7 +72,7 @@ export class Daemon {
   views = new Map<string, ProjectView>(); // rebuilt from each project's log at start (D-78)
   delivering = new Set<string>(); // message ids being injected right now
   delivered = new Set<string>(); // acknowledged in this process, before the server's event comes back
-  lifecycles = new Map<string, Promise<void>>(); // per task, so assigned → completed never overlap
+  lifecycles = new Map<string, Promise<void>>(); // per task while in flight, so assigned → completed never overlap
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -124,9 +124,10 @@ export class Daemon {
     this.o.onEvent?.(e);
     if (e.kind === 'task.assigned' || e.kind === 'task.completed' || e.kind === 'task.abandoned') {
       const taskId = (e.data as { task_id: string }).task_id;
-      const next = (this.lifecycles.get(taskId) ?? Promise.resolve())
+      const next: Promise<void> = (this.lifecycles.get(taskId) ?? Promise.resolve())
         .then(() => this.lifecycle(e))
-        .catch((err: Error) => this.log(`${e.kind} ${taskId}: ${err.message}`));
+        .catch((err: Error) => this.log(`${e.kind} ${taskId}: ${err.message}`))
+        .finally(() => { if (this.lifecycles.get(taskId) === next) this.lifecycles.delete(taskId); });
       this.lifecycles.set(taskId, next);
     }
     if (e.kind === 'message.sent') {

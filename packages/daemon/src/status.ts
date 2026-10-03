@@ -56,6 +56,9 @@ export function renderAgentStatus(view: ProjectView, agentId: string): string {
   return lines.join('\n');
 }
 
+/** A latency for people: milliseconds under a second, else seconds. */
+export const duration = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
+
 const ago = (iso: string, now: number) => {
   const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
   return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
@@ -113,7 +116,7 @@ export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
   if (recent.length) {
     lines.push('', 'Recent deliveries (where each landed, and how long it took; D-26):');
     for (const m of recent) {
-      lines.push(`  ${m.id} ${m.kind.padEnd(14)} ${view.agentName(m.from)} → ${view.agentName(m.to)}: ${m.delivery} after ${((m.latencyMs ?? 0) / 1000).toFixed(1)}s`);
+      lines.push(`  ${m.id} ${m.kind.padEnd(14)} ${view.agentName(m.from)} → ${view.agentName(m.to)}: ${m.delivery} after ${duration(m.latencyMs ?? 0)}`);
     }
   }
   return lines.join('\n');

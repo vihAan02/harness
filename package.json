@@ -14,7 +14,8 @@
     "test": "node --test \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
     "check": "npm run typecheck && npm test",
     "server": "node packages/server/src/main.ts",
-    "daemon": "node packages/daemon/src/main.ts"
+    "daemon": "node packages/daemon/src/main.ts",
+    "demo": "node scripts/demo-0a.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

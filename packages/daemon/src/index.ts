@@ -9,7 +9,7 @@ export { Approvals, setupHash, type ApprovalRequest } from './approvals.ts';
 export { ServerLink, CommandFailed } from './link.ts';
 export { Sessions, killOrphans, processStart, type SessionRecord } from './supervision.ts';
 export { ProjectView, type AgentInfo, type TaskInfo, type MessageInfo } from './view.ts';
-export { renderAgentStatus, renderHumanStatus } from './status.ts';
+export { duration, renderAgentStatus, renderHumanStatus } from './status.ts';
 export { renderMessage } from './envelope.ts';
 export { harnessTools } from './tools.ts';
 export { computeMetrics, renderMetrics, type RunMetrics } from './metrics.ts';
