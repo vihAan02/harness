@@ -40,6 +40,7 @@ export function splitCommands(line: string): string[][] | null {
     if (c === '&' && line[i + 1] === '&') { endCmd(); i++; continue; }
     if (c === '|') { endCmd(); if (line[i + 1] === '|') i++; continue; }
     if (c === '&') { endCmd(); continue; } // background
+    if (c === '<' && line[i + 1] === '<') return null; // heredocs and here-strings: the body isn't commands; give up
     if (c === '<') { endWord(); words.push('<'); continue; }
     if (c === '>') { endWord(); words.push('>'); if (line[i + 1] === '>') i++; continue; }
     if (c === '(' || c === ')') return null; // subshells: give up

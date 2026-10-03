@@ -9,7 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { git } from './git.ts';
 
-export const MAX_HASH_BYTES = 64 * 1024 * 1024;
+/** Bigger files are recorded without a hash (always "changed"): hashing runs on the observation path. */
+export const MAX_HASH_BYTES = 16 * 1024 * 1024;
 export type ObjectFormat = 'sha1' | 'sha256';
 export type ReadSource = 'read_tool' | 'search_hit' | 'shell_heuristic' | 'edit_base' | 'instructions';
 export type Confidence = 'high' | 'medium' | 'low';
@@ -34,8 +35,15 @@ export async function objectFormat(worktree: string): Promise<ObjectFormat> {
  * symlink, or too big), which always counts as changed later: the safe direction.
  */
 export function hashForRead(worktree: string, rel: string, format: ObjectFormat): string | null | undefined {
-  if (!rel || path.isAbsolute(rel) || rel.split('/').some((s) => s === '..' || s === '.git')) return undefined;
-  const abs = path.join(worktree, rel);
+  // `.git` in any case: macOS file systems are usually case-insensitive.
+  if (!rel || path.isAbsolute(rel) || rel.split('/').some((s) => s === '..' || s.toLowerCase() === '.git')) return undefined;
+  let root: string;
+  try { root = fs.realpathSync(worktree); } catch { return undefined; }
+  const abs = path.join(root, rel);
+  const insideRoot = (p: string) => {
+    const r = path.relative(root, p);
+    return !!r && !r.startsWith('..') && !path.isAbsolute(r) && r.split(path.sep)[0]!.toLowerCase() !== '.git';
+  };
   let st: fs.Stats;
   let real: string;
   try {
@@ -44,12 +52,28 @@ export function hashForRead(worktree: string, rel: string, format: ObjectFormat)
   } catch {
     return undefined; // a read of a file that doesn't exist reads nothing
   }
-  const inside = path.relative(worktree, real);
-  if (!inside || inside.startsWith('..') || path.isAbsolute(inside) || inside.split(path.sep)[0] === '.git') return undefined;
+  if (!insideRoot(real)) return undefined;
   if (st.isSymbolicLink()) return null; // Git stores the link, not its target: no comparable hash
   if (!st.isFile()) return undefined;
   if (st.size > MAX_HASH_BYTES) return null;
-  return blobId(fs.readFileSync(abs), format);
+  // Read through a descriptor opened without following a symlink and without blocking (a FIFO swapped in
+  // after the checks above never hangs harnessd), and only if it's still the regular file that was checked.
+  let fd: number;
+  try {
+    fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const fst = fs.fstatSync(fd);
+    if (!fst.isFile() || fst.ino !== st.ino || fst.dev !== st.dev || fst.size > MAX_HASH_BYTES) return fst.isFile() ? null : undefined;
+    if (!insideRoot(fs.realpathSync(abs))) return undefined;
+    return blobId(fs.readFileSync(fd), format);
+  } catch {
+    return undefined;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /** Which of these worktree paths Git ignores (dependencies, build output, local env files). */
@@ -62,11 +86,21 @@ export function ignoredPaths(worktree: string, paths: string[]): Promise<Set<str
         // Exit 1 means "none ignored"; anything else unexpected also counts as none (record rather than drop).
         resolve(new Set(String(stdout ?? '').split('\0').filter(Boolean)));
       });
+    child.stdin?.on('error', () => {}); // git exiting early (EPIPE) must never crash harnessd
     child.stdin?.end(paths.join('\0') + '\0');
   });
 }
 
 const RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
+
+/** A range the server accepts (start ≥ 1, lines ≥ 1), or none: one bad entry would refuse the whole batch. */
+function validRange(r: ReadReport): ReadReport {
+  if (!r.range) return r;
+  const ok = Number.isSafeInteger(r.range.start) && Number.isSafeInteger(r.range.lines) && r.range.start >= 1 && r.range.lines >= 1;
+  if (ok) return r;
+  const { range: _drop, ...rest } = r;
+  return rest;
+}
 
 /**
  * One session's read reporting. `record` hashes at once (the content the agent just saw) and queues;
@@ -139,7 +173,7 @@ export class ReadTracker {
     const next = this.chain.then(async () => {
       if (!batch.length) return;
       const ignored = await ignoredPaths(this.o.worktree, batch.map((r) => r.path));
-      const fresh = batch.filter((r) => {
+      const fresh = batch.map((r) => validRange(r)).filter((r) => {
         if (ignored.has(r.path)) return false;
         const s = this.sent.get(r.path);
         return !(s && s.hash === r.hash && r.hash !== null && RANK[s.confidence] >= RANK[r.confidence]);

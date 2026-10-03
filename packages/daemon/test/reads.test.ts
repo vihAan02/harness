@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { blobId, hashForRead, ignoredPaths, ReadTracker, type ReadReport } from '../src/reads.ts';
+import { blobId, hashForRead, ignoredPaths, MAX_HASH_BYTES, ReadTracker, type ReadReport } from '../src/reads.ts';
 import { parseShellReads } from '../src/shellreads.ts';
 
 function repo(format: 'sha1' | 'sha256' = 'sha1') {
@@ -106,4 +106,35 @@ test('shell reads: simple forms are parsed, everything else is counted as unpars
     assert.ok(!r.reads.some((x) => /\$|\*|\.\.|~/.test(x.path)), cmd);
   }
   assert.deepEqual(reads('cd src && cat a.ts'), [], 'after cd, relative paths are ambiguous: not guessed');
+});
+
+test('confinement holds through symlinked directories, FIFOs, a case-insensitive .git, and a symlinked home', async () => {
+  const { root } = repo();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-outside-'));
+  fs.writeFileSync(path.join(outside, 'secret'), 'top secret\n');
+  fs.symlinkSync(outside, path.join(root, 'linkdir'));
+  assert.equal(hashForRead(root, 'linkdir/secret', 'sha1'), undefined, 'a file reached through a symlinked directory outside is never read');
+  execFileSync('mkfifo', [path.join(root, 'pipe')]);
+  const t0 = Date.now();
+  assert.equal(hashForRead(root, 'pipe', 'sha1'), undefined, 'a FIFO is not a file');
+  assert.ok(Date.now() - t0 < 1000, 'and reading it never blocks');
+  assert.equal(hashForRead(root, '.GIT/config', 'sha1'), undefined);
+  // The worktree path given with a symlink in it (e.g. /var → /private/var) still works.
+  const alias = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-alias-')), 'wt');
+  fs.symlinkSync(root, alias);
+  assert.equal(hashForRead(alias, 'src/types.ts', 'sha1'), blobId(fs.readFileSync(path.join(root, 'src/types.ts'))));
+  fs.writeFileSync(path.join(root, 'big.bin'), Buffer.alloc(MAX_HASH_BYTES + 1));
+  assert.equal(hashForRead(root, 'big.bin', 'sha1'), null, 'too big to hash: recorded as always changed');
+});
+
+test('shell reads: heredocs are never parsed as commands; ranges the server would refuse are dropped', async () => {
+  assert.deepEqual(parseShellReads('cat <<EOF\ncat /etc/passwd\nEOF').reads, []);
+  assert.deepEqual(parseShellReads("sed -n '20,10p' src/a.ts").reads, [{ path: 'src/a.ts', range: { start: 20, lines: -9 } }], 'parsed as written');
+  const { root } = repo();
+  const sent: ReadReport[][] = [];
+  const t = new ReadTracker({ worktree: root, send: async (e) => { sent.push(e); }, log: () => {}, debounceMs: 10_000 });
+  await t.init();
+  t.record([{ path: 'src/types.ts', source: 'shell_heuristic', confidence: 'low', range: { start: 20, lines: -9 } }]);
+  await t.flush();
+  assert.deepEqual(sent[0]!.map((e) => e.range), [undefined], 'the bad range is dropped, the read kept');
 });
