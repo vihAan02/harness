@@ -198,6 +198,8 @@ Agents never get input mid-generation. Messages land only at a **safe boundary**
   5. A gets the answer at its next safe boundary. If A's session is idle, the pushed message starts a new turn; a live idle session needs no resume.
   
   Every step is an event, so latency is measurable.
+  
+  *As built (0A, D-80):* harnessd injects each message as soon as it's logged; one for an agent without a live session waits until its session starts. Budgets hold the 11th peer message a task sends or receives.
 
 ---
 

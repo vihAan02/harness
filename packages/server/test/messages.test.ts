@@ -52,3 +52,36 @@ test('only typed kinds, capped text, and real recipients (D-24, Q-05)', async ()
   await rejects(run('message.send', { kind: 'question', to: 'agent/a', text: 'hi' }, agentA), 'bad_request');
   await rejects(run('message.send', { kind: 'answer', in_reply_to: 'msg_nope', text: 'hi' }, agentA), 'not_found');
 });
+
+test('budgets: the 11th peer message from a task is held and reported, never counted (Q-05)', async () => {
+  const c = id(await run('agent.create', { name: 'agent/c', vendor: 'claude' }), 'agent_id');
+  const d = id(await run('agent.create', { name: 'agent/d', vendor: 'claude' }), 'agent_id');
+  const tC = id(await run('task.create', { title: 'C', text: 'C', scope: [], assignee_agent_id: c }), 'task_id');
+  const tD = id(await run('task.create', { title: 'D', text: 'D', scope: [], assignee_agent_id: d }), 'task_id');
+  for (let i = 0; i < 10; i++) await run('message.send', { kind: 'question', to: 'agent/d', text: `q${i}` }, c);
+  const over = await run('message.send', { kind: 'question', to: 'agent/d', text: 'one too many' }, c);
+  assert.deepEqual((over.result as Record<string, unknown>).held, true);
+  const evs = (await db.pool.query('SELECT kind, data FROM events WHERE project_id = $1 AND seq = ANY($2) ORDER BY seq', [project, over.seqs])).rows;
+  assert.deepEqual(evs.map((e) => [e.kind, e.data.held ?? e.data.direction]), [['message.sent', true], ['budget.exceeded', 'sent'], ['budget.exceeded', 'received']]);
+  const b = (await db.pool.query('SELECT task_id, messages_sent, messages_received FROM budgets WHERE task_id = ANY($1) ORDER BY task_id', [[tC, tD]])).rows;
+  assert.deepEqual(b, [{ task_id: tC, messages_sent: 10, messages_received: 0 }, { task_id: tD, messages_sent: 0, messages_received: 10 }]);
+});
+
+test('message.ack: only harnessd, only for the recipient, once; records where it landed and its latency (D-26)', async () => {
+  await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_ack', 'human_test', 'laptop') ON CONFLICT DO NOTHING");
+  const device: { principal: string; deviceId: string | null } = { principal: 'human_test', deviceId: 'dev_ack' };
+  const qid = id(await run('message.send', { kind: 'question', to: 'agent/b', text: 'ack me' }, agentA), 'message_id');
+  const ack = (as: string, extra: Record<string, unknown> = {}, caller = device) =>
+    executeCommand(db.pool, caller, cmd('message.ack', { message_id: qid, delivered_at: new Date().toISOString(), delivery: 'between_tools', est_tokens: 42, ...extra }, as));
+  await rejects(ack(agentA), 'forbidden'); // not the recipient
+  await rejects(ack(agentB, {}, human), 'forbidden'); // not harnessd
+  await rejects(ack(agentB, { delivery: 'whenever' }), 'bad_request');
+  const ok = await ack(agentB);
+  const ev = (await db.pool.query('SELECT kind, data FROM events WHERE project_id = $1 AND seq = $2', [project, ok.seqs[0]])).rows[0];
+  assert.equal(ev.kind, 'message.delivered');
+  assert.deepEqual([ev.data.message_id, ev.data.delivery, ev.data.to_task_id, ev.data.est_tokens], [qid, 'between_tools', taskB, 42]);
+  assert.ok(ev.data.latency_ms >= 0);
+  assert.deepEqual((await ack(agentB)).seqs, [], 'a repeated ack changes nothing');
+  const row = (await db.pool.query('SELECT delivery, delivered_at IS NOT NULL AS done FROM messages WHERE id = $1', [qid])).rows[0];
+  assert.deepEqual(row, { delivery: 'between_tools', done: true });
+});

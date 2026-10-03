@@ -22,9 +22,12 @@ export function overlaps(a: string, b: string): boolean {
   return false;
 }
 
+/** Control characters in a path could forge lines in another agent's notice (D-25), so paths never carry them. */
+export const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
 /** A repo-relative, normalized file path, as harnessd reports observed edits. */
 export function normalizeFilePath(raw: unknown): string {
-  if (typeof raw !== 'string' || !raw || raw.length > 1000 || raw.startsWith('/') || raw.endsWith('/') || raw.includes('\0')) {
+  if (typeof raw !== 'string' || !raw || raw.length > 1000 || raw.startsWith('/') || raw.endsWith('/') || CONTROL_CHARS.test(raw)) {
     throw new CommandError('bad_request', `bad path ${JSON.stringify(raw)}: use a repo-relative file path`);
   }
   if (raw.split('/').some((s) => s === '' || s === '.' || s === '..')) throw new CommandError('bad_request', `bad path ${JSON.stringify(raw)}: not normalized`);

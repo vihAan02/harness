@@ -125,7 +125,7 @@
 | `session.report { session_id, status, task_id?, worktree?, branch?, vendor_session_id?, vendor_version?, usage?, reason? }` | 0A | `harnessd` → server: presence and usage (D-77). Sent `as_agent`, from the device. The first report creates the session (`task_id`, `worktree`, `branch` required; only the task's assignee) → `session.started`. A status change → `session.status`; `ended` → `session.ended`. `usage` = `{input, output, cache_read, cache_creation, cost_usd}`, the vendor's running totals → `usage.reported`. Vendor ids stay on the row |
 | `claim.observe { session_id, paths[], source: hook\|diff }` | 0A | `harnessd` reports observed edits, as the agent (D-79). `hook` adds claims; `diff` is the task's full set of changed files and also clears the rest. → `claim.observed { task_id, session_id, paths (new), source }`, `claim.cleared { task_id, claim_kind, paths }`, and for a new overlap `overlap.detected { overlap_id, level, paths, tasks, claim_kinds }` plus a `claim_conflict` `message.sent` to each agent involved |
 | `message.send { kind, to?, in_reply_to?, text, about_paths? }` | 0A | Typed kinds only (D-24): `question` (`to` = an agent's name or id) and `answer` (`in_reply_to` = a question asked of the sender; one answer each). Text ≤ 500 characters (Q-05). → `message.sent { message_id, kind, from, to, in_reply_to?, text, about_paths?, priority, from_task_id, to_task_id }` (D-78). Budgets are enforced server-side (item 8) |
-| `message.ack { message_id, delivered_at, delivery: between_tools\|new_turn\|stop_hook }` | 0A | Measures delivery latency and where messages landed (D-26) |
+| `message.ack { message_id, delivered_at, delivery: between_tools\|new_turn\|stop_hook, est_tokens }` | 0A | Measures delivery latency and where messages landed (D-26). harnessd, as the recipient, once the vendor's receipt arrives → `message.delivered { message_id, kind, to, to_task_id, delivery, delivered_at, latency_ms, est_tokens }` (D-80). A held (over-budget) message is never delivered; a repeat ack is a no-op |
 | `sync.report { session_id, new_base_sha, event: synced\|conflict }` | 0B | `harnessd` → `worktree.synced` / `worktree.sync_conflict` (D-53) |
 | `readset.add { session_id, entries[{path, hash, source, confidence, range?}] }` | 0B | Batched per tool call or turn. Also checks the paths against active observed claims (coordination §2) |
 | `wait.start { session_id, on: {kind, id}, timeout_s }` | 0B | Adds a wait-for edge |
@@ -223,6 +223,7 @@ If an agent never calls these tools, the harness still works from its observatio
 - **With the SDK,** it's sent as a user message with an explicit `origin` (F-02): `peer` for agents and remote humans, `coordinator` for harness notices, `human` for the local owner.
 - **Phrased as facts,** not imperative "system" commands. The vendor docs warn that imperative injected text can trigger prompt-injection defenses (F-10).
 - **The standing instruction** about untrusted peers ([coordination.md §3](coordination.md#3-messages-d-24-d-25-d-26)) goes in the **system prompt** at session start, not in each message.
+- **As built (D-80):** untrusted text is quoted line by line (`> `), so a peer can't forge a header or a second envelope inside it. Paths shown in envelopes never contain control characters.
 
 **Sender classes:**
 

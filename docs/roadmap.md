@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 7 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78) and claims (D-79). Next: item 8.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 8 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79) and typed messages (D-80). Item 8's real-model check, U-1, still needs an API key. Next: item 9.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -128,6 +128,15 @@
    - the envelope (D-25; [protocol.md §8](protocol.md#8-peer-message-envelope));
    - per-task message budgets (D-24, using the Q-05 proposal);
    - delivery at safe boundaries through `injectMessage`, with `message.ack` recording where each landed (D-26).
+   
+   **Done 2026-10-03, except U-1** (D-80). Tested end to end:
+   - A asked B through the shim. The question opened a new turn for idle B.
+   - B answered, and the answer landed in A between tools, after A's running command finished.
+   - Latency, delivery point and estimated tokens were recorded.
+   - A forged notice inside the answer stayed quoted.
+   - Overlap notices reached both live agents.
+   
+   **Open:** U-1, the same round trip with a real model, needs an API key ([Q-18](open-questions.md#q-18)).
 9. **Human CLI and lifecycle (D-54):**
    - `harness agent add`;
    - `harness task add` / `assign` / `done`;

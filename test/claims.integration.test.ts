@@ -57,5 +57,8 @@ test('observed claims, an overlap warning to both agents, and a background write
   assert.deepEqual(conflicts.map((m) => [view.agentName(m.to), m.priority, m.from]).sort(), [['agent/backend', 'high', 'harness'], ['agent/frontend', 'high', 'harness']]);
   assert.match(conflicts.find((m) => m.to === frontend)!.text, /src\/types\.ts: agent\/backend \(task T-\d+\) is also changing this file\./);
 
+  // Both agents were live, so harnessd delivered each notice and acknowledged it (D-26).
+  await s.until(() => conflicts.every((m) => view.messages.get(m.id)?.deliveredAt), 15_000, 'both claim_conflict notices to be delivered');
+  assert.ok(conflicts.every((m) => ['between_tools', 'new_turn'].includes(view.messages.get(m.id)!.delivery!)));
   await Promise.all([s.daemon.stopAgent(tApi), s.daemon.stopAgent(tWeb)]);
 });

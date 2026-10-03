@@ -16,11 +16,11 @@ import { ServerLink } from './link.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
-import { renderTask, type TaskForAgent } from './envelope.ts';
+import { renderMessage, renderTask, type MessageForAgent, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 import { harnessTools } from './tools.ts';
-import { ProjectView } from './view.ts';
+import { ProjectView, type MessageInfo } from './view.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -62,6 +62,8 @@ export class Daemon {
   adapters: Record<string, AgentAdapter>;
   running = new Map<string, RunningAgent>(); // by task id
   views = new Map<string, ProjectView>(); // rebuilt from each project's log at start (D-78)
+  delivering = new Set<string>(); // message ids being injected right now
+  delivered = new Set<string>(); // acknowledged in this process, before the server's event comes back
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -111,6 +113,60 @@ export class Daemon {
     this.views.get(e.project_id)?.apply(e);
     if (replayed) return;
     this.o.onEvent?.(e);
+    if (e.kind === 'message.sent') {
+      const m = this.view(e.project_id).messages.get((e.data as { message_id: string }).message_id);
+      const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to) : undefined;
+      if (m && run) void this.deliver(run, m);
+    }
+  }
+
+  /**
+   * Injects a message into the recipient's live session at its next safe boundary (D-26), rendered in
+   * its envelope (D-25), then acknowledges where it landed. Held (over-budget) messages are never
+   * delivered. Messages for an agent with no live session wait in the log until its session starts.
+   */
+  async deliver(run: RunningAgent, m: MessageInfo): Promise<void> {
+    if (m.held || m.deliveredAt || this.delivering.has(m.id) || this.delivered.has(m.id)) return;
+    this.delivering.add(m.id);
+    try {
+      const view = this.view(run.projectId);
+      const sender = view.agents.get(m.from);
+      const msg: MessageForAgent = {
+        id: m.id, kind: m.kind, text: m.text, fromTask: m.fromTask, ...(m.inReplyTo ? { inReplyTo: m.inReplyTo } : {}),
+        ...(Array.isArray(m.data.about_paths) ? { aboutPaths: m.data.about_paths as string[] } : {}),
+        sender: m.from === 'harness' ? { kind: 'harness' }
+          : sender ? { kind: 'agent', name: sender.name, humanId: sender.humanId }
+          : { kind: 'human', id: m.from, local: m.from === this.config.principal },
+      };
+      const text = renderMessage(msg);
+      const origin = msg.sender.kind === 'harness' ? 'coordinator' : msg.sender.kind === 'human' && msg.sender.local ? 'human' : 'peer';
+      const receipt = await run.adapter.injectMessage(run.handle, { id: m.id, text, origin });
+      this.delivered.add(m.id);
+      await this.report(run.projectId, 'message.ack', {
+        message_id: m.id, delivered_at: new Date(receipt.deliveredAt).toISOString(), delivery: receipt.landed, est_tokens: Math.ceil(text.length / 4),
+      }, run.agent.id);
+    } catch (e) {
+      this.log(`message ${m.id} to ${run.agent.name}: not delivered: ${(e as Error).message}`);
+    } finally {
+      this.delivering.delete(m.id);
+    }
+  }
+
+  /**
+   * File names with control characters are never reported: they'd end up in other agents' notices,
+   * where a newline could forge a line (D-25). They're logged for the human instead.
+   */
+  reportablePaths(run: RunningAgent, paths: string[]): string[] {
+    const bad = paths.filter((p) => /[\u0000-\u001f\u007f]/.test(p));
+    if (bad.length) this.log(`${run.agent.name} (${run.taskId}): not reporting ${bad.length} file name(s) with control characters: ${JSON.stringify(bad)}`);
+    return paths.filter((p) => !bad.includes(p));
+  }
+
+  /** Messages that arrived while the agent had no live session. */
+  deliverPending(run: RunningAgent): void {
+    const view = this.view(run.projectId);
+    const pending = [...view.messages.values()].filter((m) => m.to === run.agent.id && !m.held && !m.deliveredAt).sort((a, b) => a.seq - b.seq);
+    for (const m of pending) void this.deliver(run, m);
   }
 
   async stop(): Promise<void> {
@@ -200,6 +256,7 @@ export class Daemon {
     this.running.set(ws.taskId, run);
     run.diff.timer = setInterval(() => void this.reconcile(run), this.o.diffIntervalMs ?? 15_000);
     run.done = this.watch(run);
+    this.deliverPending(run);
     return run;
   }
 
@@ -248,7 +305,7 @@ export class Daemon {
   reconcile(run: RunningAgent): Promise<void> {
     const next = (run.diff.running ?? Promise.resolve()).then(async () => {
       try {
-        const paths = await changedPaths(run.workspace.worktree, this.project(run.projectId).baseBranch);
+        const paths = this.reportablePaths(run, await changedPaths(run.workspace.worktree, this.project(run.projectId).baseBranch));
         const key = paths.join('\n');
         if (key === run.diff.last && !run.diff.hooksSince) return;
         run.diff.hooksSince = false;
@@ -287,7 +344,8 @@ export class Daemon {
         if (o.outside.length) this.log(`${run.agent.name} (${run.taskId}): edit outside its worktree reported: ${o.outside.join(', ')}`);
         if (o.paths.length) {
           run.diff.hooksSince = true;
-          await this.report(run.projectId, 'claim.observe', { session_id: run.sessionId, paths: o.paths, source: 'hook' }, run.agent.id);
+          const paths = this.reportablePaths(run, o.paths);
+          if (paths.length) await this.report(run.projectId, 'claim.observe', { session_id: run.sessionId, paths, source: 'hook' }, run.agent.id);
         }
         break;
       case 'turn.ended':

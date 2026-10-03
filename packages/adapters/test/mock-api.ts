@@ -11,6 +11,8 @@
 //   #STEP+ <ToolName> <json-input>     same step use #STEP+ to add parallel calls)
 //   #STEP TEXT <text>                  a final text answer (ends the turn)
 //   #SLOW <ms>                         delay every response in this script
+// A tool input may contain {{find:<regex>}}: replaced by the regex's first group, matched against the
+// conversation's user content, latest first (e.g. the ID of a message the harness delivered).
 // The mock finds the LAST user text block that contains #STEP lines, counts the
 // assistant messages after it, and plays that step. When steps run out it ends
 // the turn with "done".
@@ -57,20 +59,41 @@ function parseScript(text: string) {
 
 export function summarize(messages: Msg[]) {
   return messages.map((m) => {
-    if (typeof m.content === 'string') return { role: m.role, blocks: [{ type: 'text', text: m.content.slice(0, 300) }] };
+    if (typeof m.content === 'string') return { role: m.role, blocks: [{ type: 'text', text: m.content.slice(0, 4000) }] };
     return {
       role: m.role,
       blocks: m.content.map((b: Block) => {
-        if (b.type === 'text') return { type: 'text', text: String(b.text).slice(0, 300) };
+        if (b.type === 'text') return { type: 'text', text: String(b.text).slice(0, 4000) };
         if (b.type === 'tool_use') return { type: 'tool_use', name: b.name, id: b.id };
         if (b.type === 'tool_result') {
           const c = typeof b.content === 'string' ? b.content : (b.content || []).map((x: any) => x.text ?? `[${x.type}]`).join(' ');
-          return { type: 'tool_result', id: b.tool_use_id, is_error: !!b.is_error, text: String(c).slice(0, 300) };
+          return { type: 'tool_result', id: b.tool_use_id, is_error: !!b.is_error, text: String(c).slice(0, 4000) };
         }
         return { type: b.type };
       }),
     };
   });
+}
+
+function allUserText(messages: Msg[]): string[] {
+  return messages.filter((m) => m.role === 'user').map((m) => typeof m.content === 'string' ? m.content
+    : m.content.map((b: Block) => b.type === 'text' ? b.text : b.type === 'tool_result'
+      ? (typeof b.content === 'string' ? b.content : (b.content || []).map((x: Block) => x.text ?? '').join('\n')) : '').join('\n'));
+}
+
+/** Resolves {{find:<regex>}} placeholders in a scripted tool input against the conversation. */
+function fillFinds(input: unknown, messages: Msg[]): unknown {
+  const texts = allUserText(messages).reverse();
+  const fill = (v: unknown): unknown => {
+    if (typeof v === 'string') return v.replace(/\{\{find:(.+?)\}\}/g, (_, re: string) => {
+      for (const t of texts) { const m = t.match(new RegExp(re)); if (m) return m[1] ?? m[0]; }
+      return '(not found)';
+    });
+    if (Array.isArray(v)) return v.map(fill);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
+    return v;
+  };
+  return fill(input);
 }
 
 export type Mock = {
@@ -139,6 +162,7 @@ export async function startMock(opts: { rawDir?: string; name?: string } = {}): 
         const assistantsAfter = messages.slice(scriptIdx + 1).filter((m) => m.role === 'assistant').length;
         entry.stepIndex = assistantsAfter;
         step = script.steps[assistantsAfter] ?? { text: 'done' };
+        if (step.tools) step = { tools: step.tools.map((t) => ({ name: t.name, input: fillFinds(t.input, messages) })) };
         slow = script.slow;
         mock.onMain?.(body, entry);
       }

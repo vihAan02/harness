@@ -12,7 +12,7 @@ import { createAgent } from './agents.ts';
 import { reportSetup, reportWorktree } from './reports.ts';
 import { reportSession } from './sessions.ts';
 import { abandonTask, assignTask, completeTask, createTask } from './tasks.ts';
-import { sendMessage } from './messages.ts';
+import { ackMessage, sendMessage } from './messages.ts';
 import { observeClaims } from './claims.ts';
 
 export { CommandError, type Caller } from './handler.ts';
@@ -30,6 +30,7 @@ const HANDLERS: Record<string, Handler> = {
   'task.abandon': abandonTask,
   'message.send': sendMessage,
   'claim.observe': observeClaims,
+  'message.ack': ackMessage,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };

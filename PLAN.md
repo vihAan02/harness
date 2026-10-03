@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 7 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78) and soft claims with overlap warnings (D-79).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 8 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78), soft claims with overlap warnings (D-79) and typed message delivery (D-80; its real-model check, U-1, still needs an API key).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -703,6 +703,20 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - a high-priority `claim_conflict` message from `harness` to each agent that has the task, phrased as a fact (F-10), e.g. "src/types.ts: agent/backend (task T-1) is also changing this file." Delivery is item 8.
   - **Claims end with the task** (`task.completed` or `task.abandoned` clear them), and reports for a finished task are ignored.
   - *Source:* 0A item 7. *Status:* Proposal.
+- **D-80 How typed messages are delivered (0A item 8).** Follows coordination.md §3 and protocol.md §8.
+  - **Budgets use the Q-05 defaults:** 10 peer messages sent and 10 received per task, text up to 500 characters.
+    - A message over budget is stored with `held: true`, never counted, and never delivered. A `budget.exceeded` event names the task and the direction, and the human sees it.
+    - Harness notices aren't counted.
+    - There's no release command in 0A.
+  - **Delivery:** when a message for one of its agents is logged, harnessd injects it at once into that agent's live session, so it lands at the next safe boundary (D-26). A message for an agent with no live session waits in the log and is delivered when the agent's session starts.
+  - **`message.ack`** (harnessd, as the recipient) records the delivery point from the vendor's receipt (`between_tools` or `new_turn`), the time, and an estimate of the injected tokens (characters ÷ 4). It produces `message.delivered` with the latency, and adds the tokens to the recipient task's count (measured, not budgeted, Q-05).
+  - **Envelopes:**
+    - Peer text is quoted line by line (`> `), so a peer can't forge a header or a second envelope inside its text. That goes beyond the example in protocol.md §8.
+    - The local owner's text isn't quoted.
+    - Harness notices carry their own fact text.
+  - **Paths never carry control characters.** Changed-file paths and `about_paths` end up in other agents' notices, where a newline in a file name could forge a line. The server refuses them, and harnessd leaves such files out of its reports and logs them.
+  - **Still open:** item 8's exit also needs U-1, the real-model check ([Q-18](docs/open-questions.md#q-18)). The mechanics are tested end to end with the scripted model.
+  - *Source:* 0A item 8. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -804,7 +818,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 5, `AgentAdapter` + `ClaudeAdapter`.~~ **Done 2026-10-03:** `packages/adapters`, and harnessd runs agent sessions through it (D-77, Proposal).
    - ~~Item 6, the agent-facing tool shim.~~ **Done 2026-10-03:** `harness_status`, `ask`, `answer`, `report_done`, plus the task commands and `message.send` they map onto (D-78, Proposal).
    - ~~Item 7, claims.~~ **Done 2026-10-03:** prospective and observed claims, overlap warnings and `claim_conflict` messages (D-79, Proposal).
-   - **Next:** item 8, typed message delivery ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 8, typed messages.~~ **Done 2026-10-03, except U-1:** envelopes, budgets, delivery at safe boundaries and `message.ack` (D-80, Proposal). U-1 still needs the API key (Q-18).
+   - **Next:** item 9, the human CLI and lifecycle ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

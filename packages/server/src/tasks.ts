@@ -16,7 +16,7 @@ export function normalizeScopePath(raw: unknown): string {
   if (typeof raw !== 'string') throw new CommandError('bad_request', 'scope entries must be strings');
   let p = raw.trim();
   if (p.endsWith('/**')) p = p.slice(0, -2);
-  if (!p || p.length > 500 || p.startsWith('/') || /[*?[\]{}\\\0]/.test(p)) throw new CommandError('bad_request', `bad scope entry ${JSON.stringify(raw)}: use a folder like src/api/ or a file like src/types.ts`);
+  if (!p || p.length > 500 || p.startsWith('/') || /[*?[\]{}\\\u0000-\u001f\u007f]/.test(p)) throw new CommandError('bad_request', `bad scope entry ${JSON.stringify(raw)}: use a folder like src/api/ or a file like src/types.ts`);
   const parts = p.split('/');
   const folder = p.endsWith('/');
   if (folder) parts.pop();

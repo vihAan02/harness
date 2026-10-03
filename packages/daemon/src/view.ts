@@ -113,11 +113,6 @@ export class ProjectView {
           sentAt: e.at, seq: e.seq, ...(d.held ? { held: true } : {}),
         });
         break;
-      case 'message.released': {
-        const m = this.messages.get(s('message_id'));
-        if (m) m.held = false;
-        break;
-      }
       case 'message.delivered': {
         const m = this.messages.get(s('message_id'));
         if (m) Object.assign(m, { deliveredAt: s('delivered_at') || e.at, delivery: s('delivery'), latencyMs: Number(d.latency_ms ?? 0) });
