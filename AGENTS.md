@@ -13,8 +13,9 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`, accepted by the owner (D-71). Results are in [docs/research/spike-0a.md](docs/research/spike-0a.md); the architecture changes are D-60 to D-70.
     - item 1, the repo skeleton, in `packages/` (D-72);
     - item 2, data model v0, on Postgres 18 (D-73);
-    - item 3, coordination server v0 (D-74).
-  - **Next:** item 4, `harnessd` v0.
+    - item 3, coordination server v0 (D-74);
+    - item 4, `harnessd` v0 (D-75, D-76).
+  - **Next:** item 5, `AgentAdapter` + `ClaudeAdapter`.
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md).
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
@@ -63,7 +64,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   
   Never present a hypothesis or an unverified vendor behavior as fact.
 - **Re-verify vendor facts before relying on them in code.** Agent CLIs change fast. If a fact is more than about 60 days old, re-check it and update its F-ID.
-- **`docs/source/` holds raw records of the owner's instructions (S1–S5).** Never edit them.
+- **`docs/source/` holds raw records of the owner's instructions (S1–S6).** Never edit them.
 - **Keep the docs clear, not bureaucratic.** Don't add documents that duplicate others.
 - **Git:** don't commit or push unless the owner asks. Never commit secrets or `.env` files.
 - **Security defaults you must not weaken:**

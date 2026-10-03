@@ -12,6 +12,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { PROTOCOL_VERSION, type Command, type ErrorCode, type EventMessage, type Hello, type ProjectHead, type ServerMessage, type Subscription } from '@harness/protocol';
 import { CommandError, EVENTS_CHANNEL, executeCommand } from './commands.ts';
 import { readEvents, type StoredEvent } from './events.ts';
+import { heartbeat, sweepOffline } from './presence.ts';
 
 export type ServerOptions = {
   pool: pg.Pool;
@@ -22,6 +23,7 @@ export type ServerOptions = {
   host?: string; // default 127.0.0.1: Phase 0 never listens beyond loopback
   port?: number; // default 7400; 0 picks a free port
   pollIntervalMs?: number; // default 5000
+  offlineAfterMs?: number; // default 30000: a device silent this long is marked offline (D-75)
   helloTimeoutMs?: number; // default 10000
   onError?: (e: unknown) => void;
 };
@@ -94,6 +96,8 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
     }
   })();
   const poll = setInterval(pumpAll, o.pollIntervalMs ?? 5000);
+  const offlineAfterMs = o.offlineAfterMs ?? 30_000;
+  const sweep = setInterval(() => { sweepOffline(o.pool, offlineAfterMs).catch((e) => { if (!closing) onError(e); }); }, Math.max(250, Math.min(5000, offlineAfterMs / 3)));
 
   // ---------- connections ----------
   async function headsFor(principal: string, subs: Subscription[]): Promise<ProjectHead[]> {
@@ -166,6 +170,10 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
       }
       return;
     }
+    if (m.type === 'heartbeat') {
+      if (!c.deviceId) return fail(c, 'bad_request', 'heartbeats come from harnessd, whose hello names its device');
+      return heartbeat(o.pool, c.deviceId, c.principal, [...c.subs.keys()]);
+    }
     if (m.type === 'hello') return fail(c, 'bad_request', 'already said hello');
     return fail(c, 'bad_request', `unknown message type ${String(m.type)}`);
   }
@@ -191,6 +199,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
     close: async () => {
       closing = true;
       clearInterval(poll);
+      clearInterval(sweep);
       for (const c of conns) c.ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await listener.client.end().catch(() => {});

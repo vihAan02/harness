@@ -1,0 +1,95 @@
+// The sandbox around repo-controlled setup commands (D-52, D-69), checked against real srt.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createWorktree, gitCommonDir } from '../src/git.ts';
+import { runSetup, type SetupRun } from '../src/setup.ts';
+import { makeRepo, tempDir, tempHome, TOKEN } from './fixtures.ts';
+
+let t: ReturnType<typeof tempDir>;
+let run: (command: string) => Promise<{ exitCode: number; out: string }>;
+let wt: string;
+let sibling: string;
+let repo: string;
+
+before(async () => {
+  t = tempDir('setup');
+  const home = tempHome(t.dir);
+  const made = makeRepo(t.dir, { 'package.json': '{}\n' });
+  repo = made.repo;
+  wt = path.join(home.worktrees, 'prj', 'task-a');
+  sibling = path.join(home.worktrees, 'prj', 'task-b');
+  for (const [w, id] of [[wt, 'task-a'], [sibling, 'task-b']] as const) {
+    fs.mkdirSync(path.dirname(w), { recursive: true });
+    await createWorktree(repo, w, id, made.sha);
+  }
+  fs.writeFileSync(path.join(sibling, 'secret-in-sibling.txt'), 'SIBLING-SECRET');
+  const common = await gitCommonDir(repo);
+  let n = 0;
+  run = async (command) => {
+    const logFile = path.join(home.logs, `setup-${++n}.log`);
+    const r: SetupRun = { home, worktree: wt, gitCommonDir: common, scratch: path.join(home.scratch, 'prj', 'task-a'), command, allowedDomains: [], timeoutMs: 30_000, logFile };
+    const { exitCode } = await runSetup(r);
+    return { exitCode, out: fs.readFileSync(logFile, 'utf8') };
+  };
+});
+after(() => t?.cleanup());
+
+test('writes inside the worktree work, and the command runs in it', async () => {
+  const r = await run('echo built > built.txt && pwd');
+  assert.equal(r.exitCode, 0, r.out);
+  assert.equal(fs.readFileSync(path.join(wt, 'built.txt'), 'utf8'), 'built\n');
+});
+
+test('package-manager style caches land in the task scratch HOME, not the real one', async () => {
+  const r = await run('mkdir -p "$HOME/.cache" "$TMPDIR" && echo c > "$HOME/.cache/x" && echo c > "$TMPDIR/y" && echo "$HOME $TMPDIR"');
+  assert.equal(r.exitCode, 0, r.out);
+  assert.match(r.out, /scratch\/prj\/task-a\/home .*scratch\/prj\/task-a\/tmp/);
+});
+
+test('writes outside the worktree fail: the main checkout, the shared .git, the real home', async () => {
+  for (const target of [path.join(repo, 'escape.txt'), path.join(repo, '.git', 'refs', 'heads', 'evil'), path.join(t.dir, 'escape.txt')]) {
+    const r = await run(`echo STARTED && echo x > '${target}'`);
+    assert.match(r.out, /STARTED/, `the sandbox never ran the command: ${r.out}`);
+    assert.notEqual(r.exitCode, 0, `wrote ${target}`);
+    assert.equal(fs.existsSync(target), false, `${target} exists`);
+  }
+});
+
+test('reads of harnessd state fail: the local token and a sibling worktree', async () => {
+  const token = await run(`echo STARTED && cat '${path.join(path.dirname(path.dirname(path.dirname(wt))), 'token')}'`);
+  assert.match(token.out, /STARTED/, `the sandbox never ran the command: ${token.out}`);
+  assert.notEqual(token.exitCode, 0);
+  assert.ok(!token.out.includes(TOKEN), 'the token leaked');
+  const sib = await run(`echo STARTED && cat '${path.join(sibling, 'secret-in-sibling.txt')}'`);
+  assert.match(sib.out, /STARTED/, `the sandbox never ran the command: ${sib.out}`);
+  assert.notEqual(sib.exitCode, 0);
+  assert.ok(!sib.out.includes('SIBLING-SECRET'), 'the sibling worktree leaked');
+});
+
+test('reads inside its own worktree still work, though the worktree sits under the denied harness dir', async () => {
+  const r = await run('cat package.json');
+  assert.equal(r.exitCode, 0, r.out);
+  assert.match(r.out, /\{\}/);
+});
+
+test('the environment carries no secrets or harness credentials', async () => {
+  process.env.HARNESS_LOCAL_TOKEN_PROBE = 'should-not-pass';
+  const r = await run('env');
+  delete process.env.HARNESS_LOCAL_TOKEN_PROBE;
+  assert.equal(r.exitCode, 0, r.out);
+  assert.ok(!/HARNESS_LOCAL_TOKEN|ANTHROPIC_API_KEY|should-not-pass/.test(r.out), r.out);
+});
+
+test('network is closed unless the local allowlist names the domain', async () => {
+  const r = await run('echo STARTED && curl -s -m 5 -o /dev/null -w "%{http_code}" https://example.com/');
+  assert.match(r.out, /STARTED/, `the sandbox never ran the command: ${r.out}`);
+  assert.notEqual(r.exitCode, 0, r.out);
+});
+
+test('the shared .git stays readable, so read-only git works', async () => {
+  const r = await run('git status --porcelain && git log --oneline -1');
+  assert.equal(r.exitCode, 0, r.out);
+  assert.match(r.out, /base/);
+});

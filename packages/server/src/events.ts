@@ -33,6 +33,14 @@ export async function appendEvents(tx: pg.ClientBase, projectId: string, events:
   return seqs;
 }
 
+/** Postgres channel for the fan-out wake-up. Payload: a project id, never an event (D-11, F-54). */
+export const EVENTS_CHANNEL = 'harness_events';
+
+/** Wakes the fan-out for a project when the caller's transaction commits. Send at most one per transaction (F-55). */
+export async function notifyProject(tx: pg.ClientBase, projectId: string): Promise<void> {
+  await tx.query('SELECT pg_notify($1, $2)', [EVENTS_CHANNEL, projectId]);
+}
+
 /** Committed events after `afterSeq`, in seq order. */
 export async function readEvents(db: pg.Pool | pg.ClientBase, projectId: string, afterSeq: number, limit = 1000): Promise<StoredEvent[]> {
   const r = await db.query(

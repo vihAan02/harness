@@ -29,7 +29,11 @@
 
 ```
 ~/.harness/                      # created by harnessd, never inside a repo
-  config.toml                    # device id, server URL, local policy (allowlist), limits
+  config.toml                    # device id, server URL, local policy (allowlist), limits (format: packages/daemon/src/config.ts)
+  token                          # the coordination server's local token (0600; D-74)
+  approvals.json                 # approved setup-command hashes; pending-approvals/ holds requests (D-52)
+  scratch/<project>/<task-id>/   # HOME and TMPDIR for that task's sandboxed setup command (D-76)
+  state.json                     # event cursors per project
   device.key                     # device signing key (Phase 1; 0600)
   secrets.toml                   # secret references → values or OS-keychain items (0600; D-36)
   worktrees/<project>/<task-id>/ # git worktrees, outside the main checkout

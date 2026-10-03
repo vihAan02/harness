@@ -31,7 +31,9 @@ export type Command = {
   command_id: string; project_id: string; name: string; args: Record<string, unknown>;
   as_agent?: string;
 };
-export type ClientMessage = Hello | Subscribe | Command;
+/** harnessd only, every few seconds. Keeps the device's presence; logs an event only when presence changes (D-75). */
+export type Heartbeat = { v: ProtocolVersion; type: 'heartbeat' };
+export type ClientMessage = Hello | Subscribe | Command | Heartbeat;
 
 // ---------- server → client ----------
 

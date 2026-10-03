@@ -3,11 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The human CLI, `harness` (D-54; docs/architecture.md §2).",
+  "description": "The human CLI, `harness` (D-54; docs/architecture.md \u00a72).",
   "bin": {
     "harness": "./src/main.ts"
   },
   "dependencies": {
+    "@harness/daemon": "0.0.0",
     "@harness/protocol": "0.0.0"
   }
 }

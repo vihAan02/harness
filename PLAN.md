@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 3 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73) and the coordination server v0 (D-74).
+> **Status (2026-10-02):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 4 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74) and `harnessd` v0 (D-75, D-76).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 4, `harnessd` v0. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -25,7 +25,7 @@
 
 ## 1. Context and provenance
 
-Five sources define this plan. Later sources win where they sharpen or override earlier ones.
+Six sources define this plan. Later sources win where they sharpen or override earlier ones.
 
 | | Source | What it contributed |
 |---|---|---|
@@ -34,6 +34,7 @@ Five sources define this plan. Later sources win where they sharpen or override 
 | **S3** | [Owner's final adjustments](docs/source/2026-10-01-S3-final-adjustments.md) | Keep the vision ambitious and the sequence disciplined. Added the Phase 0A/0B split, best-effort read sets, three claim levels, MCP as compatibility only, the identity model from day one, the contract-awareness direction, the A/B test as a first-class gate, and the core principles. |
 | **S4** | [Owner's approval and 0A go-ahead](docs/source/2026-10-01-S4-owner-approval-and-0a-go.md) | Approved this plan as the initial source of truth. Answered Q-01 (TypeScript), Q-04 for experiments (API keys), Q-03 (pass bar approved, versioned) and Q-02 (a purpose-built benchmark repo, then a real project as a separate test). Approved Phase 0A, starting with an empirical spike of ten named assumptions (D-55 to D-59). |
 | **S5** | [Owner accepts the spike](docs/source/2026-10-02-S5-owner-accepts-spike.md) | Accepted the spike results and D-60 to D-70, and approved going deeper into 0A from item 1 (D-71). Identified the owner (GitHub `vihAan02`, working with Daniyal Mughal). |
+| **S6** | [Owner's picks for item 4](docs/source/2026-10-02-S6-owner-item4-picks.md) | Approved four choices for `harnessd` v0: TOML/YAML config, `harness approve` now, presence-only heartbeat events, a foreground daemon (D-75). |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -620,6 +621,39 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - a dedicated listener reconnects and catches up, and a 5-second poll is the safety net (D-11, F-54, F-55).
   - **Commands:** only `agent.create` is implemented so far. The others arrive with their roadmap items (claims 7, messages 8, lifecycle 9), so item 3 doesn't build their semantics early.
   - *Source:* 0A item 3. *Status:* Proposal.
+- **D-75 Four choices for `harnessd` v0 (0A item 4).** Supersedes the `device.heartbeat` event and command in protocol.md §3–§4.
+  1. **Config formats stay** `~/.harness/config.toml` and `harness.yaml`, parsed with `smol-toml` and `yaml`.
+  2. **`harness approve` arrives now** (before the rest of the CLI, item 9), as the local approval for setup commands (D-52).
+  3. **Presence:**
+     - harnessd sends a `heartbeat` message, not a command;
+     - it updates the device's `last_heartbeat_at` and logs nothing;
+     - only a change in presence is an event: `device.online` on the first heartbeat, and `device.offline` when the server finds a device silent for 30 seconds.
+     
+     *Why:* one event per device every few seconds would bury the log the A/B metrics read.
+  4. **The daemon runs in the foreground** (`npm run daemon`); there's no login service in 0A.
+  - *Source:* S6. *Status:* Locked.
+- **D-76 How `harnessd` v0 is built (0A item 4).**
+  - **Local state:** `~/.harness` (`HARNESS_HOME` to move it), all owner-only.
+    - The server token is in `~/.harness/token`, which must be `chmod 600`.
+    - Pending and granted approvals are in `pending-approvals/` and `approvals.json`. The CLI writes approvals; the daemon polls for them.
+    - Worktrees live in `worktrees/<project>/<task>`.
+  - **Deny by default:** only projects listed in `config.toml` are worked on. Local limits are capped at 2 agents (D-38) and a port range below 32768, the bottom of Linux's ephemeral range (D-68).
+  - **Git:**
+    - every harnessd Git call runs with `core.hooksPath=/dev/null` and fsmonitor off, so no repo hook ever runs on harnessd's behalf (TH-14);
+    - commits are authored as the agent and committed as `harnessd`;
+    - teardown deletes the task branch only if it's merged.
+  - **Setup sandbox** (D-69). `srt` gets:
+    - writes in the worktree and a per-task scratch dir (the command's `HOME` and `TMPDIR`);
+    - a write-deny on the shared `.git`;
+    - a read-deny on all of `~/.harness` (only this task's worktree and scratch dir are allowed back) and on common credential locations (`~/.ssh`, `~/.aws`, `~/.npmrc`, `~/.claude` and others);
+    - the local network allowlist only;
+    - no secrets.
+    
+    `srt` itself gets a short `TMPDIR`, because macOS caps socket paths at 104 bytes. Output goes through pipes, because macOS also checks writes to an inherited file's path.
+  - **The approval hash** covers the command text and every declared manifest's content, an absent manifest included. Manifests must be regular files inside the worktree (no `..`, no absolute paths, no symlinks).
+  - **Orphans** (D-62): a recorded agent process is killed on start only if it's still running with the same start time, so a reused PID is never killed. Its task's edits are then reconciled from the worktree (D-70).
+  - **The CLI may depend on `@harness/daemon`** for local state such as approvals; `test/structure.test.ts` allows it.
+  - *Source:* 0A item 4. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -717,7 +751,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 1, the repo skeleton.~~ **Done 2026-10-02:** `packages/`, with runtime and tooling per D-72 (Proposal). `npm run check` type-checks and runs the tests.
    - ~~Item 2, data model v0.~~ **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql`, plus the event log's append and read (D-73, Proposal).
    - ~~Item 3, coordination server v0.~~ **Done 2026-10-02:** the WebSocket server, idempotent commands and NOTIFY fan-out (D-74, Proposal). `npm run server` runs it.
-   - **Next:** item 4, `harnessd` v0 ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 4, `harnessd` v0.~~ **Done 2026-10-02:** `packages/daemon`, run with `npm run daemon`, and `harness approve` (D-75; D-76 Proposal).
+   - **Next:** item 5, `AgentAdapter` + `ClaudeAdapter` ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.
@@ -768,4 +803,4 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 | [docs/roadmap.md](docs/roadmap.md) | Ordered checklists and exit criteria per phase |
 | [docs/open-questions.md](docs/open-questions.md) | What's undecided, and what it blocks |
 | [docs/research/](docs/research/) | Researched facts (F-IDs), the 0A adapter spike results, and the competitive landscape |
-| [docs/source/](docs/source/) | The raw S1 to S5 records. Never edit these. |
+| [docs/source/](docs/source/) | The raw S1 to S6 records. Never edit these. |

@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 3 are done:** the repo skeleton (D-72), data model v0 (D-73) and coordination server v0 (D-74). Next: item 4.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 4 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74) and `harnessd` v0 (D-75, D-76). Next: item 5.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -68,6 +68,18 @@
    - `env.refs` ∩ local allowlist;
    - per-agent port blocks outside the OS ephemeral range, with loopback binding allowed (D-68);
    - presence heartbeats.
+   
+   **Done 2026-10-02:** `packages/daemon`, run with `npm run daemon` (D-75, D-76). It covers:
+   - local config, an allowlist of projects, and the local token;
+   - worktrees from an exact base commit, with every Git call run with hooks disabled;
+   - harnessd's commits as the agent, and teardown;
+   - setup commands approved with `harness approve` and run under `srt`;
+   - secret refs filtered through the local allowlist, and repo limits that can only lower local ones;
+   - port blocks, per-agent config dirs, orphans killed on start and their edits reconciled;
+   - heartbeats and presence events.
+   
+   Tested against real `srt` (each denial proven to come from a sandbox that ran) and end to end with the server and the CLI.
+   - **Left for later items:** acting on task assignments (item 9), and starting agent sessions, whose PIDs the orphan check uses (item 5).
 5. **`AgentAdapter` interface + `ClaudeAdapter`** (Agent SDK, TypeScript):
    - start, resume, `injectMessage` (streaming input: next tool boundary, or a new turn if idle; always `client_composed`; `command_lifecycle` receipts, D-63), stop, status (`session_state_changed`, D-67);
    - capability flags; usage reporting; a version check (D-49).

@@ -6,18 +6,19 @@ import { isDeepStrictEqual } from 'node:util';
 import type pg from 'pg';
 import type { Command } from '@harness/protocol';
 import { inTransaction, isUniqueViolation } from './db.ts';
-import { appendEvents } from './events.ts';
+import { appendEvents, notifyProject } from './events.ts';
 import { CommandError, type Actor, type Caller, type Handler } from './handler.ts';
 import { createAgent } from './agents.ts';
+import { reportSetup, reportWorktree } from './reports.ts';
 
 export { CommandError, type Caller } from './handler.ts';
-
-/** Postgres channel for the fan-out wake-up. Payload: a project id, never an event (D-11, F-54). */
-export const EVENTS_CHANNEL = 'harness_events';
+export { EVENTS_CHANNEL } from './events.ts';
 
 /** Command names are canonical in docs/protocol.md §4. Each arrives with its roadmap item. */
 const HANDLERS: Record<string, Handler> = {
   'agent.create': createAgent,
+  'worktree.report': reportWorktree,
+  'setup.report': reportSetup,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };
@@ -45,8 +46,7 @@ export async function executeCommand(pool: pg.Pool, caller: Caller, cmd: Command
         ...(actor.onBehalfOf ? { onBehalfOf: actor.onBehalfOf } : {}), ...(caller.deviceId ? { deviceId: caller.deviceId } : {}),
       })));
       await tx.query('UPDATE commands SET seqs = $2, result = $3 WHERE command_id = $1', [cmd.command_id, seqs, JSON.stringify(out.result ?? null)]);
-      // At most one NOTIFY per transaction, delivered at commit (F-55).
-      if (seqs.length) await tx.query('SELECT pg_notify($1, $2)', [EVENTS_CHANNEL, cmd.project_id]);
+      if (seqs.length) await notifyProject(tx, cmd.project_id);
       return { seqs, result: out.result ?? null, duplicate: false };
     });
   } catch (e) {

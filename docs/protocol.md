@@ -41,6 +41,10 @@
 { "v": 1, "type": "command_result", "command_id": "<uuid>", "ok": true, "seqs": [1241], "result": { … }, "duplicate": false }
 { "v": 1, "type": "command_result", "command_id": "<uuid>", "ok": false, "error": { "code": "forbidden", "message": "…" } }
 
+// harnessd only, every few seconds while connected (D-75). No reply. It keeps the device's presence;
+// the first heartbeat after a silence logs device.online, and 30 seconds without one logs device.offline.
+{ "v": 1, "type": "heartbeat" }
+
 // a connection-level problem; after unauthorized or unsupported_version the server closes the socket
 { "v": 1, "type": "error", "code": "bad_request" | "unsupported_version" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "internal", "message": "…" }
 ```
@@ -88,14 +92,14 @@
 |---|---|---|---|
 | `agent.created` | 0A | n/a | `agent_principals` |
 | `task.created`, `task.assigned`, `task.completed`, `task.abandoned` | 0A | n/a (`task.assigned` starts a session; `task.completed` stops it, D-54) | `tasks` |
-| `device.heartbeat`, `session.started`, `session.status` (presence), `session.ended` | 0A | n/a | `devices`, `agent_sessions` |
+| `device.online`, `device.offline` (a presence change only; heartbeats themselves log nothing, D-75), `session.started`, `session.status` (presence), `session.ended` | 0A | n/a | `device_presence`, `devices`, `agent_sessions` |
 | `worktree.created`, `worktree.removed` | 0A | n/a | n/a (log only) |
 | `claim.prospective`, `claim.observed`, `claim.cleared` | 0A | n/a | `claims` |
 | `overlap.detected` | 0A | `claim_conflict` (to both agents) | `messages` |
 | `message.sent`, `message.delivered` | 0A | the message's own kind | `messages` |
 | `budget.exceeded` | 0A | n/a (shown to the human) | `budgets` |
 | `usage.reported` | 0A | n/a | log only (A/B metric M8) |
-| `setup.approval_requested`, `setup.approved` | 0A | n/a (local human) | log only (D-52) |
+| `setup.approval_requested`, `setup.approved`, `setup.ran`, `setup.failed` | 0A | n/a (local human) | log only (D-52) |
 | `readset.added` | 0B | n/a | `read_entries` |
 | `notice.dependency_changed` (`stage: in_progress \| landed`) | 0B | `dependency_changed` | `messages` |
 | `worktree.synced`, `worktree.sync_conflict` | 0B | synced → the held `dependency_changed` (landed, with diff) is released; conflict → `task_blocked` to the agent + human | log only (D-53) |
@@ -115,9 +119,9 @@
 | `task.assign { task_id, assignee_agent_id }` | 0A | `harnessd` on the assignee's device starts a session (D-54) |
 | `task.complete { task_id, summary? }` | 0A | From the agent tool `report_done` or the CLI `harness task done` |
 | `task.abandon { task_id, reason }` | 0A | CLI `harness task abandon` |
-| `device.heartbeat { device_id }` | 0A | `harnessd` presence |
-| `worktree.report { task_id, event: created\|removed, path }` | 0A | `harnessd` → `worktree.*` events |
-| `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed }` | 0A | Local approvals happen at `harnessd`'s CLI prompt; this only records them (D-52) |
+| ~~`device.heartbeat { device_id }`~~ | 0A | Superseded by D-75: presence is the `heartbeat` message (§2), not a command |
+| `worktree.report { task_id, event: created\|removed, path, branch? }` | 0A | `harnessd` only (a device connection) → `worktree.*` events |
+| `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed, exit_code? }` | 0A | `harnessd` only. Local approvals happen through `harness approve`; this only records them (D-52) |
 | `session.report { session_id, status, vendor_session_id?, vendor_version?, usage? }` | 0A | `harnessd` → server: presence and usage |
 | `claim.observe { session_id, paths[], source: hook\|diff }` | 0A | `harnessd` reports observed edits |
 | `message.send { kind, to?, in_reply_to?, text?, data? }` | 0A | Typed kinds only (D-24). Budgets enforced server-side |
