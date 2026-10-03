@@ -123,7 +123,7 @@
 | `worktree.report { task_id, event: created\|removed, path, branch? }` | 0A | `harnessd` only (a device connection) → `worktree.*` events |
 | `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed, exit_code? }` | 0A | `harnessd` only. Local approvals happen through `harness approve`; this only records them (D-52) |
 | `session.report { session_id, status, task_id?, worktree?, branch?, vendor_session_id?, vendor_version?, usage?, reason? }` | 0A | `harnessd` → server: presence and usage (D-77). Sent `as_agent`, from the device. The first report creates the session (`task_id`, `worktree`, `branch` required; only the task's assignee) → `session.started`. A status change → `session.status`; `ended` → `session.ended`. `usage` = `{input, output, cache_read, cache_creation, cost_usd}`, the vendor's running totals → `usage.reported`. Vendor ids stay on the row |
-| `claim.observe { session_id, paths[], source: hook\|diff }` | 0A | `harnessd` reports observed edits |
+| `claim.observe { session_id, paths[], source: hook\|diff }` | 0A | `harnessd` reports observed edits, as the agent (D-79). `hook` adds claims; `diff` is the task's full set of changed files and also clears the rest. → `claim.observed { task_id, session_id, paths (new), source }`, `claim.cleared { task_id, claim_kind, paths }`, and for a new overlap `overlap.detected { overlap_id, level, paths, tasks, claim_kinds }` plus a `claim_conflict` `message.sent` to each agent involved |
 | `message.send { kind, to?, in_reply_to?, text, about_paths? }` | 0A | Typed kinds only (D-24): `question` (`to` = an agent's name or id) and `answer` (`in_reply_to` = a question asked of the sender; one answer each). Text ≤ 500 characters (Q-05). → `message.sent { message_id, kind, from, to, in_reply_to?, text, about_paths?, priority, from_task_id, to_task_id }` (D-78). Budgets are enforced server-side (item 8) |
 | `message.ack { message_id, delivered_at, delivery: between_tools\|new_turn\|stop_hook }` | 0A | Measures delivery latency and where messages landed (D-26) |
 | `sync.report { session_id, new_base_sha, event: synced\|conflict }` | 0B | `harnessd` → `worktree.synced` / `worktree.sync_conflict` (D-53) |
@@ -161,6 +161,7 @@ tasks(id, project_id, title, text, scope TEXT[] /* prefixes + exact files */, pr
 
 -- coordination
 claims(id, project_id, task_id, session_id NULL, kind /* prospective|observed */, path, created_at, cleared_at NULL)
+overlap_warnings(id, project_id, task_a, task_b, path, level /* prospective|observed */, detected_at)  -- one warning per pair and path (D-79)
 leases(id, project_id, task_id, path, token BIGINT, expires_at, released_at NULL)      -- 0B, hard claims
 read_entries(id, project_id, session_id, path, content_hash, source, confidence, range NULL,
              stale BOOLEAN DEFAULT false, observed_at)                                  -- 0B

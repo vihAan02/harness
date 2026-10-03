@@ -30,7 +30,7 @@ test('task.create: readable ids, normalized scope, and assignment in one step', 
   const id = (out.result as { task_id: string }).task_id;
   assert.match(id, /^T-\d+$/);
   const evs = await kinds(out.seqs);
-  assert.deepEqual(evs.map((e) => e.kind), ['task.created', 'task.assigned']);
+  assert.deepEqual(evs.map((e) => e.kind), ['task.created', 'task.assigned', 'claim.prospective']);
   assert.deepEqual(evs[0].data.scope, ['src/api/', 'src/types.ts']);
   const row = (await db.pool.query('SELECT status, assignee_agent_id, owner_human_id FROM tasks WHERE id = $1', [id])).rows[0];
   assert.deepEqual(row, { status: 'in_progress', assignee_agent_id: agentA, owner_human_id: 'human_test' });

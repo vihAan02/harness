@@ -43,6 +43,8 @@ Edits are easier to observe than reads because they leave a trace on disk. Two s
 
 An observed claim lasts until the task is done or landed, or until the file no longer differs from the merge base.
 
+*As built (0A, D-79):* harnessd reports hook edits at once and the worktree diff at every turn end and every 15 seconds.
+
 ### Overlap warnings (0A)
 - **When:** an agent's observed claim overlaps another active task's prospective or observed claim.
 - **What happens:**
@@ -50,6 +52,7 @@ An observed claim lasts until the task is done or landed, or until the file no l
   - Both agents get a `claim_conflict` message at their next safe boundary.
   - The human sees it in `harness status`.
 - **Prospective-only overlaps** (two task scopes overlapping) are reported to the human when the task is created, so they can fix the scopes before agents start. Agents aren't nagged about them.
+- **Once per pair and path** (D-79): a warning isn't repeated on every edit of the same file.
 
 ### Hard claims (0B)
 - **Lease:** `claim(paths, ttl)` returns a lease with an `expires_at` and a **fencing token** (a per-project counter that only goes up).

@@ -10,7 +10,7 @@ import { ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Obs
 import type { EventMessage } from '@harness/protocol';
 import { Approvals, setupHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
-import { commitAll, createWorktree, gitCommonDir, removeWorktree, TASK_ID } from './git.ts';
+import { changedPaths, commitAll, createWorktree, gitCommonDir, removeWorktree, TASK_ID } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink } from './link.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -32,6 +32,8 @@ export type RunningAgent = {
   sessionId: string; projectId: string; taskId: string; agent: AgentRef; workspace: TaskWorkspace;
   adapter: AgentAdapter; handle: SessionHandle; record: SessionRecord;
   lastUsage: Extract<Observation, { kind: 'usage' }> | null;
+  /** Observed-claim reconciliation (D-70): the last full set reported, and whether hooks reported since. */
+  diff: { last: string | null; hooksSince: boolean; running: Promise<void> | null; timer: NodeJS.Timeout | null }; // running: the queue of diffs
   done: Promise<void>;
 };
 export type DaemonOptions = {
@@ -39,6 +41,8 @@ export type DaemonOptions = {
   log?: (msg: string) => void; onEvent?: (e: EventMessage) => void;
   onObservation?: (run: RunningAgent, o: Observation) => void;
   heartbeatMs?: number; approvalPollMs?: number;
+  /** How often a running agent's worktree is diffed for edits the hooks missed (D-70). Default 15 s; also at every turn end. */
+  diffIntervalMs?: number;
   /** The vendor credential. Default: ANTHROPIC_API_KEY from harnessd's environment, passed through untouched (D-48, D-56). */
   auth?: Auth;
   adapters?: Record<string, AgentAdapter>;
@@ -190,9 +194,11 @@ export class Daemon {
     };
     const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });
     const run: RunningAgent = {
-      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, done: Promise.resolve(),
+      sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null,
+      diff: { last: null, hooksSince: false, running: null, timer: null }, done: Promise.resolve(),
     };
     this.running.set(ws.taskId, run);
+    run.diff.timer = setInterval(() => void this.reconcile(run), this.o.diffIntervalMs ?? 15_000);
     run.done = this.watch(run);
     return run;
   }
@@ -229,7 +235,32 @@ export class Daemon {
       }
       this.o.onObservation?.(run, o);
     }
+    clearInterval(run.diff.timer ?? undefined);
+    await run.diff.running;
     this.running.delete(run.taskId);
+  }
+
+  /**
+   * Reports the task's full set of changed files, from Git: what it changed since the merge base, plus
+   * everything uncommitted (D-70). Catches background writes and edits whose hook failed open. Sent only
+   * when the set changed, or hooks reported something since the last one.
+   */
+  reconcile(run: RunningAgent): Promise<void> {
+    const next = (run.diff.running ?? Promise.resolve()).then(async () => {
+      try {
+        const paths = await changedPaths(run.workspace.worktree, this.project(run.projectId).baseBranch);
+        const key = paths.join('\n');
+        if (key === run.diff.last && !run.diff.hooksSince) return;
+        run.diff.hooksSince = false;
+        await this.report(run.projectId, 'claim.observe', { session_id: run.sessionId, paths, source: 'diff' }, run.agent.id);
+        run.diff.last = key;
+      } catch (e) {
+        this.log(`${run.agent.name} (${run.taskId}): worktree diff failed: ${(e as Error).message}`);
+      }
+    });
+    run.diff.running = next;
+    void next.finally(() => { if (run.diff.running === next) run.diff.running = null; });
+    return next;
   }
 
   async observe(run: RunningAgent, o: Observation): Promise<void> {
@@ -252,7 +283,15 @@ export class Daemon {
       case 'usage':
         run.lastUsage = o;
         break;
+      case 'edit.observed':
+        if (o.outside.length) this.log(`${run.agent.name} (${run.taskId}): edit outside its worktree reported: ${o.outside.join(', ')}`);
+        if (o.paths.length) {
+          run.diff.hooksSince = true;
+          await this.report(run.projectId, 'claim.observe', { session_id: run.sessionId, paths: o.paths, source: 'hook' }, run.agent.id);
+        }
+        break;
       case 'turn.ended':
+        await this.reconcile(run);
         if (run.lastUsage) {
           const u = run.lastUsage;
           await report({

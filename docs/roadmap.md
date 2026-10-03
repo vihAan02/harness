@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 6 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77) and the tool shim (D-78). Next: item 7.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 7 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78) and claims (D-79). Next: item 8.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -121,6 +121,8 @@
    - prospective claims from task scope;
    - observed claims from edit hooks plus periodic worktree diffs, which catch background writes the hooks miss (D-70);
    - overlap detection → `overlap.detected` → `claim_conflict` messages.
+   
+   **Done 2026-10-03** (D-79): scope claims at task creation, with scope overlaps reported to the human; observed claims from hooks and from a worktree diff at each turn end and every 15 seconds; one warning per pair of tasks and path, as a high-priority `claim_conflict` to both agents. Tested end to end with two live agents, including a background write that only the diff caught (and that's missed when the diff timer is off).
 8. **Typed messages:**
    - `question` / `answer` / `claim_conflict` routing;
    - the envelope (D-25; [protocol.md §8](protocol.md#8-peer-message-envelope));

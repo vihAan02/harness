@@ -1,5 +1,6 @@
 // The task lifecycle (D-54; protocol.md §4). Humans write and assign tasks (D-08, principle 9); the
 // assignee agent or a human marks one done. open → in_progress (assigned) → done → landed (0B), or abandoned.
+import { claimScope, clearTaskClaims } from './claims.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 
 export const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/; // T-1, T-2, … from task.create
@@ -69,7 +70,10 @@ export async function createTask(ctx: HandlerContext, args: Record<string, unkno
     { kind: 'task.created', data: { task_id: id, title, text: body, scope, priority, owner_human_id: ctx.caller.principal } },
   ];
   if (assignee) events.push({ kind: 'task.assigned', data: { task_id: id, assignee_agent_id: assignee } });
-  return { result: { task_id: id }, events };
+  // Prospective claims, and any overlap of this scope with other tasks' claims, for the human to fix now (coordination §1).
+  const claimed = await claimScope(ctx, id, scope);
+  events.push(...claimed.events);
+  return { result: { task_id: id, overlaps: claimed.overlaps }, events };
 }
 
 /** `task.assign { task_id, assignee_agent_id }` → `task.assigned`. harnessd on the assignee's device starts a session (D-54). */
@@ -91,7 +95,7 @@ export async function completeTask(ctx: HandlerContext, args: Record<string, unk
   await ctx.tx.query("UPDATE tasks SET status = 'done', summary = $2, completed_at = now() WHERE id = $1", [task.id, summary ?? null]);
   return {
     result: null,
-    events: [{ kind: 'task.completed', data: { task_id: task.id, ...(summary ? { summary } : {}), by: ctx.actor.principal } }],
+    events: [{ kind: 'task.completed', data: { task_id: task.id, ...(summary ? { summary } : {}), by: ctx.actor.principal } }, ...await clearTaskClaims(ctx, task.id)],
   };
 }
 
@@ -102,5 +106,5 @@ export async function abandonTask(ctx: HandlerContext, args: Record<string, unkn
   const reason = text(args.reason, 'reason', 500)!;
   if (task.status === 'landed' || task.status === 'abandoned') throw new CommandError('conflict', `${task.id} is already ${task.status}`);
   await ctx.tx.query("UPDATE tasks SET status = 'abandoned', completed_at = now() WHERE id = $1", [task.id]);
-  return { result: null, events: [{ kind: 'task.abandoned', data: { task_id: task.id, reason } }] };
+  return { result: null, events: [{ kind: 'task.abandoned', data: { task_id: task.id, reason } }, ...await clearTaskClaims(ctx, task.id)] };
 }

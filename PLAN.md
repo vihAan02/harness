@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 6 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77) and the agent-facing tool shim (D-78).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A approved (D-59).** The adapter spike is done ([results](docs/research/spike-0a.md)); the owner accepted it and its decisions D-60 to D-70 (D-71). **0A items 1 to 7 are built:** the repo skeleton (`packages/`, D-72), data model v0 on Postgres (D-73), the coordination server v0 (D-74), `harnessd` v0 (D-75, D-76) `AgentAdapter` + `ClaudeAdapter` (D-77), the agent-facing tool shim (D-78) and soft claims with overlap warnings (D-79).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0A item 5, `AgentAdapter` + `ClaudeAdapter`. Real-model checks wait for an API key ([Q-18](docs/open-questions.md#q-18)).
 >
@@ -693,6 +693,16 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - `ask`, `answer` and `report_done` return the command's outcome, or its error, as the tool result;
     - a tool waits up to 15 seconds for the server, then tells the agent the command is queued, since harnessd resends it on reconnect (idempotent, D-74).
   - *Source:* 0A item 6. *Status:* Proposal.
+- **D-79 How soft claims and overlap warnings work (0A item 7).** Follows coordination.md §1.
+  - **Prospective claims** are the task's scope, recorded at `task.create`. If the scope overlaps another active task's prospective or observed claims, the human is told in the command's result and the log (`overlap.detected`, level `prospective`); agents aren't.
+  - **Observed claims** come from `claim.observe`, which harnessd sends as the agent:
+    - **from hooks** (`source: hook`) as each edit lands; these only add claims;
+    - **from Git** (`source: diff`): the task's full set of changed files, at every turn end and every 15 seconds. It also clears claims on files that no longer differ (D-70). harnessd sends one only when the set changed or hooks reported since the last.
+  - **An overlap is warned about once per pair of tasks and path** (`overlap_warnings`), when a new observed claim overlaps another active task's claim:
+    - an `overlap.detected` event (level `observed`), naming which kinds of claim it hit;
+    - a high-priority `claim_conflict` message from `harness` to each agent that has the task, phrased as a fact (F-10), e.g. "src/types.ts: agent/backend (task T-1) is also changing this file." Delivery is item 8.
+  - **Claims end with the task** (`task.completed` or `task.abandoned` clear them), and reports for a finished task are ignored.
+  - *Source:* 0A item 7. *Status:* Proposal.
 
 ## 8. Hypotheses (what we're testing, not assuming)
 
@@ -793,7 +803,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 4, `harnessd` v0.~~ **Done 2026-10-02:** `packages/daemon`, run with `npm run daemon`, and `harness approve` (D-75; D-76 Proposal).
    - ~~Item 5, `AgentAdapter` + `ClaudeAdapter`.~~ **Done 2026-10-03:** `packages/adapters`, and harnessd runs agent sessions through it (D-77, Proposal).
    - ~~Item 6, the agent-facing tool shim.~~ **Done 2026-10-03:** `harness_status`, `ask`, `answer`, `report_done`, plus the task commands and `message.send` they map onto (D-78, Proposal).
-   - **Next:** item 7, claims ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
+   - ~~Item 7, claims.~~ **Done 2026-10-03:** prospective and observed claims, overlap warnings and `claim_conflict` messages (D-79, Proposal).
+   - **Next:** item 8, typed message delivery ([roadmap](docs/roadmap.md#phase-0a-prove-the-core-coordination-loop)).
    - Budgets ([Q-05](docs/open-questions.md#q-05)): the proposal is the default unless the owner objects.
    - Build the purpose-built benchmark repo (D-58; roadmap 0A item 10).
 5. **During 0B:** scenarios, baseline recorder, playbook and rubric are built.

@@ -1,0 +1,61 @@
+// Claims end to end (0A item 7): two live agents on one machine. The harness sees what each is changing,
+// from hooks and from worktree diffs, and warns both when one edits the other's territory.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { startStack, steps, type Stack } from './support.ts';
+
+let s: Stack;
+before(async () => {
+  s = await startStack({
+    files: { 'src/types.ts': 'export type User = { id: string };\n', 'src/api/login.ts': 'export {}\n', 'src/web/Login.tsx': 'export {}\n' },
+    daemonOptions: { diffIntervalMs: 300 },
+  });
+});
+after(async () => { await s?.stop(); });
+
+test('observed claims, an overlap warning to both agents, and a background write only the diff catches', async () => {
+  const backend = (await s.command('agent.create', { name: 'agent/backend', vendor: 'claude' })).agent_id!;
+  const frontend = (await s.command('agent.create', { name: 'agent/frontend', vendor: 'claude' })).agent_id!;
+  const tApi = (await s.command('task.create', { title: 'Login API', text: 'x', scope: ['src/api/', 'src/types.ts'], assignee_agent_id: backend })).task_id!;
+  const tWeb = (await s.command('task.create', { title: 'Login page', text: 'x', scope: ['src/web/'], assignee_agent_id: frontend })).task_id!;
+  const start = async (agentId: string, name: string, taskId: string, scope: string[], script: (wt: string) => string) => {
+    const ws = await s.daemon.prepareTask({ projectId: s.project, taskId, baseSha: s.sha, agentId });
+    return s.daemon.startAgent(ws, { id: agentId, name, vendor: 'claude' }, { id: taskId, title: name, ownerHumanId: 'human_test', scope, text: script(ws.worktree) });
+  };
+  const turnEnded = (run: { sessionId: string }) => s.until(() => s.observed.some((x) => x.run.sessionId === run.sessionId && x.o.kind === 'turn.ended'));
+
+  const api = await start(backend, 'agent/backend', tApi, ['src/api/', 'src/types.ts'], (wt) => steps(
+    `Write {"file_path":"${wt}/src/types.ts","content":"export type User = { id: string; token: string };\\n"}`,
+    `Edit {"file_path":"${wt}/src/api/login.ts","old_string":"export {}","new_string":"export const login = 1;"}`,
+    'TEXT done'));
+  await turnEnded(api);
+  const web = await start(frontend, 'agent/frontend', tWeb, ['src/web/'], (wt) => steps(
+    `Write {"file_path":"${wt}/src/web/Login.tsx","content":"export const Login = 1;\\n"}`,
+    `Bash {"command":"echo '// local tweak' >> src/types.ts"}`,
+    'Bash {"command":"(sleep 1; echo generated > src/web/generated.ts) > /dev/null 2>&1 &"}',
+    'TEXT done'));
+  await turnEnded(web);
+
+  const view = s.daemon.view(s.project);
+  await s.until(() => view.claims.get(tWeb)?.observed.has('src/web/generated.ts') === true, 15_000, 'the diff to catch the background write');
+  assert.deepEqual([...view.claims.get(tApi)!.observed].sort(), ['src/api/login.ts', 'src/types.ts']);
+  assert.deepEqual([...view.claims.get(tWeb)!.observed].sort(), ['src/types.ts', 'src/web/Login.tsx', 'src/web/generated.ts']);
+
+  // The hooks saw both foreground edits, the Bash one through bashEditDiff (F-07). The background write
+  // came after its command returned, so no hook ever saw it; only a worktree diff did (SP-03, D-70).
+  const hookSaw = s.observed.filter((x) => x.run.sessionId === web.sessionId && x.o.kind === 'edit.observed')
+    .flatMap((x) => (x.o as { paths: string[] }).paths).sort();
+  assert.deepEqual(hookSaw, ['src/types.ts', 'src/web/Login.tsx']);
+  const generatedVia = view.events.filter((e) => e.kind === 'claim.observed' && (e.data as { paths: string[] }).paths.includes('src/web/generated.ts'))
+    .map((e) => (e.data as { source: string }).source);
+  assert.deepEqual(generatedVia, ['diff']);
+
+  // One overlap, src/types.ts, and a high-priority claim_conflict to each agent.
+  const overlap = view.overlaps.filter((o) => o.level === 'observed');
+  assert.deepEqual(overlap.map((o) => [o.paths, o.tasks]), [[['src/types.ts'], [tWeb, tApi]]]);
+  const conflicts = [...view.messages.values()].filter((m) => m.kind === 'claim_conflict');
+  assert.deepEqual(conflicts.map((m) => [view.agentName(m.to), m.priority, m.from]).sort(), [['agent/backend', 'high', 'harness'], ['agent/frontend', 'high', 'harness']]);
+  assert.match(conflicts.find((m) => m.to === frontend)!.text, /src\/types\.ts: agent\/backend \(task T-\d+\) is also changing this file\./);
+
+  await Promise.all([s.daemon.stopAgent(tApi), s.daemon.stopAgent(tWeb)]);
+});

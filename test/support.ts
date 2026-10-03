@@ -3,7 +3,7 @@
 // for the model (so no API key is needed, D-56). The daemon and server packages may not import each
 // other, so this lives outside both.
 import { randomUUID } from 'node:crypto';
-import { Daemon, type RunningAgent } from '../packages/daemon/src/daemon.ts';
+import { Daemon, type DaemonOptions, type RunningAgent } from '../packages/daemon/src/daemon.ts';
 import { parseConfig } from '../packages/daemon/src/config.ts';
 import { makeRepo, tempDir, tempHome, TOKEN } from '../packages/daemon/test/fixtures.ts';
 import type { Home } from '../packages/daemon/src/home.ts';
@@ -16,7 +16,7 @@ import type { EventMessage } from '../packages/protocol/src/index.ts';
 
 export type Stack = Awaited<ReturnType<typeof startStack>>;
 
-export async function startStack(p: { files: Record<string, string>; portRange?: [number, number]; daemon?: boolean }) {
+export async function startStack(p: { files: Record<string, string>; portRange?: [number, number]; daemon?: boolean; daemonOptions?: Partial<DaemonOptions> }) {
   const db = await freshSchema();
   const project = await seedProject(db.pool);
   await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_test', 'human_test', 'laptop')");
@@ -58,6 +58,7 @@ export async function startStack(p: { files: Record<string, string>; portRange?:
     onObservation: (run, o) => observed.push({ run, o, t: Date.now() }),
     onEvent: (e) => acted.push(e),
     log: (m) => logs.push(m),
+    ...p.daemonOptions,
   });
   if (p.daemon !== false) {
     await daemon.start();
