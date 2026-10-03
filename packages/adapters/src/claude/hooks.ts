@@ -80,15 +80,22 @@ export function readsOf(input: ToolHookInput, worktree: string): { reads: Observ
       for (const f of out.filenames.slice(0, MAX_HITS)) if (typeof f === 'string') found.push({ p: f });
     } else if (typeof out.content === 'string') {
       const seen = new Set<string>();
+      const searchDir = target ? path.resolve(worktree, target) : worktree;
       for (const line of out.content.split('\n')) {
-        // "path:12:text", "path-12-context" or "path:3" (count): the longest prefix that names a real file.
-        const m = line.match(/^(.+?)[:-]\d+(?:[:-]|$)/) ?? line.match(/^(.+):\d+$/);
-        if (!m || seen.has(m[1]!)) continue;
-        const base = target ? path.resolve(worktree, target) : worktree;
-        const candidate = path.isAbsolute(m[1]!) ? m[1]! : path.resolve(base, m[1]!);
-        if (!isFileIn(worktree, candidate)) continue;
-        seen.add(m[1]!);
-        found.push({ p: candidate });
+        // "path:12:text", "path-12-context" or "path:3" (count). A file name can itself contain "-12-", so try
+        // every split point, longest prefix first, and keep the one that names a real file (relative to the
+        // working directory, or to the searched directory).
+        const cuts: string[] = [];
+        for (const m of line.matchAll(/[:-]\d+(?=[:-]|$)/g)) cuts.push(line.slice(0, m.index));
+        let hit: string | null = null;
+        for (const prefix of cuts.reverse()) {
+          if (!prefix) continue;
+          if (seen.has(prefix)) break; // this file is already recorded
+          const candidates = path.isAbsolute(prefix) ? [prefix] : [path.resolve(worktree, prefix), path.resolve(searchDir, prefix)];
+          const real = candidates.find((c) => isFileIn(worktree, c));
+          if (real) { seen.add(prefix); hit = real; break; }
+        }
+        if (hit) found.push({ p: hit });
         if (seen.size >= MAX_HITS) break;
       }
     }

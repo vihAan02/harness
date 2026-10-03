@@ -111,6 +111,11 @@ test('PostToolUse: every call it sees is reported for the missed-hook monitor, a
     ['g2', [['src/c.ts', 'search_hit', 'medium', null, null]], []],
   ], 'Glob names files without reading them; text that isn\'t a real file is dropped');
   assert.deepEqual(seen.filter((o) => o.kind === 'shell.ran'), [{ kind: 'shell.ran', toolUseId: 'b1', command: 'cat src/a.ts' }]);
+  // File names with -digits- in them, and content paths relative to the working directory when a path was searched.
+  fs.writeFileSync(path.join(wt, 'src/file-2-x.ts'), 'x\n');
+  seen.length = 0;
+  await post({ tool_name: 'Grep', tool_use_id: 'g3', tool_input: { pattern: 'x', path: 'src', output_mode: 'content' }, tool_response: { mode: 'content', filenames: [], content: 'src/file-2-x.ts:1:x\nsrc/b.ts:1:x' } } as never, undefined, opts);
+  assert.deepEqual(seen.filter((o) => o.kind === 'read.observed').flatMap((o) => o.reads.map((r) => r.path)), ['src/file-2-x.ts', 'src/b.ts']);
   fs.rmSync(wt, { recursive: true, force: true });
 });
 
