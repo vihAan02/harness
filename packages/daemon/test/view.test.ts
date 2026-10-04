@@ -74,3 +74,22 @@ test('leases fold from lease.* events; only unreleased, unexpired ones are curre
   assert.deepEqual(v.currentLeases('T-2', 50_000).map((l) => l.id), ['ls_4']);
   assert.equal(v.leases.size, 4);
 });
+
+test('waits fold from wait.* events; a task has at most one open wait (D-95)', () => {
+  seq = 0;
+  const v = new ProjectView('prj');
+  for (const e of [
+    ev('wait.started', { wait_id: 'wait_1', task_id: 'T-1', session_id: 's1', agent_id: 'agent_b', on: { kind: 'answer', id: 'msg_q' }, timeout_at: '2026-10-03T12:10:00.000Z' }),
+    ev('wait.resolved', { wait_id: 'wait_1', task_id: 'T-1', agent_id: 'agent_b', on: { kind: 'answer', id: 'msg_q' }, result: { answer_id: 'msg_a' } }),
+    ev('wait.started', { wait_id: 'wait_2', task_id: 'T-1', session_id: 's1', agent_id: 'agent_b', on: { kind: 'task', id: 'T-2' }, timeout_at: '2026-10-03T12:20:00.000Z' }),
+    ev('wait.started', { wait_id: 'wait_3', task_id: 'T-3', session_id: 's3', agent_id: 'agent_f', on: { kind: 'lease', id: 'ls_1' }, timeout_at: '2026-10-03T12:20:00.000Z' }),
+    ev('wait.cancelled', { wait_id: 'wait_3', task_id: 'T-3', agent_id: 'agent_f', on: { kind: 'lease', id: 'ls_1' }, reason: 'task_abandoned' }),
+    ev('wait.timed_out', { wait_id: 'wait_unknown', task_id: 'T-9' }), // never started in this view: ignored
+  ]) v.apply(e);
+  assert.deepEqual([v.waits.get('wait_1')!.outcome, v.waits.get('wait_1')!.result], ['resolved', { answer_id: 'msg_a' }]);
+  assert.deepEqual(v.openWait('T-1')?.id, 'wait_2');
+  assert.deepEqual(v.openWait('T-1')?.on, { kind: 'task', id: 'T-2' });
+  assert.deepEqual([v.waits.get('wait_3')!.outcome, v.waits.get('wait_3')!.reason], ['cancelled', 'task_abandoned']);
+  assert.equal(v.openWait('T-3'), undefined);
+  assert.equal(v.waits.size, 3);
+});

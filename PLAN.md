@@ -897,6 +897,23 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - *Source:* S10. *Status:* Locked.
 
 ### Stream A decisions (Daniyal; D-95 to D-119)
+- **D-95 `wait_for` ends the turn; its outcome is pushed as a new turn (0B item 4; decides D-27's mechanism).**
+  - **Mechanism:**
+    - `wait_for(on, timeout_s?)` records a wait (`wait.start`) and returns at once; the agent ends its turn;
+    - when the wait settles, harnessd pushes its outcome to the agent as a new turn;
+    - the Stop gate (item 3) keeps a turn open while an outcome is unread.
+  - **Why not a blocking tool call:**
+    - it would hold the turn open for up to the timeout, and the turn-end sync (D-53) would never run meanwhile;
+    - an SDK tool call that outlives harnessd has nobody to answer it;
+    - a pushed turn needs no new vendor behaviour (D-26, `injectMessage`).
+  - **Contract** ([protocol.md](docs/protocol.md) §3/§4):
+    - **Targets:** an answer to a question the agent asked, another task finishing, or a lease freeing up;
+    - **Timeout:** 10 to 3,600 seconds (default 600), on the server's clock;
+    - **One open wait per task;**
+    - **Settling:** a wait already satisfied resolves at once; otherwise a server sweep about every second settles each open wait exactly once;
+    - **Outcomes:** resolved, timed out (also a `task_blocked` to the task's owner, coordination §5), or cancelled when the waiting task ends first.
+  - **Not in 0B:** wait-for cycle detection (Phase 1, D-27); timeouts are the backstop.
+  - *Source:* 0B item 4, D-27, S10. *Status:* Proposal.
 - **D-97 The lease contract (0B item 5; D-20, D-21, D-89).** It's the interface stream B builds against; the details are in [protocol.md](docs/protocol.md) §3, §4 and §6.
   - **Granting:**
     - one lease per path (a folder prefix ending in `/` or an exact file, D-21), each with its own fencing token from `projects.next_fencing_token`;
