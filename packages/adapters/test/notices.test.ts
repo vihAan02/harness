@@ -29,6 +29,8 @@ after(async () => {
 
 const human = (id: string, text: string) => ({ id, origin: 'human' as const, text });
 const notice = (id: string, body = '') => ({ id, origin: 'coordinator' as const, text: `[harness notice] ${id} ${body}`.trimEnd() });
+/** A notice exactly `n` characters long. */
+const sized = (id: string, n: number) => ({ id, origin: 'coordinator' as const, text: `[harness notice] ${id} `.padEnd(n, 'x') });
 const textOf = (content: unknown): string =>
   typeof content === 'string' ? content : (content as { type: string; text?: string; content?: unknown }[]).map((b) => b.text ?? (b.content === undefined ? '' : textOf(b.content))).join('\n');
 /** The messages after the model's last turn in a request: the tool results, and what came with them. */
@@ -74,6 +76,42 @@ test('queued notices ride the next tool batch, oldest first, as many as fit in 1
   await adapter.stopSession(h, 'graceful');
 });
 
+test('the cap is exact: a notice of 10,000 characters arrives whole, and two that pass it only with the separator go separately (F-106)', async () => {
+  bodies = [];
+  const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"sleep 2; echo b1"}', 'Bash {"command":"echo b2"}', 'Bash {"command":"echo b3"}', 'TEXT done')));
+  const c = collect(adapter.observations(h));
+  await c.until((o) => o.kind === 'tool.called');
+  const [exact, a, b] = [sized('exact', NOTICE_CONTEXT_CAP), sized('a', 4999), sized('b', 5001)];
+  assert.equal(a.text.length + b.text.length, NOTICE_CONTEXT_CAP, 'they fit together only without the separator');
+  const receipts = await settle(Promise.all([exact, a, b].map((n) => adapter.queueNotice(h, n))));
+  assert.deepEqual(receipts.map((r) => r.landed), ['between_tools', 'between_tools', 'between_tools']);
+  await c.turns(1);
+  assert.equal(after_('b1').system.split('\n')[0], `PostToolBatch hook additional context: ${exact.text}`, 'whole, and alone');
+  assert.equal(after_('b2').system.split('\n')[0], `PostToolBatch hook additional context: ${a.text}`);
+  assert.equal(after_('b3').system.split('\n')[0], `PostToolBatch hook additional context: ${b.text}`);
+  const all = JSON.stringify(bodies);
+  assert.ok(!all.includes('persisted-output') && !all.includes('Output too large'), 'the CLI never had to cut one short');
+  await adapter.stopSession(h, 'graceful');
+});
+
+test('a message injected after a queued notice never overtakes it', async () => {
+  bodies = [];
+  const h = await adapter.startSession(f.spec(), human('m1', '#SLOW 2000\n#STEP TEXT first answer'));
+  const c = collect(adapter.observations(h));
+  await c.until((o) => o.kind === 'turn.started');
+  await new Promise((r) => setTimeout(r, 300)); // the model is answering, and calls no more tools
+  const queued = adapter.queueNotice(h, notice('n1'));
+  const m2 = adapter.injectMessage(h, human('m2', '[harness message] m2\n#STEP TEXT second answer'));
+  const [r1, r2] = await settle(Promise.all([queued, m2]));
+  assert.ok(r1.deliveredAt <= r2.deliveredAt);
+  await c.turns(1);
+  await c.until(() => bodies.some((b) => JSON.stringify(b).includes('second answer')));
+  const first = bodies.find((b) => JSON.stringify(b).includes('[harness message] m2'))!;
+  const text = JSON.stringify(first);
+  assert.ok(text.includes('[harness notice] n1') && text.indexOf('[harness notice] n1') < text.indexOf('[harness message] m2'), 'the notice went first, in the same request');
+  await adapter.stopSession(h, 'graceful');
+});
+
 test('a notice is injected instead when it is too long to attach, the session is idle, or the turn ends first; one replaced while queued is withdrawn', async () => {
   bodies = [];
   const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"sleep 2; echo one"}', 'TEXT done')));
@@ -103,6 +141,10 @@ test('a notice is injected instead when it is too long to attach, the session is
   const late = await settle(adapter.queueNotice(h, notice('late', '\n#STEP TEXT ok-late')));
   assert.equal(late.landed, 'new_turn');
   await c.turns(4);
+  // The notice opened the next turn at once: harnessd never saw the session idle in between.
+  const ends = c.seen.filter((o) => o.kind === 'turn.ended' || (o.kind === 'status' && o.status === 'idle'));
+  const firstEnd = ends.findIndex((o) => o.kind === 'turn.ended');
+  assert.deepEqual(ends.slice(firstEnd).map((o) => o.kind === 'status' ? 'idle' : 'end'), ['end', 'idle', 'end', 'idle', 'end', 'end', 'idle']);
   const last = tail(bodies.at(-1)!);
   assert.ok(last.user.includes('[harness notice] late'), 'injected as a message');
 

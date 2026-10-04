@@ -127,13 +127,16 @@ export class ClaudeSession implements SessionHandle {
     this.emit({ kind: 'status', status: s });
   }
 
-  /** D-63: always verbatim (no @path expansion, no slash commands); origin is host metadata only. */
-  inject(msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {
+  /**
+   * D-63: always verbatim (no @path expansion, no slash commands); origin is host metadata only. `statusAtPush`
+   * overrides the status a receipt is classified by: a notice flushed at turn end opens the next turn.
+   */
+  inject(msg: EnvelopedMessage, from?: string, statusAtPush: SessionStatus = this.status): Promise<DeliveryReceipt> {
     if (this.status === 'ended') return Promise.reject(new Error(`session ${this.id} has ended`));
     const uuid = randomUUID();
     const origin = msg.origin === 'human' ? { kind: 'human' as const } : { kind: 'peer' as const, from: from ?? (msg.origin === 'coordinator' ? 'harness' : 'peer') };
     const receipt = new Promise<DeliveryReceipt>((resolve, reject) => {
-      this.pending.set(uuid, { messageId: msg.id, pushedAt: Date.now(), statusAtPush: this.status, resolve, reject });
+      this.pending.set(uuid, { messageId: msg.id, pushedAt: Date.now(), statusAtPush, resolve, reject });
     });
     this.input.push({
       type: 'user', message: { role: 'user', content: msg.text }, parent_tool_use_id: null, uuid,
@@ -145,7 +148,7 @@ export class ClaudeSession implements SessionHandle {
   /** D-99: attached after the next tool batch while a turn runs; otherwise, or if too long to attach whole, injected. */
   queueNotice(msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {
     if (this.status === 'ended') return Promise.reject(new Error(`session ${this.id} has ended`));
-    if ((this.status !== 'working' && this.status !== 'waiting') || msg.text.length > NOTICE_CONTEXT_CAP) return this.inject(msg, from);
+    if ((this.status !== 'working' && this.status !== 'waiting') || msg.text.length > NOTICE_CONTEXT_CAP) return this.send(msg, from);
     return new Promise((resolve, reject) => { this.notices.push({ msg, ...(from ? { from } : {}), resolve, reject }); });
   }
 
@@ -175,9 +178,18 @@ export class ClaudeSession implements SessionHandle {
     return true;
   }
 
-  /** At turn end, notices no tool batch took are injected, and open a new turn (D-99). */
-  flushNotices(): void {
-    for (const n of this.notices.splice(0)) this.inject(n.msg, n.from).then(n.resolve, n.reject);
+  /**
+   * Queued notices go out as messages, oldest first (D-99): at turn end, where they open the next turn, or
+   * just before another message is injected, so a later message never overtakes them.
+   */
+  flushNotices(atTurnEnd: boolean): void {
+    for (const n of this.notices.splice(0)) this.inject(n.msg, n.from, atTurnEnd ? 'idle' : this.status).then(n.resolve, n.reject);
+  }
+
+  /** Injects a message behind any queued notices. */
+  send(msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {
+    this.flushNotices(false);
+    return this.inject(msg, from);
   }
 
   async stop(mode: 'graceful' | 'kill'): Promise<void> {
@@ -248,9 +260,16 @@ export class ClaudeSession implements SessionHandle {
             kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true,
             denied: denials.length, deniedIds: denials.map((d) => String(d.tool_use_id ?? '')).filter(Boolean),
           });
-          this.setStatus(r?.is_error === true ? 'errored' : 'idle');
+          if (this.notices.length && r?.is_error !== true) {
+            // Notices no tool batch took open the next turn at once: harnessd never sees the session idle in
+            // between, as with a message the CLI chains itself (D-99).
+            this.flushNotices(true);
+            this.emit({ kind: 'turn.started' });
+          } else {
+            this.setStatus(r?.is_error === true ? 'errored' : 'idle');
+            this.flushNotices(true);
+          }
         } else if (this.status === 'starting') this.setStatus('idle');
-        this.flushNotices();
       } else if (m.state === 'requires_action') {
         this.setStatus('waiting');
       }
@@ -377,7 +396,7 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
   }
 
   injectMessage(h: SessionHandle, msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {
-    return this.session(h).inject(msg, from);
+    return this.session(h).send(msg, from);
   }
 
   queueNotice(h: SessionHandle, msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {

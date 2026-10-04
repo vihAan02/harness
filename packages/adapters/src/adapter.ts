@@ -148,9 +148,11 @@ export interface AgentAdapter<PolicyBundle = unknown, HookBundle = unknown> {
   injectMessage(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
   /**
    * A high-priority harness notice (coordination.md §3), attached to the agent's context at the vendor's
-   * earliest point: after its next batch of tool calls while a turn runs (`between_tools`). If the session
-   * isn't in a turn, the turn ends first, or the notice is too long to attach, it's injected like any
-   * message (`new_turn`). Never a landed notice, which waits for the sync (D-53, D-99).
+   * earliest point: after its next batch of tool calls while a turn runs (`between_tools`). A notice too
+   * long to attach, or for a session that isn't in a turn, is injected like any message and lands where
+   * injection lands. One still queued when the turn ends opens the next turn (`new_turn`), and one queued
+   * before another message is injected goes out ahead of it. Never a landed notice, which waits for the
+   * sync (D-53, D-99).
    */
   queueNotice(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
   /** Takes back a queued notice not delivered yet, because a newer one replaced it; its receipt rejects. True if it was still queued. */

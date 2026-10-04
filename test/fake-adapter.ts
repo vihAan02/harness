@@ -29,12 +29,17 @@ export class FakeSession implements SessionHandle {
   }
   emit(o: Observation): void { this.out.push(o); }
   startTurn(): void { this.status = 'working'; this.emit({ kind: 'status', status: 'working' }); }
-  /** Turn end: notices no tool batch took are injected, as the real adapter does (D-99). */
+  /** Turn end. Notices no tool batch took open the next turn at once, as with the real adapter: no idle in between (D-99). */
   endTurn(): void {
-    this.status = 'idle';
+    const next = this.notices.length > 0;
+    if (!next) this.status = 'idle';
     this.emit({ kind: 'turn.ended', reason: 'completed', isError: false, denied: 0, deniedIds: [] });
+    if (next) return this.flushNotices(true);
     this.emit({ kind: 'status', status: 'idle' });
-    for (const n of this.notices.splice(0)) n.resolve(this.inject(n.msg));
+  }
+  /** Queued notices go out as messages: at turn end, or ahead of a message injected after them. */
+  flushNotices(atTurnEnd: boolean): void {
+    for (const n of this.notices.splice(0)) n.resolve(this.inject(n.msg, atTurnEnd ? 'idle' : this.status));
   }
   /** A batch of tool calls finished: the queued notices are attached to its results. */
   toolBatch(): void {
@@ -43,9 +48,9 @@ export class FakeSession implements SessionHandle {
       n.resolve({ messageId: n.msg.id, landed: 'between_tools', deliveredAt: Date.now() });
     }
   }
-  inject(msg: EnvelopedMessage): DeliveryReceipt {
-    this.injected.push({ id: msg.id, text: msg.text, hold: this.hold, status: this.status, at: Date.now() });
-    return { messageId: msg.id, landed: this.status === 'working' ? 'between_tools' : 'new_turn', deliveredAt: Date.now() };
+  inject(msg: EnvelopedMessage, status: SessionStatus = this.status): DeliveryReceipt {
+    this.injected.push({ id: msg.id, text: msg.text, hold: this.hold, status, at: Date.now() });
+    return { messageId: msg.id, landed: status === 'working' ? 'between_tools' : 'new_turn', deliveredAt: Date.now() };
   }
   /** A tool call the hooks saw, with what it read. */
   read(paths: string[]): void {
@@ -81,6 +86,7 @@ export class FakeAdapter implements AgentAdapter {
   injectMessage(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt> {
     const s = h as FakeSession;
     if (s.status === 'ended') return Promise.reject(new Error('ended'));
+    s.flushNotices(false);
     return Promise.resolve(s.inject(msg));
   }
   queueNotice(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt> {
