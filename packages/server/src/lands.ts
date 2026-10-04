@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeFilePath, overlaps } from './claims.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { lockInvalidation, noticeLanded } from './invalidation.ts';
+import { lockLeases } from './leases.ts';
 import { lockTask } from './tasks.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -147,6 +148,7 @@ export async function reportLand(ctx: HandlerContext, args: Record<string, unkno
  */
 export async function completeLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   await lockInvalidation(ctx); // first: see lockInvalidation
+  await lockLeases(ctx); // then the lease lock: this releases the task's leases (D-97)
   const land = await deviceLand(ctx, args.land_id, ['accepted', 'cancelled']);
   const oldBase = sha(args.old_base_sha, 'old_base_sha');
   const newBase = sha(args.new_base_sha, 'new_base_sha');
