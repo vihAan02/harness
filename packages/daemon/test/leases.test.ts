@@ -196,3 +196,62 @@ test('LeaseKeeper: the fault switch suspends one task; a landed task is dropped;
   assert.equal(every.sent.length, 1, 'a landed task is no longer renewed');
   assert.deepEqual([...every.k.tracked.keys()], []);
 });
+
+test('LeaseKeeper: a re-claim that changes a lease\'s TTL reschedules its renewal, either way', async () => {
+  const v = keeperView();
+  const { k, sent, clock } = keeper(v);
+  k.track('prj', 'T-1', 'agent_b');
+  v.apply(grant('ls_s', 'T-1', 600));
+  await k.tick(); // received: next due in 200 s
+  // The task re-claims it with ttl_s 10 (B5): its expiry can't move earlier, but harnessd must renew by 10 s now.
+  v.apply(kev('lease.renewed', { task_id: 'T-1', leases: [{ lease_id: 'ls_s', expires_at: new Date(clock.t + 600 * sec).toISOString(), ttl_s: 10 }] }));
+  await k.tick(); // the change is seen
+  clock.t += 3 * sec;
+  await k.tick();
+  assert.deepEqual(sent, [], 'not yet: a third of 10 s from when the change was seen');
+  clock.t += 1 * sec;
+  await k.tick();
+  assert.deepEqual(sent, [['ls_s']], 'brought forward to the new, shorter schedule');
+
+  // The reverse: 10 s, then re-claimed for 600 s. After the next renewal, it isn't renewed every few seconds.
+  v.apply(kev('lease.renewed', { task_id: 'T-1', leases: [{ lease_id: 'ls_s', expires_at: new Date(clock.t + 600 * sec).toISOString(), ttl_s: 600 }] }));
+  for (let i = 0; i < 60; i++) { clock.t += sec; await k.tick(); }
+  assert.equal(sent.length, 2, 'one renewal on the old schedule, then none for 60 s');
+});
+
+test('LeaseKeeper: a lease granted before its task was tracked is renewed at once, not a third of its TTL later', async () => {
+  const v = keeperView();
+  v.apply(grant('ls_early', 'T-1', 120, Date.now() - 90 * sec)); // a human's `harness claim`, 90 s before the agent started
+  const { k, sent } = keeper(v);
+  k.track('prj', 'T-1', 'agent_b');
+  await k.tick();
+  assert.deepEqual(sent, [['ls_early']], 'its age is unknown to this keeper, so it renews now');
+});
+
+test('LeaseKeeper: the next renewal is scheduled from when this one was sent, not when its reply came', async () => {
+  const v = keeperView();
+  const { k, sent, clock, setReply } = keeper(v);
+  k.track('prj', 'T-1', 'agent_b');
+  v.apply(grant('ls_slow', 'T-1', 120));
+  await k.tick();
+  clock.t += 40 * sec;
+  // A reply that arrives 30 s later (say, replayed after a reconnect).
+  setReply((ids) => { clock.t += 30 * sec; return { renewed: ids.map((lease_id) => ({ lease_id, expires_at: '', ttl_s: 120 })), lost: [] }; });
+  await k.tick();
+  assert.equal(sent.length, 1);
+  clock.t += 10 * sec; // 40 s after it was sent, 10 s after the reply
+  await k.tick();
+  assert.equal(sent.length, 2, 'due a third of the TTL after it was sent');
+});
+
+test('LeaseKeeper: tokens() presents one token per path, the highest the task holds', () => {
+  const v = keeperView();
+  v.apply(kev('lease.granted', { lease_id: 'ls_p1', task_id: 'T-1', path: 'p/', token: 1, expires_at: new Date().toISOString(), ttl_s: 10, by: 'agent_b', force: false }));
+  v.apply(kev('lease.expired', { lease_id: 'ls_p1', task_id: 'T-1' }));
+  v.apply(kev('lease.granted', { lease_id: 'ls_p2', task_id: 'T-1', path: 'p/', token: 7, expires_at: new Date().toISOString(), ttl_s: 10, by: 'agent_b', force: false }));
+  v.apply(kev('lease.granted', { lease_id: 'ls_q', task_id: 'T-1', path: 'q.ts', token: 3, expires_at: new Date().toISOString(), ttl_s: 10, by: 'agent_b', force: false }));
+  v.apply(kev('lease.granted', { lease_id: 'ls_r', task_id: 'T-1', path: 'r/', token: 4, expires_at: new Date().toISOString(), ttl_s: 10, by: 'agent_b', force: false }));
+  v.apply(kev('lease.released', { lease_id: 'ls_r', task_id: 'T-1', reason: 'released', by: 'agent_b' }));
+  const { k } = keeper(v);
+  assert.deepEqual(k.tokens('prj', 'T-1'), [{ lease_id: 'ls_q', token: 3 }, { lease_id: 'ls_p2', token: 7 }]);
+});

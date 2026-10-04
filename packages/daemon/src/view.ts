@@ -229,9 +229,10 @@ export class ProjectView {
         });
         break;
       case 'lease.renewed':
-        for (const r of Array.isArray(d.leases) ? d.leases as { lease_id?: unknown; expires_at?: unknown }[] : []) {
+        for (const r of Array.isArray(d.leases) ? d.leases as { lease_id?: unknown; expires_at?: unknown; ttl_s?: unknown }[] : []) {
           const l = typeof r?.lease_id === 'string' ? this.leases.get(r.lease_id) : undefined;
           if (l && typeof r.expires_at === 'string') l.expiresAt = r.expires_at;
+          if (l && Number.isInteger(r.ttl_s)) l.ttlS = r.ttl_s as number; // a re-claim can change it (D-97)
         }
         break;
       case 'lease.expired': {

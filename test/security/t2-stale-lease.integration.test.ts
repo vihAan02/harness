@@ -64,6 +64,7 @@ test('T-2: a lease that expired while its device slept can\'t land over the newe
   assert.ok(pid, "X's agent process id is known");
   process.kill(pid, 'SIGSTOP');
   let tY = '';
+  let wokeAt = 0;
   try {
     await s.until(() => Date.now() > Date.parse(view.leases.get(xLease.id)!.expiresAt) + 1000, 20_000, "X's lease to pass its TTL");
 
@@ -81,17 +82,30 @@ test('T-2: a lease that expired while its device slept can\'t land over the newe
     assert.match(await landOutput(tY), new RegExp(`Landed ${tY}`));
   } finally {
     // 4. X wakes up.
-    process.kill(pid, 'SIGCONT');
+    wokeAt = Number((await s.db.pool.query('SELECT coalesce(max(seq), 0) AS seq FROM events WHERE project_id = $1', [s.project])).rows[0].seq);
+    process.kill(pid, 'SIGCONT'); // every event logged after wokeAt came after X woke
     asleep.delete(tX);
   }
   const baseAfterY = [...view.lands.values()].find((l) => l.taskId === tY && l.status === 'completed')!.newBaseSha!;
 
-  // X carries on where it left off: a human nudge opens its next turn, it changes lib/ again and finishes.
+  // X carries on: its next turn opens (on a notice queued while it slept, or on this nudge if none was), it
+  // changes lib/ again and finishes.
   await s.command('message.send', { kind: 'question', to: x, text: 'Are you still on lib/? Carry on.' });
   await s.until(() => view.events.some((e) => e.kind === 'worktree.committed' && (e.data as { task_id: string }).task_id === tX), 60_000, "X's work to be committed");
-  assert.ok(view.events.some((e) => e.kind === 'claim.observed' && (e.data as { task_id: string; paths: string[] }).task_id === tX && (e.data as { paths: string[] }).paths.includes('lib/a2.ts')), 'X changed lib/a2.ts after waking');
-  assert.deepEqual(s.daemon.leases.tokens(s.project, tX), [{ lease_id: xLease.id, token: xLease.token }], 'harnessd presents X\'s old token n at land');
+  const a2 = view.events.find((e) => e.kind === 'claim.observed' && (e.data as { task_id: string }).task_id === tX && (e.data as { paths: string[] }).paths.includes('lib/a2.ts'));
+  assert.ok(a2 && a2.seq > wokeAt, `X changed lib/a2.ts after waking (seq ${a2?.seq}, woke at ${wokeAt})`);
+
+  // The land presents X's old token n: record what harnessd actually sends.
+  const link = s.daemon.link!;
+  const send = link.command.bind(link);
+  let presented: unknown;
+  link.command = (projectId, name, args, asAgent) => {
+    if (name === 'land') presented = args.lease_tokens;
+    return send(projectId, name, args, asAgent);
+  };
   const out = await landOutput(tX);
+  link.command = send;
+  assert.deepEqual(presented, [{ lease_id: xLease.id, token: xLease.token }], "harnessd presents X's old token n at land");
 
   // Pass: the land step rejects X's change, and the base doesn't move.
   assert.match(out, /Rejected by the fencing check:\n  lib\/a\.ts: stale_token/);
@@ -114,7 +128,7 @@ test('control: while X\'s device is awake, harnessd renews its lease past the TT
   assert.ok(Date.parse(view.leases.get(xLease.id)!.expiresAt) > Date.now(), 'renewed: still current past its first expiry');
   const tY = await s.assignTask(y, 'Y refused', ['pkg/'], steps('mcp__harness__claim {"paths":["pkg/"]}', 'TEXT Y is waiting.'));
   await s.turnEnds(tY);
-  assert.match(s.toolResults('Y refused')[0]!, new RegExp(`^Not granted: pkg/ overlaps a lease of ${tX} until`));
+  assert.match(s.toolResults('Y refused')[0]!, new RegExp(`^Not granted: pkg/ overlaps lease ${xLease.id} of ${tX} until`));
   for (const t of [tX, tY]) await s.command('task.abandon', { task_id: t, reason: 'control done' });
   await s.until(() => [tX, tY].every((t) => view.events.some((e) => e.kind === 'worktree.removed' && (e.data as { task_id: string }).task_id === t)), 30_000, 'harnessd to stop both');
 });
