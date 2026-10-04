@@ -46,8 +46,11 @@ export type ModelConfig = {
   prices?: Record<string, Prices>;
 };
 
-/** A parameter of a harness tool. Kept tiny on purpose: the shim's tools take short strings (protocol.md §6). */
-export type ToolParam = { type: 'string' | 'string[]'; description: string; optional?: boolean; maxLength?: number };
+/**
+ * A parameter of a harness tool. Kept tiny on purpose: the shim's tools take short strings, string lists
+ * and whole numbers such as a TTL or a timeout in seconds (protocol.md §6). `min`/`max` bound a number.
+ */
+export type ToolParam = { type: 'string' | 'string[]' | 'number'; description: string; optional?: boolean; maxLength?: number; min?: number; max?: number };
 export type ToolResult = { text: string; isError?: boolean };
 /** One agent-facing harness tool (D-15). Each maps onto a protocol command; harnessd supplies `run`. */
 export type HarnessTool = {

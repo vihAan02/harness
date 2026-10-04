@@ -29,6 +29,7 @@ import { parseShellReads } from './shellreads.ts';
 import { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 import { harnessTools } from './tools.ts';
+import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { ProjectView, type MessageInfo } from './view.ts';
 
 export type TaskWorkspace = {
@@ -86,6 +87,10 @@ export type DaemonOptions = {
   /** Overrides only the endpoint and key (tests point it at a scripted mock); the model settings still come from the config. */
   auth?: Auth;
   adapters?: Record<string, AgentAdapter>;
+  /** How often held leases are renewed. Default: about a third of each lease's TTL (D-97). */
+  leaseRenewMs?: number;
+  /** Fault injection, for tests only (T-2). */
+  faults?: { leases?: LeaseFaults };
 };
 
 export class Daemon {
@@ -106,6 +111,7 @@ export class Daemon {
   delivered = new Set<string>(); // acknowledged in this process, before the server's event comes back
   lifecycles = new Map<string, Promise<void>>(); // per task while in flight, so assigned → completed never overlap
   landing = new Map<string, Promise<void>>(); // per project: lands run one at a time (D-93)
+  leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -117,6 +123,13 @@ export class Daemon {
     this.ports = new PortAllocator(this.home, this.config.limits.portRange, this.config.limits.portsPerAgent, this.config.limits.maxConcurrentAgents);
     this.adapters = o.adapters ?? { claude: new ClaudeAdapter() };
     for (const p of this.config.projects) this.views.set(p.id, new ProjectView(p.id));
+    this.leases = new LeaseKeeper({
+      view: (projectId) => this.view(projectId),
+      send: async (projectId, name, args, asAgent) => (await this.link!.command(projectId, name, args, asAgent)).result,
+      log: (msg) => this.log(msg),
+      ...(o.leaseRenewMs ? { renewMs: o.leaseRenewMs } : {}),
+      ...(o.faults?.leases ? { faults: o.faults.leases } : {}),
+    });
   }
 
   async start(): Promise<void> {
@@ -143,6 +156,7 @@ export class Daemon {
     await this.link.whenReady();
     await this.link.whenCaughtUp();
     this.recoverLands();
+    this.leases.start();
   }
 
   view(projectId: string): ProjectView {
@@ -217,6 +231,7 @@ export class Daemon {
       this.log(`${taskId} done: ${commit ? `committed ${commit.slice(0, 12)} on harness/task/${taskId}` : 'nothing to commit'}`);
     } else {
       if (this.running.has(taskId)) await this.stopAgent(taskId, 'kill');
+      this.leases.untrack(taskId);
       if (fs.existsSync(this.worktreeOf(project.id, taskId))) await this.teardownTask({ projectId: project.id, taskId }, { force: true });
       this.log(`${taskId} abandoned; its worktree is removed`);
     }
@@ -330,7 +345,7 @@ export class Daemon {
       if (changed.length > MAX_REPORT_PATHS) throw new Error(`the task changes ${changed.length} files; one land takes at most ${MAX_REPORT_PATHS}`);
       const r = await this.link!.command(projectId, 'land', {
         land_id: landId, base_branch: project.baseBranch, base_sha: baseSha, merge_base_sha: mergeBase, head_sha: head,
-        changed_paths: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)), lease_tokens: [],
+        changed_paths: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)), lease_tokens: this.leases.tokens(projectId, taskId),
       });
       if (!(r.result as { accepted?: boolean } | null)?.accepted) {
         this.log(`land of ${taskId} rejected by the fencing check: ${JSON.stringify((r.result as { problems?: unknown }).problems)}`);
@@ -410,6 +425,7 @@ export class Daemon {
       changed: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
     });
     this.log(`landed ${taskId}: ${project.baseBranch} is now ${merge.slice(0, 12)}`);
+    this.leases.untrack(taskId);
     // The landed task's worktree and branch go, unless something was written or committed there since the
     // land read its tip: never destroy work. The removal itself isn't forced, so Git refuses on any doubt.
     const taskWt = this.worktreeOf(projectId, taskId);
@@ -608,6 +624,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.leases.stop();
     await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
     await Promise.all(this.lifecycles.values()); // with no agents left running, these finish promptly
     await this.link?.stop();
@@ -706,6 +723,7 @@ export class Daemon {
     // The repo instruction files harnessd put in the system prompt were read too (coordination §2).
     reads.record(readRepoInstructions(ws.worktree).map((r) => ({ path: r.file, source: 'instructions' as const, confidence: 'high' as const })));
     this.running.set(ws.taskId, run);
+    this.leases.track(ws.projectId, ws.taskId, agent.id);
     run.diff.timer = setInterval(() => void this.reconcile(run), this.o.diffIntervalMs ?? 15_000);
     run.done = this.watch(run);
     this.deliverPending(run);

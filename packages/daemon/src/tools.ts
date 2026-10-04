@@ -1,41 +1,27 @@
 // The agent-facing tool shim (D-15; protocol.md §6). Each tool maps onto one protocol command, sent for
 // the agent (`as_agent`). They add intent; the harness works from observation even if they're never
 // called. The adapter exposes them to the vendor; nothing here is vendor-specific.
-import type { HarnessTool, ToolResult } from '@harness/adapters';
-import { CommandFailed } from './link.ts';
+// This file is the aggregator: the 0A tools live here, and each 0B area has its own module under
+// tools/, with its own pinned names, so the two workstreams never edit the same lines (D-94).
+import type { HarnessTool } from '@harness/adapters';
 import { renderAgentStatus } from './status.ts';
-import type { ProjectView } from './view.ts';
+import { commandCall, type CommandCall, type ToolContext } from './tools/common.ts';
+import { LEASE_TOOL_NAMES, leaseTools } from './tools/leases.ts';
+import { MESSAGE_TOOL_NAMES, messageTools } from './tools/messages.ts';
 
-export type ToolContext = {
-  view: ProjectView;
-  agentId: string;
-  taskId: string;
-  /** Sends a command for this agent. Resolves with the command's result. */
-  send: (name: string, args: Record<string, unknown>) => Promise<unknown>;
-  /** How long a tool waits for the server before telling the agent the command is queued. */
-  timeoutMs?: number;
-};
+export type { ToolContext } from './tools/common.ts';
 
-/** The 0A tools. 0B adds report_blocked, request_contract, wait_for and claim/release. */
+export const CORE_TOOL_NAMES: readonly string[] = ['harness_status', 'ask', 'answer', 'report_done'];
+/** Every tool the model is offered, in order. Pinned per module; the shim test checks the session sees exactly these. */
+export const HARNESS_TOOL_NAMES: readonly string[] = [...CORE_TOOL_NAMES, ...LEASE_TOOL_NAMES, ...MESSAGE_TOOL_NAMES];
+
+/** The 0A tools, then each 0B module's (wait_for joins with item 4). */
 export function harnessTools(ctx: ToolContext): HarnessTool[] {
-  const call = async (name: string, args: Record<string, unknown>, ok: (result: unknown) => string): Promise<ToolResult> => {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), ctx.timeoutMs ?? 15_000); });
-    try {
-      const result = await Promise.race([ctx.send(name, args), timeout]);
-      if (result === 'timeout') {
-        // The command stays queued and is resent on reconnect (it's idempotent), so say so rather than "failed".
-        return { text: 'The coordination server did not answer in time. The request is queued and will be sent when it reconnects; don\'t send it again.', isError: true };
-      }
-      return { text: ok(result) };
-    } catch (e) {
-      const msg = e instanceof CommandFailed ? e.message : `harness error: ${(e as Error).message}`;
-      return { text: msg, isError: true };
-    } finally {
-      clearTimeout(timer);
-    }
-  };
+  const call = commandCall(ctx);
+  return [...coreTools(ctx, call), ...leaseTools(ctx, call), ...messageTools(ctx, call)];
+}
 
+function coreTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
   return [
     {
       name: 'harness_status',

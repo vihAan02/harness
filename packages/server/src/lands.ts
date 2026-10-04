@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeFilePath, overlaps } from './claims.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { lockInvalidation, noticeLanded } from './invalidation.ts';
+import { lockLeases } from './leases.ts';
 import { lockTask } from './tasks.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -105,6 +106,7 @@ export async function fencingCheck(ctx: HandlerContext, taskId: string, changed:
 
 /** `land { land_id, base_branch, base_sha, merge_base_sha, head_sha, changed_paths[], lease_tokens[] }` → `land.accepted` | `land.rejected`. */
 export async function startLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  await lockLeases(ctx); // first: no lease is granted between the fencing check and the land's acceptance (D-97)
   const land = await deviceLand(ctx, args.land_id, ['requested']);
   const task = await lockTask(ctx, land.task_id);
   if (task.status !== 'done') {
@@ -147,6 +149,7 @@ export async function reportLand(ctx: HandlerContext, args: Record<string, unkno
  */
 export async function completeLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   await lockInvalidation(ctx); // first: see lockInvalidation
+  await lockLeases(ctx); // then the lease lock: this releases the task's leases (D-97)
   const land = await deviceLand(ctx, args.land_id, ['accepted', 'cancelled']);
   const oldBase = sha(args.old_base_sha, 'old_base_sha');
   const newBase = sha(args.new_base_sha, 'new_base_sha');
