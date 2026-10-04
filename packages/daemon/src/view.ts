@@ -36,6 +36,11 @@ export type LeaseInfo = {
   id: string; taskId: string; path: string; token: number; expiresAt: string; grantedAt: string; by: string; force: boolean;
   releasedAt?: string; releaseReason?: string; expiredAt?: string;
 };
+/** An agent waiting for one thing, with a timeout (D-95). Exactly one outcome ends it. */
+export type WaitInfo = {
+  id: string; taskId: string; sessionId: string; agentId: string; on: { kind: string; id: string }; timeoutAt: string; startedAt: string;
+  outcome: 'waiting' | 'resolved' | 'timed_out' | 'cancelled'; result?: Record<string, unknown>; reason?: string; finishedAt?: string;
+};
 export type OverlapInfo = { id: string; level: 'prospective' | 'observed'; paths: string[]; tasks: [string, string]; at: string };
 
 const asStrings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
@@ -56,6 +61,7 @@ export class ProjectView {
   reads = new Map<string, Map<string, ReadInfo>>();
   lands = new Map<string, LandInfo>();
   leases = new Map<string, LeaseInfo>(); // hard claims, by lease id (D-97)
+  waits = new Map<string, WaitInfo>(); // wait_for, by wait id (D-95)
   events: EventMessage[] = [];
 
   constructor(projectId: string) {
@@ -194,6 +200,26 @@ export class ProjectView {
         if (l) Object.assign(l, { status: 'failed', finishedAt: e.at, reason: s('reason'), ...(d.detail ? { detail: s('detail') } : {}) });
         break;
       }
+      case 'wait.started': {
+        const on = (d.on ?? {}) as { kind?: unknown; id?: unknown };
+        this.waits.set(s('wait_id'), {
+          id: s('wait_id'), taskId: s('task_id'), sessionId: s('session_id'), agentId: s('agent_id'),
+          on: { kind: typeof on.kind === 'string' ? on.kind : '', id: typeof on.id === 'string' ? on.id : '' },
+          timeoutAt: s('timeout_at'), startedAt: e.at, outcome: 'waiting',
+        });
+        break;
+      }
+      case 'wait.resolved':
+      case 'wait.timed_out':
+      case 'wait.cancelled': {
+        const w = this.waits.get(s('wait_id'));
+        if (w) {
+          Object.assign(w, { outcome: e.kind.slice('wait.'.length), finishedAt: e.at });
+          if (typeof d.result === 'object' && d.result) w.result = d.result as Record<string, unknown>;
+          if (d.reason) w.reason = s('reason');
+        }
+        break;
+      }
       case 'lease.granted':
         this.leases.set(s('lease_id'), {
           id: s('lease_id'), taskId: s('task_id'), path: s('path'), token: Number(d.token), expiresAt: s('expires_at'), grantedAt: e.at,
@@ -246,6 +272,11 @@ export class ProjectView {
   /** The agent's active task (in progress, or blocked on a sync conflict), if any. */
   activeTask(agentId: string): TaskInfo | undefined {
     return [...this.tasks.values()].reverse().find((t) => t.assignee === agentId && (t.status === 'in_progress' || t.status === 'blocked'));
+  }
+
+  /** The task's wait that hasn't ended yet, if any (one at a time, D-95). */
+  openWait(taskId: string): WaitInfo | undefined {
+    return [...this.waits.values()].find((w) => w.taskId === taskId && w.outcome === 'waiting');
   }
 
   /** The task's leases that are neither released nor past expiry, as far as this view knows (the server decides, D-97). */
