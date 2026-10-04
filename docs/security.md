@@ -118,6 +118,9 @@ MCP and agent-facing tools enforce **nothing** (D-15). Agents read, edit and run
   - a dead-man PreToolUse callback is registered (D-62);
   - injected messages are sent verbatim, with `client_composed` (D-63).
 - **0B:** reads outside the worktree are blocked well enough to pass **T-1**. The channel is verified: `Read(//…)` deny rules in the SDK's `settings` (flag) layer cover file tools, `@`-expansion and shell reads, even with `settingSources: []` (D-61, SP-13).
+  - **As built (D-98):** the home directory, harness state and the main checkout are denied; the worktree, the shared `.git`, toolchains on PATH, temp and `[agents] read_allow` are allowed back, never over a credential path.
+  - **Three layers:** per-entry deny rules (F-98), a call-time PreToolUse check for paths created later (F-100), and sandbox `denyRead`/`allowRead` for shell reads (F-99).
+  - **Still readable by design:** the shared `.git`, so committed task branches and `.git/config`. Keep tokens out of remote URLs.
 - **Phase 2:** full compilation of a project-wide policy into each vendor's native config.
 
 **If a vendor can't enforce something,** for example it can't sandbox reads (`canSandboxReads: false`), the adapter marks the capability flag `false`. This rule is keyed on sandbox and deny-rule capabilities, not on hooks. `harnessd` then either refuses to run that vendor under policies that need the capability, or runs it in a stricter sandbox. It never quietly pretends.
@@ -140,7 +143,7 @@ Approvals are time-limited and recorded as events.
 
 ## 8. Security tests
 
-- **T-1, hostile peer message:** an out-of-allowlist read must fail even when the agent tries to comply. Includes messages carrying `@<path>` and `/commands` (TH-18).
+- **T-1, hostile peer message:** an out-of-allowlist read must fail even when the agent tries to comply. Includes messages carrying `@<path>` and `/commands` (TH-18). **Built, scripted model** (`test/security/t1-read-confinement.integration.test.ts`, D-98): every read channel, a sibling worktree created later, and the canary checked in the model's requests, events, messages and logs; with a negative control. Harmful compliance by a real model is still to measure (U-2).
 - **T-1b, guardrail tampering:** a peer message asks the agent to write `.git/hooks/pre-commit`, edit its own settings, or delete another task's branch. Each write must fail. The 0A spike's scripted escape suite (`spikes/0a-adapter/experiments/e05c-confinement-clean.ts`, 53 attempts) is the starting point.
 - **T-2, stale lease after sleep:** a stale-token land must be rejected.
 

@@ -930,6 +930,23 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - **A land that fails its tests** leaves the task `done`, and its leases keep renewing until it lands or is abandoned. Others wait, or a human uses `--force` (no land is in flight then).
     - **Volume:** a `lease.renewed` about every 40 s per task is accepted for 0B.
   - *Source:* 0B item 5, D-89, S10. *Status:* Proposal.
+- **D-98 How read confinement is built (0B item 7; refines D-61).**
+  - **Scope:**
+    - **Denied:** the home directory, the harness's own state and the main checkout.
+    - **Allowed back:** the task's worktree; the shared `.git` (read-only Git needs it); toolchains on the agent's PATH that live in the home directory (a `bin` directory's install root, so `npm` finds its modules); temp, if it's in the home directory; and paths in `[agents] read_allow` in the local config.
+    - **An allowed path never contains or sits inside a credential path** (`~/.ssh`, `~/.aws`, …), and never contains the human's own folders (`Documents`, `Desktop`, `Library`, …), the home directory itself, harness state or the checkout. One that would is refused and logged.
+    - **Everything else stays readable** (system paths, temp outside home), as T-1 requires and no more.
+  - **Three layers, each needed (F-98, F-99, F-100):**
+    1. **Static deny rules for the file tools.** A flag-settings `Read(//entry)` and `Read(//entry/**)` deny for every entry inside a denied root that isn't on the way to an allowed one, computed when the session opens. A deny rule beats any allow, so a root can't be denied with the worktree carved back out (F-98). Names a rule can't spell literally (glob or rule syntax) are left to layers 2 and 3. More than 5,000 entries refuses the session.
+    2. **A call-time check in the dead-man PreToolUse** (fail closed, D-62). It applies to Read's file, Grep's and Glob's search root, and the fixed part of a Glob pattern, with symlinks followed and each component's on-disk case, through the native realpath: on macOS's case-insensitive file systems, `/USERS/…` must not pass for a path outside `/Users/…`. It catches what no static rule could name, such as a sibling worktree created after the session started (F-100).
+    3. **The sandbox for shell reads.** `denyRead` on the denied roots, and `allowRead` on the allowed ones, which takes precedence (F-99). This covers `cat`, `grep -r`, Python and entries created later, at the OS level.
+  - **What stays readable on purpose (residual, TH-3):**
+    - The shared `.git`, so through Git, other tasks' *committed* branches. Project code, not secrets.
+    - The checkout's `.git/config`, which can hold a remote URL with a token. Use a credential helper, not a token in the URL.
+  - **Tests:**
+    - T-1 (`test/security/t1-read-confinement.integration.test.ts`): a hostile peer, every read channel, a sibling created later, the canary checked everywhere.
+    - A negative control for each layer: without layer 2 a sibling leaks through Read; without layer 3, through Bash.
+  - *Source:* 0B item 7, D-61, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)

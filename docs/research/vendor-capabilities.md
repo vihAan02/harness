@@ -633,7 +633,17 @@ Sources: [app-server](https://learn.chatgpt.com/docs/app-server), [SIWC](https:/
 Each stream appends new facts to its own block, so the two never edit the same lines. Use the same format as above: an ID, a confidence mark, the claim, then the source and date. A later docs pass may move them into the topical sections.
 
 ### Stream A (Daniyal; F-98 to F-119)
-*(none yet)*
+**F-98 ✔ A Read deny rule beats every allow, so a denied directory can't have the worktree carved back out for the file tools** (2.1.287, checked 2026-10-03). With a flag-settings `Read(//home/**)` deny and sandbox `allowRead` on the worktree, Read, Grep and Glob were refused *inside the worktree too* ("File is in a directory that is denied by your permission settings"), while shell reads of the worktree worked. Sandbox `allowRead` doesn't reach the file tools' permission check.
+
+**F-99 ✔ Sandbox `filesystem.allowRead` re-opens paths inside `denyRead` for shell commands, and `denyRead` applies to entries created later** (2.1.287, checked 2026-10-03). Documented in the pinned `sdk.d.ts` ("takes precedence over denyRead for matching paths"; Read deny rules are "merged" into `denyRead`). With `denyRead` on a fake home and `allowRead` on the worktree and the shared `.git`, `cat` of the worktree, `git status`/`log`/`show` and `node` worked, while `cat`, `grep -r` and Python reads elsewhere in the home failed with "Operation not permitted", including a directory created after the session started. Sandbox `denyRead` doesn't restrict the file tools (consistent with SP-13).
+
+**F-100 ✔ Static Read deny rules are resolved, but only cover what existed when they were written** (2.1.287, checked 2026-10-03).
+- Per-entry `Read(//entry)`/`Read(//entry/**)` denies blocked Read, Grep and Glob of those entries, including Read through a symlink inside the worktree that points into one (the target is resolved).
+- Grep searching from an ancestor skipped denied entries.
+- The deny rules also caught a path spelled in another case (on case-insensitive APFS) when it named an existing denied entry; the sandbox caught it for `cat` too.
+- But a sibling directory created after the session started was readable through Read and Grep, so a call-time check is needed for the file tools. That check must compare paths in their on-disk case: Node's `fs.realpathSync` keeps the case it's given, and `fs.realpathSync.native` doesn't. T-1 failed with the former, through a mis-cased read of the later sibling.
+
+Source for all three: a probe against the pinned CLI and the scripted mock, a fake home with a canary, sibling worktrees (one created later) and a symlink; four policy variants (D-98). *Impact: D-98's three layers.*
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
