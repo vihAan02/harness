@@ -920,6 +920,15 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - `lease.expired` is logged the first time a lease command sees it.
   - **Renewal:** harnessd's LeaseKeeper renews every current lease of each task its device ran, about every `ttl_s / 3`, **until the task is landed or abandoned** (not only while its session lives), so a finished task waiting to land keeps its leases. A sleeping or suspended device stops renewing, so its leases expire (coordination §1). For T-2, a fault switch suspends renewal.
   - **Release reasons:** `released`, `landed` (already emitted by `land.complete`), `revoked`, and `abandoned` (a task abandon releases its leases).
+  - **Settled in review (Vihaan's questions on A0/A1):**
+    - **`lease.renew`'s `lost[].reason`:** `revoked` (a human's `--force`, so harnessd can tell its agent), `expired`, or `released` for any other release (released, landed, abandoned).
+    - **Who hears about a refused acquire:** a human's refused `lease.acquire` (`harness claim` without `--force`) returns the conflicts to the human only. An agent's sends that agent a `claim_conflict`.
+    - **`--force` and lands:** `--force` is refused while a task holding an overlapping lease has a land requested or accepted. A revoke can't stop a land already past its fencing check, so cancel that land first.
+    - **Which device renews:** only the device that ran the task (the task's latest session's device), as its agent.
+    - **The `land` command's fencing check** takes the lease lock first too, so a lease can't be granted between the check and the land's acceptance.
+    - **`lease.expired` is logged only by lease commands.** A wait resolved as `{lease: expired}` (D-95) can come before it in the log; the waiter's result is what counts.
+    - **A land that fails its tests** leaves the task `done`, and its leases keep renewing until it lands or is abandoned. Others wait, or a human uses `--force` (no land is in flight then).
+    - **Volume:** a `lease.renewed` about every 40 s per task is accepted for 0B.
   - *Source:* 0B item 5, D-89, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
