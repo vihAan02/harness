@@ -29,6 +29,15 @@ export async function inTransaction<T>(pool: pg.Pool, fn: (tx: pg.PoolClient) =>
   }
 }
 
+/**
+ * The server's clock now, as text (microseconds kept). `now()` is the transaction's start instead, which can
+ * be long before a lock the transaction waited for. Read under the lease lock, this is the time a lease's
+ * expiry is judged at (D-97, settled in the B5 review).
+ */
+export async function serverClock(tx: pg.ClientBase): Promise<string> {
+  return (await tx.query<{ t: string }>('SELECT clock_timestamp()::text AS t')).rows[0]!.t;
+}
+
 /** True for a unique-key violation, optionally on one named constraint. */
 export function isUniqueViolation(e: unknown, constraint?: string): boolean {
   const err = e as { code?: string; constraint?: string } | null;

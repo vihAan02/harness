@@ -8,9 +8,10 @@
 // pushes the outcome to the waiter as a new turn (D-95).
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
-import { inTransaction } from './db.ts';
+import { inTransaction, serverClock } from './db.ts';
 import { appendEvents, notifyProject, type NewEvent } from './events.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
+import { lockLeases } from './leases.ts';
 import { newMessageId } from './messages.ts';
 import { requireAgentOnDevice } from './sessions.ts';
 
@@ -22,7 +23,10 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 type WaitRow = { id: string; project_id: string; task_id: string; agent_id: string; on_kind: WaitKind; on_id: string; timed_out: boolean; task_status: string };
 
-/** What a wait is waiting for, if it has happened: the result to hand the waiter, else null. */
+/**
+ * What a wait is waiting for, if it has happened: the result to hand the waiter, else null. For a lease, the
+ * caller holds the lease lock, so its expiry is judged as the lease commands judge it (D-97).
+ */
 async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id: string): Promise<Record<string, unknown> | null> {
   if (kind === 'answer') {
     const a = (await tx.query<{ id: string }>(
@@ -34,7 +38,8 @@ async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id
     return t && ['done', 'landed', 'abandoned'].includes(t.status) ? { status: t.status } : null;
   }
   const l = (await tx.query<{ released: boolean; expired: boolean }>(
-    'SELECT released_at IS NOT NULL AS released, expires_at <= now() AS expired FROM leases WHERE id = $1 AND project_id = $2', [id, projectId])).rows[0];
+    'SELECT released_at IS NOT NULL AS released, expires_at <= $3::timestamptz AS expired FROM leases WHERE id = $1 AND project_id = $2',
+    [id, projectId, await serverClock(tx)])).rows[0];
   if (!l) return null;
   return l.released ? { lease: 'released' } : l.expired ? { lease: 'expired' } : null;
 }
@@ -81,6 +86,7 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   if (typeof on?.kind !== 'string' || !(WAIT_KINDS as readonly string[]).includes(on.kind)) throw new CommandError('bad_request', `on.kind must be one of ${WAIT_KINDS.join(', ')}`);
   if (typeof on.id !== 'string' || !ID.test(on.id)) throw new CommandError('bad_request', 'on.id is missing or malformed');
   const kind = on.kind as WaitKind;
+  if (kind === 'lease') await lockLeases(ctx); // before any row lock (D-97); see happened()
   const timeout = args.timeout_s === undefined ? TIMEOUT.default : args.timeout_s;
   if (!Number.isInteger(timeout) || (timeout as number) < TIMEOUT.min || (timeout as number) > TIMEOUT.max) {
     throw new CommandError('bad_request', `timeout_s must be a whole number of seconds from ${TIMEOUT.min} to ${TIMEOUT.max}`);
@@ -127,13 +133,14 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
 /**
  * The sweep (every second or so): settles every open wait that can be settled now. Each in its own
  * transaction, under the wait's row lock, skipping one another process holds, so two servers never
- * settle the same wait twice.
+ * settle the same wait twice. A wait for a lease takes the project's lease lock first (D-97).
  */
 export async function sweepWaits(pool: pg.Pool): Promise<number> {
-  const open = (await pool.query<{ id: string; project_id: string }>('SELECT id, project_id FROM waits WHERE outcome IS NULL ORDER BY created_at')).rows;
+  const open = (await pool.query<{ id: string; project_id: string; on_kind: WaitKind }>('SELECT id, project_id, on_kind FROM waits WHERE outcome IS NULL ORDER BY created_at')).rows;
   let settled = 0;
   for (const w of open) {
     await inTransaction(pool, async (tx) => {
+      if (w.on_kind === 'lease') await lockLeases({ tx, projectId: w.project_id } as HandlerContext);
       const row = (await tx.query<WaitRow>(`${OPEN_WAITS} AND w.id = $1 FOR UPDATE OF w SKIP LOCKED`, [w.id])).rows[0];
       if (!row) return; // settled meanwhile, or another sweep has it
       const events = await settle(tx, row);
