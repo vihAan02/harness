@@ -1,6 +1,7 @@
 // harnessd's sync and land rules, with turns controlled exactly (test/fake-adapter.ts) and everything else
 // real: the server, harnessd, Git, srt. Complements the S3 test (the real CLI) with what it can't time:
 //  - a landed notice for a working agent waits for its turn end, and the agent is held during the sync;
+//  - a worktree diff that comes due during a sync waits for it, and never deadlocks with it;
 //  - a conflict blocks the task; an unblock with the merge still unfinished blocks it again; once resolved,
 //    the notice and anything held meanwhile are delivered;
 //  - a sync that fails for another reason keeps its notice and runs again at the next turn end;
@@ -118,6 +119,29 @@ test('a landed notice for a working agent waits for its turn end; the agent is h
   const delivered = ev.find(isDelivered);
   assert.ok(synced && delivered && synced.seq < delivered.seq, 'synced before delivered');
   await retire(tR);
+});
+
+test('a worktree diff that comes due during a sync waits for it, and never deadlocks with it', async () => {
+  const reader = await agent('agent/differ');
+  const writer = await agent('agent/diff-writer');
+  const tR = await startTask(reader, 'reader');
+  const r = fake.of(tR);
+  r.startTurn();
+  r.read(['src/types.ts']);
+  r.endTurn();
+  await s.nextEvent((e) => e.kind === 'readset.added' && dataOf(e).task_id === tR, 10_000);
+  // The periodic diff (every 15 s; every 2 s in the demo) comes due while the sync is merging: simulated at that moment.
+  const d = s.daemon;
+  const finishSync = d.finishSync;
+  d.finishSync = function (run, ...rest) { void this.reconcile(run); return finishSync.call(this, run, ...rest); };
+  try {
+    const tW = await startTask(writer, 'writer');
+    await finish(tW, { 'src/types.ts': 'export type User = { id: string; diffed: true };\n' });
+    assert.equal((await land(tW)).kind, 'land.completed');
+    await s.until(() => r.injected.some((i) => i.text.includes('Dependency changed: src/types.ts')), 20_000, 'the landed notice, after the sync');
+  } finally {
+    d.finishSync = finishSync;
+  }
 });
 
 test('a sync conflict blocks the task; unblocking with the merge unfinished blocks it again; once resolved, everything held is delivered', async () => {

@@ -790,10 +790,15 @@ export class Daemon {
     return this.diffNow(run, true);
   }
 
-  /** The worktree diff itself. `afterSync`: wait for a running sync first (its merge holds the index); a sync calls it with false. */
+  /**
+   * The worktree diff itself. `afterSync`: wait for a running sync first (its merge holds the index); a sync
+   * calls it with false. That wait comes before joining the diff queue, never inside it: a sync waits for the
+   * queue when it starts and runs its own diff through it, so a queued diff waiting for the sync would
+   * deadlock with it, and the agent would never hear what landed.
+   */
   diffNow(run: RunningAgent, afterSync = false): Promise<void> {
+    if (afterSync && run.sync.running) return run.sync.running.then(() => this.diffNow(run, true));
     const next = (run.diff.running ?? Promise.resolve()).then(async () => {
-      if (afterSync) await run.sync.running;
       try {
         const paths = this.reportablePaths(run, await changedPaths(run.workspace.worktree, this.project(run.projectId).baseBranch));
         const key = paths.join('\n');
