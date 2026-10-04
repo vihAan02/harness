@@ -23,7 +23,8 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83);
     - item 11, the 0A demo, `npm run demo`, which meets every 0A exit criterion with a scripted model (D-84).
   - **Deferred from 0A:** the real-model checks need an API key (U-1, Q-18, deferred by D-86).
-  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`). **Stopped for an owner's review** before the rest of 0B.
+  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`).
+  - **The rest of 0B (D-94):** approved 2026-10-03 and built in two parallel workstreams. See "Parallel development (0B)" below before touching any file.
   - **Environment caveat:** if the checkout is inside an iCloud-synced folder (such as `~/Desktop`), real-CLI tests flake and iCloud can create `name 2.ext` duplicate files; run them from a clone outside iCloud (see HANDOFF.md).
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
@@ -88,6 +89,68 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - a dead-man PreToolUse callback (D-62);
     - injected messages sent verbatim (D-63);
     - credentials hidden from the agent's shell (D-64).
+
+## Parallel development (0B, D-94)
+Two people build the rest of 0B at the same time, each with their own Claude.
+- **Stream A:** Daniyal (`DaniyalMughal1`), the integration owner.
+- **Stream B:** Vihaan (`vihAan02`).
+- **Which stream you're in:** `gh api user --jq .login` tells you. If you can't tell, ask the human.
+- **Tasks, dependencies and tests:** the GitHub issues labelled `stream:daniyal` / `stream:vihaan`, plus the pinned "0B workboard" issue.
+
+**At the start of every session**, run:
+```
+git fetch origin && git log --oneline origin/main -15
+gh pr list -R vihAan02/harness
+gh issue list -R vihAan02/harness --label status:active --label status:blocked
+```
+
+**File ownership.** Edit only your own column. Outside it, you may only add the rows or sections of your own feature, and the owner reviews.
+
+| Area | Stream A (Daniyal) | Stream B (Vihaan) |
+|---|---|---|
+| Packages | `protocol/**`, `adapters/**` | `cli/**` |
+| Server | `commands, handler, server, events, db, index, main`, `lands, invalidation, readsets, syncs, reports, waits`; migration `0012` | `leases, messages, tasks, claims, sessions, agents, presence`; migration `0013` |
+| Daemon | Everything else, including `daemon.ts`, `view.ts`, `tools.ts`, `tools/waits.ts`, `envelope.ts`, `instructions.ts` | `status.ts`, `metrics.ts`, `leases.ts`, `tools/{leases,messages}.ts` |
+| Tests | `test/{support,fake-adapter,shim,agent,s3,sync-land,daemon,structure,waits}*`, `test/security/t1-*` | `test/{lifecycle,messages,claims}.integration*`, `test/security/{t1b,t2}-*`, `packages/server/test/leases*` |
+| Scripts and repo | `scripts/ab/{baseline-launch,score}.ts`, `tsconfig.json`, dependencies | `scripts/demo-*.ts`, `scripts/ab/run.ts` and the recorder, `.github/**`, `package.json` scripts |
+| Docs | `PLAN.md` (stream B has its own D-ID block), `AGENTS.md`, `README.md`, `HANDOFF.md`, `roadmap.md`, `protocol.md`, `coordination.md`, `security.md`, `architecture.md`, `agent-adapters.md`, `local-runtime.md`, `open-questions.md` | `validation.md`, `docs/results/**`, `research/spike-0a.md` §5, `docs/examples/providers.toml`, harness-bench, and the hidden-checks repo (which stream A never reads) |
+
+**Rules:**
+- **IDs:**
+  - decisions D-95 to D-119 for A and D-120 to D-139 for B, each in its own block at the end of PLAN.md §7;
+  - facts F-98 to F-119 for A and F-120 to F-139 for B, in their own blocks at the end of `docs/research/vendor-capabilities.md`;
+  - `docs/source/` takes new files only.
+- **Shared interfaces are contract-first:** the owner merges the smallest contract PR, then both of you rebase. Never redesign an interface you don't own. If you need a change in the other stream's file, open an issue, or make the smallest edit and ask the owner to review.
+- **Branches:**
+  - one task per branch, from a fresh `main`: `daniyal/<task>` or `vihaan/<task>`;
+  - keep it small (≲800 changed lines, ≲3 days);
+  - rebase, never merge `main` into your branch;
+  - never push to `main`, and never use `git add -A`.
+- **Merging:** squash merges only. **A PR merges as soon as its listed dependencies have merged, the required checks are green, and any review below is done.** There's no global merge order.
+- **Before opening a PR:** run `npm run check` from a checkout outside iCloud, plus the targeted suites for what you touched:
+  - sync and land: `test/sync-land`, `test/s3`, `npm run demo:0b`;
+  - read capture: `packages/daemon/test/reads.test.ts`;
+  - leases and fencing: `packages/server/test/{land,claims}.test.ts`, then T-2;
+  - provider: `packages/adapters/test/{provider,session}.test.ts`;
+  - policy and hooks: `packages/adapters/test/policy.test.ts`, `test/security/`;
+  - delivery: `test/messages.integration.test.ts`;
+  - any daemon, adapter, server or script change: `npm run demo && npm run demo:0b`.
+- **Review:**
+  - Daniyal reviews B's PRs that touch A's files or a contract, leases and fencing, delivery semantics, migrations or dependencies, or that add a D-ID.
+  - Vihaan reviews contract PRs, A's PRs that touch B's files, and A/B parameters.
+  - Anything else merges on green CI.
+- **The PR description is the handoff record** (the template's sections become the squash commit message):
+  - what changed and why;
+  - shared files touched;
+  - contract changes;
+  - D-IDs and F-IDs;
+  - migrations;
+  - new config or environment variables;
+  - tests run, with results;
+  - real-model cost;
+  - notes for the other stream.
+
+  Only Daniyal edits HANDOFF.md, at milestones.
 
 ## Glossary and IDs
 See PLAN.md §13 (glossary) and §7–§9 (D, H and R registers).
