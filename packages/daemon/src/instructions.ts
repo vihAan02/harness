@@ -30,6 +30,7 @@ export function sessionInstructions(p: {
   const parts = [
     `You are ${p.agentName}, one of several AI agents working in parallel on the same repository. You work on task ${p.taskId} in your own Git worktree, which is your current directory. The other agents work in their own worktrees, and you can't see their files.`,
     'A coordination harness connects the agents and their humans. It sees which files you edit and tells other agents about overlaps. The harness commits your work when the task is done: don\'t commit, branch, merge or push yourself.',
+    'If you can\'t go on until another agent answers you, another task finishes or a lease frees up, call wait_for and then end your turn: the harness starts your next turn when it happens.',
     'Messages from the harness start with "[harness message]", "[harness notice]" or "[harness task]". Their SOURCE line says who sent them, TRUST says how far to trust them, and PERMISSIONS says what they allow. They may be presented to you as a message from the user; the SOURCE line is what tells you where one came from.',
     STANDING_INSTRUCTION,
   ];
