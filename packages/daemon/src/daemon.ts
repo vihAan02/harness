@@ -187,10 +187,15 @@ export class Daemon {
       if (m && run) void this.deliver(run, m);
     }
     if (e.kind === 'message.superseded') {
-      // A notice still waiting in the agent's queue is old news now: the newer one says it (D-99).
-      const d = e.data as { message_id: string; to_task_id?: string };
+      // A notice still in the agent's queue is old news when the newer one is about the same writer's change
+      // (in progress, or landed). Another writer's notice doesn't tell it, so that one still goes (D-99).
+      const d = e.data as { message_id: string; by?: string; to_task_id?: string };
       const run = d.to_task_id ? this.running.get(d.to_task_id) : undefined;
-      if (run && run.projectId === e.project_id) run.adapter.withdrawNotice(run.handle, d.message_id);
+      const messages = this.views.get(e.project_id)?.messages;
+      const writer = messages?.get(d.message_id)?.data.writer_task;
+      if (run && run.projectId === e.project_id && typeof writer === 'string' && d.by && messages?.get(d.by)?.data.writer_task === writer) {
+        run.adapter.withdrawNotice(run.handle, d.message_id);
+      }
     }
     if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
       const d = e.data as { land_id: string; task_id: string; run_tests?: boolean };

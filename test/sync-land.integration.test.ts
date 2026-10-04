@@ -2,7 +2,8 @@
 // real: the server, harnessd, Git, srt. Complements the S3 test (the real CLI) with what it can't time:
 //  - a landed notice for a working agent waits for its turn end, and the agent is held during the sync;
 //  - a worktree diff that comes due during a sync waits for it, and never deadlocks with it;
-//  - an in-progress notice for a working agent rides its next tool batch; one replaced before then never arrives;
+//  - an in-progress notice for a working agent rides its next tool batch; one the same writer's land replaces
+//    before then never arrives, while one about another writer still does;
 //  - a conflict blocks the task; an unblock with the merge still unfinished blocks it again; once resolved,
 //    the notice and anything held meanwhile are delivered;
 //  - a sync that fails for another reason keeps its notice and runs again at the next turn end;
@@ -185,6 +186,37 @@ test('a high-priority notice for a working agent rides its next tool batch; one 
   r.endTurn();
   await s.until(() => r.injected.some((i) => i.text.includes('Dependency changed: src/other.ts')), 20_000, 'the landed notice');
   assert.ok(!r.injected.some((i) => i.id === second), 'the replaced notice never reached the agent');
+});
+
+test('a queued notice about one writer is not withdrawn when another writer\'s notice replaces it on the server (D-99)', async () => {
+  const reader = await agent('agent/watcher');
+  const earlier = await agent('agent/w-two');
+  const later = await agent('agent/w-one');
+  const tR = await startTask(reader, 'reader');
+  const r = fake.of(tR);
+  r.startTurn();
+  r.read(['src/types.ts']);
+  r.endTurn();
+  await s.nextEvent((e) => e.kind === 'readset.added' && dataOf(e).task_id === tR, 10_000);
+  // W2 changes the file and finishes, not landed yet.
+  const t2 = await startTask(earlier, 'w2');
+  await finish(t2, { 'src/types.ts': 'export type User = { id: string; w2: true };\n' });
+  // While the reader works, W1 starts changing the same file: its notice waits for the reader's next tool batch.
+  r.startTurn();
+  const t1 = await startTask(later, 'w1');
+  fs.writeFileSync(path.join(s.worktreeOf(t1), 'src/types.ts'), 'export type User = { id: string; w1: true };\n');
+  fake.of(t1).edited(['src/types.ts']);
+  const sent = await s.nextEvent((e) => e.kind === 'message.sent' && dataOf(e).kind === 'dependency_changed' && dataOf(e).to_task_id === tR && dataOf(e).writer_task === t1, 10_000);
+  const n1 = dataOf(sent).message_id as string;
+  await s.until(() => r.notices.some((n) => n.msg.id === n1), 10_000, 'W1\'s notice queued');
+  // W2 lands. The server's newer notice (about W2) supersedes W1's, but it says nothing about W1.
+  assert.equal((await land(t2)).kind, 'land.completed');
+  await s.nextEvent((e) => e.kind === 'message.superseded' && dataOf(e).message_id === n1, 10_000);
+  await new Promise((res) => setTimeout(res, 300));
+  assert.ok(r.notices.some((n) => n.msg.id === n1), 'still queued');
+  r.toolBatch();
+  assert.equal(r.injected.find((i) => i.id === n1)?.via, 'notice', 'the reader hears W1 is changing the file');
+  r.endTurn();
 });
 
 test('a sync conflict blocks the task; unblocking with the merge unfinished blocks it again; once resolved, everything held is delivered', async () => {
