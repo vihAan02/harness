@@ -24,7 +24,12 @@ export type MessageForAgent = {
   id: string; kind: string; text: string; inReplyTo?: string; fromTask: string | null;
   sender: { kind: 'agent'; name: string; humanId: string } | { kind: 'harness' } | { kind: 'human'; id: string; local: boolean };
   aboutPaths?: string[];
+  /** A claim_conflict about a hard claim (a lease, D-97), which the land step enforces, not a soft claim. */
+  lease?: boolean;
 };
+
+const SOFT_CLAIM = 'Claims are awareness signals, not locks: nothing stops either edit. Options include carrying on, asking the other agent with `ask`, or checking `harness_status`.';
+const HARD_CLAIM = 'A hard claim doesn\'t stop edits; the land step enforces it. A land is rejected if it changes a path another task holds a current lease on, or a path where a newer lease has replaced your task\'s own. Options include working on other parts first, asking the other agent with `ask`, or checking `harness_status`.';
 
 /**
  * Untrusted text is quoted line by line, so it can't pass itself off as a header or as a second
@@ -41,9 +46,7 @@ export function renderMessage(m: MessageForAgent): string {
       'SOURCE: harness   TRUST: system-notice   PERMISSIONS: none',
       ids,
       m.text,
-      ...(m.kind === 'claim_conflict'
-        ? ['Claims are awareness signals, not locks: nothing stops either edit. Options include carrying on, asking the other agent with `ask`, or checking `harness_status`.']
-        : []),
+      ...(m.kind === 'claim_conflict' ? [m.lease ? HARD_CLAIM : SOFT_CLAIM] : []),
     ].join('\n');
   }
   const source = m.sender.kind === 'agent'
