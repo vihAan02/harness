@@ -12,5 +12,5 @@ export { Sessions, killOrphans, processStart, type SessionRecord } from './super
 export { ProjectView, type AgentInfo, type TaskInfo, type MessageInfo } from './view.ts';
 export { duration, renderAgentStatus, renderHumanStatus } from './status.ts';
 export { renderMessage } from './envelope.ts';
-export { harnessTools } from './tools.ts';
+export { harnessTools, HARNESS_TOOL_NAMES } from './tools.ts';
 export { computeMetrics, renderMetrics, type RunMetrics } from './metrics.ts';

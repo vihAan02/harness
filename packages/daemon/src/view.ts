@@ -31,6 +31,11 @@ export type MessageInfo = {
   held?: boolean; deliveredAt?: string; delivery?: string; latencyMs?: number;
   supersededBy?: string; // a newer notice replaced it before delivery (coordination §2)
 };
+/** A hard claim (D-97). `expiresAt` is as last granted or renewed; the server's clock is authoritative (F-84). */
+export type LeaseInfo = {
+  id: string; taskId: string; path: string; token: number; expiresAt: string; grantedAt: string; by: string; force: boolean;
+  releasedAt?: string; releaseReason?: string; expiredAt?: string;
+};
 export type OverlapInfo = { id: string; level: 'prospective' | 'observed'; paths: string[]; tasks: [string, string]; at: string };
 
 const asStrings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
@@ -50,6 +55,7 @@ export class ProjectView {
   /** Per task: what its agent read (path → hash), as reported (0B item 1). */
   reads = new Map<string, Map<string, ReadInfo>>();
   lands = new Map<string, LandInfo>();
+  leases = new Map<string, LeaseInfo>(); // hard claims, by lease id (D-97)
   events: EventMessage[] = [];
 
   constructor(projectId: string) {
@@ -188,6 +194,28 @@ export class ProjectView {
         if (l) Object.assign(l, { status: 'failed', finishedAt: e.at, reason: s('reason'), ...(d.detail ? { detail: s('detail') } : {}) });
         break;
       }
+      case 'lease.granted':
+        this.leases.set(s('lease_id'), {
+          id: s('lease_id'), taskId: s('task_id'), path: s('path'), token: Number(d.token), expiresAt: s('expires_at'), grantedAt: e.at,
+          by: s('by'), force: d.force === true,
+        });
+        break;
+      case 'lease.renewed':
+        for (const r of Array.isArray(d.leases) ? d.leases as { lease_id?: unknown; expires_at?: unknown }[] : []) {
+          const l = typeof r?.lease_id === 'string' ? this.leases.get(r.lease_id) : undefined;
+          if (l && typeof r.expires_at === 'string') l.expiresAt = r.expires_at;
+        }
+        break;
+      case 'lease.expired': {
+        const l = this.leases.get(s('lease_id'));
+        if (l) l.expiredAt = e.at;
+        break;
+      }
+      case 'lease.released': {
+        const l = this.leases.get(s('lease_id'));
+        if (l) Object.assign(l, { releasedAt: e.at, releaseReason: s('reason') });
+        break;
+      }
     }
   }
 
@@ -218,6 +246,11 @@ export class ProjectView {
   /** The agent's active task (in progress, or blocked on a sync conflict), if any. */
   activeTask(agentId: string): TaskInfo | undefined {
     return [...this.tasks.values()].reverse().find((t) => t.assignee === agentId && (t.status === 'in_progress' || t.status === 'blocked'));
+  }
+
+  /** The task's leases that are neither released nor past expiry, as far as this view knows (the server decides, D-97). */
+  currentLeases(taskId: string, now = Date.now()): LeaseInfo[] {
+    return [...this.leases.values()].filter((l) => l.taskId === taskId && !l.releasedAt && !l.expiredAt && Date.parse(l.expiresAt) > now);
   }
 
   /** Questions to this principal that have no answer yet. */

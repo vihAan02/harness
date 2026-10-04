@@ -51,3 +51,26 @@ test("harness_status shows the agent its task, its peers' work, overlaps and que
   assert.match(text, /Overlaps with your task:\n- src\/types\.ts: also touched by T-2 \(agent\/frontend\)/);
   assert.match(text, /Questions waiting for your answer \(untrusted peer text[^\n]*\n- msg_q from agent\/frontend: "Is it \{ token \}\?"/);
 });
+
+test('leases fold from lease.* events; only unreleased, unexpired ones are current (D-97)', () => {
+  seq = 0;
+  const v = new ProjectView('prj');
+  const at = (s: number) => new Date(s * 1000).toISOString();
+  for (const e of [
+    ev('lease.granted', { lease_id: 'ls_1', task_id: 'T-1', path: 'src/types.ts', token: 7, expires_at: at(100), by: 'agent_b', force: false }),
+    ev('lease.granted', { lease_id: 'ls_2', task_id: 'T-1', path: 'src/api/', token: 8, expires_at: at(100), by: 'human_a', force: true }),
+    ev('lease.granted', { lease_id: 'ls_3', task_id: 'T-1', path: 'src/web/', token: 9, expires_at: at(100), by: 'agent_b', force: false }),
+    ev('lease.granted', { lease_id: 'ls_4', task_id: 'T-2', path: 'src/web/a.ts', token: 10, expires_at: at(100), by: 'agent_f', force: false }),
+    ev('lease.renewed', { task_id: 'T-1', leases: [{ lease_id: 'ls_1', expires_at: at(200) }, { lease_id: 'ls_unknown', expires_at: at(200) }] }),
+    ev('lease.released', { lease_id: 'ls_2', task_id: 'T-1', reason: 'revoked', by: 'human_a' }),
+    ev('lease.expired', { lease_id: 'ls_3', task_id: 'T-1' }),
+    ev('lease.released', { lease_id: 'ls_landed_elsewhere', task_id: 'T-9', reason: 'landed' }), // never granted in this view: ignored
+  ]) v.apply(e);
+  assert.deepEqual(v.leases.get('ls_1'), { id: 'ls_1', taskId: 'T-1', path: 'src/types.ts', token: 7, expiresAt: at(200), grantedAt: at(1), by: 'agent_b', force: false });
+  assert.deepEqual([v.leases.get('ls_2')!.releaseReason, v.leases.get('ls_2')!.force], ['revoked', true]);
+  assert.ok(v.leases.get('ls_3')!.expiredAt);
+  assert.deepEqual(v.currentLeases('T-1', 150_000).map((l) => l.id), ['ls_1'], 'renewed to 200 s, so still current at 150 s');
+  assert.deepEqual(v.currentLeases('T-1', 250_000), [], 'past its expiry');
+  assert.deepEqual(v.currentLeases('T-2', 50_000).map((l) => l.id), ['ls_4']);
+  assert.equal(v.leases.size, 4);
+});

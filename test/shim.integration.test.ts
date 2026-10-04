@@ -2,6 +2,7 @@
 // report_done, and each lands on the server as the protocol command it maps to (protocol.md §6).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { HARNESS_TOOL_NAMES } from '../packages/daemon/src/tools.ts';
 import { startStack, steps, type Stack } from './support.ts';
 
 let s: Stack;
@@ -39,7 +40,6 @@ test('an agent sees its peers, asks one a question and reports done, through the
   assert.match(badAnswer!, /not_found: no question msg_nonexistent/);
   assert.match(done!, new RegExp(`${tApi} is done`));
 
-  // The model saw exactly the base tools plus the four shim tools, none deferred (F-15, D-66).
-  assert.deepEqual(s.requestTools[0], ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write',
-    'mcp__harness__answer', 'mcp__harness__ask', 'mcp__harness__harness_status', 'mcp__harness__report_done']);
+  // The model saw exactly the base tools plus the pinned shim tools, none deferred (F-15, D-66, D-94).
+  assert.deepEqual(s.requestTools[0], ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write', ...HARNESS_TOOL_NAMES.map((n) => `mcp__harness__${n}`)].sort());
 });
