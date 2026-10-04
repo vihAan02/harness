@@ -186,6 +186,12 @@ export class Daemon {
       const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to && (!m.toTask || r.taskId === m.toTask)) : undefined;
       if (m && run) void this.deliver(run, m);
     }
+    if (e.kind === 'message.superseded') {
+      // A notice still waiting in the agent's queue is old news now: the newer one says it (D-99).
+      const d = e.data as { message_id: string; to_task_id?: string };
+      const run = d.to_task_id ? this.running.get(d.to_task_id) : undefined;
+      if (run && run.projectId === e.project_id) run.adapter.withdrawNotice(run.handle, d.message_id);
+    }
     if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
       const d = e.data as { land_id: string; task_id: string; run_tests?: boolean };
       this.queueLand(e.project_id, () => this.land(e.project_id, d.land_id, d.task_id, d.run_tests !== false));
@@ -251,8 +257,9 @@ export class Daemon {
 
   /**
    * Injects a message into the recipient's live session at its next safe boundary (D-26), rendered in
-   * its envelope (D-25), then acknowledges where it landed. Held (over-budget) messages are never
-   * delivered. Messages for an agent with no live session wait in the log until its session starts.
+   * its envelope (D-25), then acknowledges where it landed. A high-priority harness notice goes to the
+   * adapter's notice queue instead (D-99). Held (over-budget) messages are never delivered. Messages for
+   * an agent with no live session wait in the log until its session starts.
    */
   async deliver(run: RunningAgent, m: MessageInfo): Promise<void> {
     if (m.held || m.deliveredAt || m.supersededBy || this.delivering.has(m.id) || this.delivered.has(m.id)) return;
@@ -275,7 +282,9 @@ export class Daemon {
       };
       const text = renderMessage(msg);
       const origin = msg.sender.kind === 'harness' ? 'coordinator' : msg.sender.kind === 'human' && msg.sender.local ? 'human' : 'peer';
-      const receipt = await run.adapter.injectMessage(run.handle, { id: m.id, text, origin });
+      // The harness's own high-priority notices ride the agent's next tool results (D-99); everything else is injected.
+      const notice = msg.sender.kind === 'harness' && m.priority === 'high';
+      const receipt = await (notice ? run.adapter.queueNotice(run.handle, { id: m.id, text, origin }) : run.adapter.injectMessage(run.handle, { id: m.id, text, origin }));
       this.delivered.add(m.id);
       await this.report(run.projectId, 'message.ack', {
         message_id: m.id, delivered_at: new Date(receipt.deliveredAt).toISOString(), delivery: receipt.landed, est_tokens: Math.ceil(text.length / 4),

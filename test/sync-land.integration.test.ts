@@ -2,6 +2,7 @@
 // real: the server, harnessd, Git, srt. Complements the S3 test (the real CLI) with what it can't time:
 //  - a landed notice for a working agent waits for its turn end, and the agent is held during the sync;
 //  - a worktree diff that comes due during a sync waits for it, and never deadlocks with it;
+//  - an in-progress notice for a working agent rides its next tool batch; one replaced before then never arrives;
 //  - a conflict blocks the task; an unblock with the merge still unfinished blocks it again; once resolved,
 //    the notice and anything held meanwhile are delivered;
 //  - a sync that fails for another reason keeps its notice and runs again at the next turn end;
@@ -142,6 +143,48 @@ test('a worktree diff that comes due during a sync waits for it, and never deadl
   } finally {
     d.finishSync = finishSync;
   }
+});
+
+test('a high-priority notice for a working agent rides its next tool batch; one a land replaces first is withdrawn (D-99)', async () => {
+  const reader = await agent('agent/noticed');
+  const writer = await agent('agent/changer');
+  const tR = await startTask(reader, 'reader');
+  const r = fake.of(tR);
+  r.startTurn();
+  r.read(['src/types.ts', 'src/other.ts']);
+  r.endTurn();
+  await s.nextEvent((e) => e.kind === 'readset.added' && dataOf(e).task_id === tR, 10_000);
+  r.startTurn(); // working from here on
+  const tW = await startTask(writer, 'writer');
+  const w = fake.of(tW);
+  const inProgress = (p: string) => s.nextEvent((e) => e.kind === 'message.sent' && dataOf(e).kind === 'dependency_changed'
+    && dataOf(e).to_task_id === tR && dataOf(e).stage === 'in_progress' && dataOf(e).paths.includes(p), 10_000);
+  const edit = (f: string, content: string) => { fs.writeFileSync(path.join(s.worktreeOf(tW), f), content); w.edited([f]); };
+
+  w.startTurn();
+  edit('src/types.ts', 'export type User = { id: string; name: string };\n');
+  const first = dataOf(await inProgress('src/types.ts')).message_id as string;
+  await s.until(() => r.notices.some((n) => n.msg.id === first), 10_000, 'the notice queued for the next tool batch');
+  assert.ok(!r.injected.some((i) => i.id === first), 'not injected as a message');
+  r.toolBatch();
+  const delivered = await s.nextEvent((e) => e.kind === 'message.delivered' && dataOf(e).message_id === first, 10_000);
+  assert.equal(dataOf(delivered).delivery, 'between_tools');
+  assert.equal(r.injected.find((i) => i.id === first)?.via, 'notice');
+
+  // Still before the reader's next tool batch, the writer's change to the other file lands: the landed
+  // notice replaces the in-progress one, which is taken back, and arrives itself after the sync.
+  edit('src/other.ts', 'export const other = 2;\n');
+  const second = dataOf(await inProgress('src/other.ts')).message_id as string;
+  await s.until(() => r.notices.some((n) => n.msg.id === second), 10_000, 'the second notice queued');
+  w.endTurn();
+  await finish(tW, {});
+  const done = await land(tW);
+  assert.equal(done.kind, 'land.completed', JSON.stringify(dataOf(done)));
+  await s.nextEvent((e) => e.kind === 'message.superseded' && dataOf(e).message_id === second, 10_000);
+  await s.until(() => !r.notices.length, 10_000, 'the replaced notice withdrawn');
+  r.endTurn();
+  await s.until(() => r.injected.some((i) => i.text.includes('Dependency changed: src/other.ts')), 20_000, 'the landed notice');
+  assert.ok(!r.injected.some((i) => i.id === second), 'the replaced notice never reached the agent');
 });
 
 test('a sync conflict blocks the task; unblocking with the merge unfinished blocks it again; once resolved, everything held is delivered', async () => {
