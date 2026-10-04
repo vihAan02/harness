@@ -35,7 +35,9 @@ export async function mergeCommit(worktree: string, commit: string, message: str
 
 /** Files that differ between two commits. */
 export async function changedBetween(repo: string, from: string, to: string): Promise<string[]> {
-  return (await git(repo, 'diff', '--name-only', '-z', requireSha(from, 'from'), requireSha(to, 'to'))).split('\0').filter(Boolean).sort();
+  // --no-renames: a moved file names the path it left too, so the land's fencing check sees a file taken out of a
+  // leased folder, and readers of the old path hear it changed (D-93). Rename detection is on by default.
+  return (await git(repo, 'diff', '--no-renames', '--name-only', '-z', requireSha(from, 'from'), requireSha(to, 'to'))).split('\0').filter(Boolean).sort();
 }
 
 /** Each path's Git blob id at `commit`, or null where the path doesn't exist there (deleted). */

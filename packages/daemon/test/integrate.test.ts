@@ -151,3 +151,19 @@ test('the fast-forward never overwrites the human\'s ignored or untracked files,
   assert.equal(gitIn(repo, 'rev-parse', 'main'), before);
   t.cleanup();
 });
+
+test('a committed rename names both paths, so the fencing check and the notices see the path it left', async () => {
+  const { t, repo, sha } = setup();
+  try {
+    gitIn(repo, 'config', 'diff.renames', 'copies'); // a human's config that detects renames is overridden
+    const wt = path.join(t.dir, 'wt-mv');
+    await createWorktree(repo, wt, 'mv', sha);
+    fs.mkdirSync(path.join(wt, 'moved'));
+    gitIn(wt, 'mv', 'src/a.ts', 'moved/a.ts');
+    gitIn(wt, 'commit', '-q', '-m', 'move');
+    assert.deepEqual(await changedBetween(repo, sha, gitIn(wt, 'rev-parse', 'HEAD')), ['moved/a.ts', 'src/a.ts']);
+  } finally {
+    t.cleanup();
+  }
+});
+

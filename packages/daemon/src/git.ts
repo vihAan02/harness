@@ -56,7 +56,7 @@ export async function commitAll(worktree: string, message: string, author: { nam
  */
 export async function changedPaths(worktree: string, baseBranch: string): Promise<string[]> {
   const base = await git(worktree, 'merge-base', 'HEAD', baseBranch);
-  const committed = (await git(worktree, 'diff', '--name-only', '-z', base, 'HEAD')).split('\0');
+  const committed = (await git(worktree, 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD')).split('\0'); // both paths of a move
   const entries = (await git(worktree, 'status', '--porcelain', '-z', '--untracked-files=all')).split('\0');
   const uncommitted: string[] = [];
   for (let i = 0; i < entries.length; i++) {
