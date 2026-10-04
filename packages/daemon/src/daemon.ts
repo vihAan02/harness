@@ -71,6 +71,12 @@ const SYNC_HOLD = 'The harness is updating your branch with work that just lande
 const BLOCKED_HOLD = 'This task is paused: updating your branch with work that landed conflicted, and your human is resolving it. Stop and wait.';
 /** The most paths one report to the server lists (its own cap, kept under its message size limit). */
 const MAX_REPORT_PATHS = 5000;
+/**
+ * What a file name that reaches another agent's notice may not contain: control characters (C0 and C1),
+ * format characters such as bidi overrides, and line and paragraph separators. Any of them could forge a
+ * line of the notice or hide text in it (D-25, D-99).
+ */
+const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 /** Nobody approved a setup or test command in time (D-52); a land that hits it fails as `not_approved`. */
 export class ApprovalTimeout extends Error {}
 export type DaemonOptions = {
@@ -302,11 +308,11 @@ export class Daemon {
   }
 
   /**
-   * File names with control characters are never reported: they'd end up in other agents' notices,
-   * where a newline could forge a line (D-25). They're logged for the human instead.
+   * File names with control, format or line-separator characters are never reported: they'd end up in other
+   * agents' notices, where one could forge a line (D-25, D-99). They're logged for the human instead.
    */
   reportablePaths(run: RunningAgent, paths: string[]): string[] {
-    const bad = paths.filter((p) => /[\u0000-\u001f\u007f]/.test(p));
+    const bad = paths.filter((p) => UNSAFE_NAME.test(p));
     if (bad.length) this.log(`${run.agent.name} (${run.taskId}): not reporting ${bad.length} file name(s) with control characters: ${JSON.stringify(bad)}`);
     return paths.filter((p) => !bad.includes(p));
   }
@@ -438,7 +444,7 @@ export class Daemon {
     const blobs = await blobsAt(project.repo, merge, changed);
     await this.report(projectId, 'land.complete', {
       land_id: landId, old_base_sha: baseSha, new_base_sha: merge,
-      changed: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
+      changed: changed.filter((p) => !UNSAFE_NAME.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
     });
     this.log(`landed ${taskId}: ${project.baseBranch} is now ${merge.slice(0, 12)}`);
     this.leases.untrack(taskId);
@@ -593,9 +599,9 @@ export class Daemon {
 
   async injectLanded(run: RunningAgent, m: MessageInfo, oldBase: string, newBase: string, changed: string[]): Promise<void> {
     if (this.delivered.has(m.id)) return;
-    // File names come from Git and the server. Any with control characters were already dropped (reportablePaths);
-    // dropped again here, since a newline in one could forge a line of the notice (D-25).
-    changed = changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p));
+    // File names come from Git and the server. Unsafe ones were already dropped (reportablePaths); dropped again
+    // here, since a line break in one could forge a line of the notice (D-25).
+    changed = changed.filter((p) => !UNSAFE_NAME.test(p));
     const paths = (Array.isArray(m.data.paths) ? m.data.paths as string[] : []).filter((p) => changed.includes(p));
     const writer = typeof m.data.changed_by === 'string' ? this.view(run.projectId).agentName(m.data.changed_by) : 'another task';
     const excerpts: string[] = [];
