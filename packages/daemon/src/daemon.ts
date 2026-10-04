@@ -68,11 +68,15 @@ const SYNC_HOLD = 'The harness is updating your branch with work that just lande
 const BLOCKED_HOLD = 'This task is paused: updating your branch with work that landed conflicted, and your human is resolving it. Stop and wait.';
 /** The most paths one report to the server lists (its own cap, kept under its message size limit). */
 const MAX_REPORT_PATHS = 5000;
+/** Nobody approved a setup or test command in time (D-52); a land that hits it fails as `not_approved`. */
+export class ApprovalTimeout extends Error {}
 export type DaemonOptions = {
   home: Home; config?: LocalConfig;
   log?: (msg: string) => void; onEvent?: (e: EventMessage) => void;
   onObservation?: (run: RunningAgent, o: Observation) => void;
   heartbeatMs?: number; approvalPollMs?: number;
+  /** How long a setup or test command waits for `harness approve` before giving up. Default 30 minutes. */
+  approvalTimeoutMs?: number;
   /** After `task.completed`, how long to let the agent finish its turn before stopping it. Default 60 s. */
   finishGraceMs?: number;
   /** How often a running agent's worktree is diffed for edits the hooks missed (D-70). Default 15 s; also at every turn end. */
@@ -380,7 +384,7 @@ export class Daemon {
     } catch (e) {
       // Once the base has moved, the land happened: never report it failed. The record stays for a retry
       // now and for recovery at the next start.
-      if (!moved) await fail('error', (e as Error).message).catch(() => {});
+      if (!moved) await fail(e instanceof ApprovalTimeout ? 'not_approved' : 'error', (e as Error).message).catch(() => {});
       else {
         this.log(`land of ${taskId}: the base moved, but reporting it failed (${(e as Error).message}); retrying`);
         const saved = readJson<{ merge: string | null } | null>(this.landFile(landId), null);
@@ -959,9 +963,13 @@ export class Daemon {
     await report('ran', { exit_code: 0 });
   }
 
+  /** Waits for the human to approve a command (D-52). Gives up after `approvalTimeoutMs`, so nothing waits forever. */
   async waitForApproval(projectId: string, hash: string): Promise<void> {
+    const ms = this.o.approvalTimeoutMs ?? 30 * 60_000;
+    const deadline = Date.now() + ms;
     while (!this.approvals.isApproved(projectId, hash)) {
       if (this.stopping) throw new Error('harnessd stopped while waiting for approval');
+      if (Date.now() >= deadline) throw new ApprovalTimeout(`no approval after ${Math.round(ms / 1000)} s; approve it with harness approve, then try again`);
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
   }
