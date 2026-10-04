@@ -20,7 +20,7 @@
 | Presence heartbeat for agents and the device | ✓ | lease heartbeats | | |
 | Message delivery at safe boundaries (D-26) | SDK streaming input: next tool boundary, or a new turn if idle (F-02) | + notices attached to tool results, Stop gate | Codex: between turns (F-33) | |
 | Read capture → read sets | | ✓ | | |
-| Confinement via `compilePermissions` (D-35) | write confinement, shared-`.git` deny, sandbox on | + read confinement for T-1 | | full compile |
+| Confinement via `compilePermissions` (D-35) | write confinement, shared-`.git` deny, sandbox on | + read confinement for T-1 (D-98: home, harness state and the checkout denied; `[agents] read_allow` adds paths) | | full compile |
 | Git write operations: commit, sync, land, push (D-50) | ✓ (commits) | + sync (D-53), local land (D-51) | checkpoint pushes, PRs | |
 | Sleep, shutdown and crash handling | | | ✓ | |
 | Local approval prompts (CLI) | setup/test commands (D-52) | | remote requests (D-34) | dashboard |

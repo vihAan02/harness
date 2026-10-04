@@ -930,6 +930,42 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - **A land that fails its tests** leaves the task `done`, and its leases keep renewing until it lands or is abandoned. Others wait, or a human uses `--force` (no land is in flight then).
     - **Volume:** a `lease.renewed` about every 40 s per task is accepted for 0B.
   - *Source:* 0B item 5, D-89, S10. *Status:* Proposal.
+- **D-98 How read confinement is built (0B item 7; refines D-61).**
+  - **Scope:**
+    - **Denied:** the home directory, the harness's own state and the main checkout.
+    - **Allowed back:**
+      - the task's worktree;
+      - the shared `.git` (read-only Git needs it);
+      - the session's own tool-results directory (F-101);
+      - toolchains on the agent's PATH that live in the home directory. Each PATH directory itself; a toolchain manager's own directory (nvm, pyenv, rbenv, asdf, volta, mise, fnm, bun, deno, sdkman, rustup); and a versioned install root two or more levels down. Never a general folder like `~/.local` or `~/.cargo`, which hold credentials. With `~/.cargo/bin` on PATH, also cargo's registry and git caches and rustup;
+      - symlinks the shell walks through on PATH (fnm's multishells, nvm's `current`), for shell commands only;
+      - the corepack cache;
+      - temp, if it's in the home directory;
+      - paths in `[agents] read_allow` in the local config.
+    - **An allowed path never contains, or sits inside, a credential path** (`~/.ssh`, `~/.aws`, `~/.cargo/credentials.toml`, keyrings, …), compared both where it is and where it really is (a dotfiles repo may symlink them). It never contains the human's own folders (`Documents`, `Desktop`, `Library`, …), the home directory itself, harness state or the checkout, and never sits inside harness state or the checkout. One that would is refused and logged.
+    - **Everything else stays readable** (system paths, temp outside home), as T-1 requires and no more.
+  - **Three layers, each needed (F-98, F-99, F-100):**
+    1. **Static deny rules for the file tools.** A flag-settings `Read(//entry)` and `Read(//entry/**)` deny for every entry inside a denied root that isn't on the way to an allowed one, computed when the session opens. A deny rule beats any allow, so a root can't be denied with the worktree carved back out (F-98).
+       - **Symlinks are skipped:** a rule denies the link's target (F-103).
+       - **Unlistable directories:** one on the way that can't be listed refuses the session.
+       - **Unspellable names:** names a rule can't spell literally (glob or rule syntax) are left to layers 2 and 3.
+       - **Size budget:** over 64 KB of rules (they slow every shell command and travel as one argument, F-104), only each root's top level gets rules, and layers 2 and 3 confine the rest.
+    2. **A call-time check in the dead-man PreToolUse** (fail closed, D-62).
+       - **What it checks:** Read's file, Grep's and Glob's search root, and the fixed part of a Glob pattern.
+       - **How:** symlinks are followed, and each component gets its on-disk case through the native realpath, so on macOS's case-insensitive file systems `/USERS/…` can't pass for a path outside `/Users/…`.
+       - **`~` paths are refused:** the CLI expands some of them only after the hook (F-102).
+       - **What it catches:** what no static rule could name, such as a sibling worktree created after the session started (F-100).
+    3. **The sandbox for shell reads.** `denyRead` on the denied roots, and `allowRead` on the allowed ones, which takes precedence (F-99). This covers `cat`, `grep -r`, Python and entries created later, at the OS level.
+  - **Git** gets an empty global config, so the human's (unreadable, and possibly holding tokens) is never needed: `GIT_CONFIG_GLOBAL=/dev/null` and friends (F-105). Agents never commit (D-50).
+  - **What stays readable on purpose (residual, TH-3):**
+    - The shared `.git`, so through Git, other tasks' *committed* branches. Project code, not secrets.
+    - The checkout's `.git/config`, which can hold a remote URL with a token. Use a credential helper, not a token in the URL.
+  - **Tests:**
+    - **T-1** (`test/security/t1-read-confinement.integration.test.ts`): a hostile peer; every read channel (other spellings of a path and `~` paths included); a sibling created later; the canary checked everywhere; legitimate Git, Grep and the read-back of a saved big output.
+    - **`t1-workflows`:** toolchains (nvm, fnm, pyenv, cargo and rustup, `~/.local/bin`), the corepack cache and Git work, while the credentials beside them stay closed.
+    - **Negative controls:** each layer, and each fix of the A3 review, has one.
+  - **Review:** an adversarial review (four empirical lenses plus a skeptic) confirmed 12 findings, all fixed: 3 critical leaks (the `~` paths, toolchain roots opening `~/.local` and `~/.cargo`, symlinked credential directories) and 9 that broke legitimate work or weakened a layer.
+  - *Source:* 0B item 7, D-61, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)

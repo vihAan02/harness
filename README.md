@@ -53,6 +53,8 @@ harnessd runs agents through Claude Code, which speaks the Anthropic Messages AP
 [agents]
 provider = "deepseek"     # or HARNESS_PROVIDER=deepseek in harnessd's environment
 max_budget_usd = 2        # per session, against configured prices
+# read_allow = ["~/.cache/ms-playwright"]   # agents can't read your home directory (D-98). Toolchains on PATH,
+#                                           # the corepack cache and Git work; add anything else they need here
 
 [providers.deepseek]      # copied from docs/examples/providers.toml
 base_url = "https://api.deepseek.com/anthropic"
