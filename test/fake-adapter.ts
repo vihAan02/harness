@@ -7,8 +7,8 @@ import type {
   AgentAdapter, Capabilities, DeliveryReceipt, EnvelopedMessage, Observation, ObservedRead, SessionHandle, SessionSpec, SessionStatus,
 } from '../packages/adapters/src/adapter.ts';
 
-/** `notice`: attached after a tool batch, through the notice queue (D-99); otherwise injected as a message. */
-export type Injection = { id: string; text: string; hold: string | null; status: SessionStatus; at: number; via?: 'notice' };
+/** `notice`: attached after a tool batch (D-99); `stop`: delivered by the Stop gate (D-100); otherwise injected as a message. */
+export type Injection = { id: string; text: string; hold: string | null; status: SessionStatus; at: number; via?: 'notice' | 'stop' };
 type Queued = { msg: EnvelopedMessage; resolve: (r: DeliveryReceipt) => void; reject: (e: Error) => void };
 
 export class FakeSession implements SessionHandle {
@@ -29,8 +29,26 @@ export class FakeSession implements SessionHandle {
   }
   emit(o: Observation): void { this.out.push(o); }
   startTurn(): void { this.status = 'working'; this.emit({ kind: 'status', status: 'working' }); }
-  /** Turn end. Notices no tool batch took open the next turn at once, as with the real adapter: no idle in between (D-99). */
+  /**
+   * Turn end, as with the real adapter. While the task is in progress, the Stop gate delivers the notices no
+   * tool batch took, and the turn then ends (D-100; the fake has no cap). Once it isn't, they fail undelivered.
+   * Any left over would open the next turn at once, with no idle in between (D-99).
+   */
   endTurn(): void {
+    const open = this.spec.taskOpen?.() !== false;
+    if (this.spec.turnEndPending?.()) {
+      // harnessd syncs at this turn end: the notices wait for its next message (D-100).
+      if (!open) for (const n of this.notices.splice(0)) n.reject(new Error('not delivered: the task is no longer in progress'));
+      this.status = 'idle';
+      this.emit({ kind: 'turn.ended', reason: 'completed', isError: false, denied: 0, deniedIds: [] });
+      this.emit({ kind: 'status', status: 'idle' });
+      return;
+    }
+    for (const n of this.notices.splice(0)) {
+      if (!open) { n.reject(new Error('not delivered: the task is no longer in progress')); continue; }
+      this.injected.push({ id: n.msg.id, text: n.msg.text, hold: this.hold, status: this.status, at: Date.now(), via: 'stop' });
+      n.resolve({ messageId: n.msg.id, landed: 'stop_hook', deliveredAt: Date.now() });
+    }
     const next = this.notices.length > 0;
     if (!next) this.status = 'idle';
     this.emit({ kind: 'turn.ended', reason: 'completed', isError: false, denied: 0, deniedIds: [] });

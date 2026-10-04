@@ -76,6 +76,9 @@ export type SessionSpec = {
   model?: ModelConfig; // unset: the vendor's default model
   maxBudgetUsd?: number; // per session, against the cost the adapter reports (configured prices where given)
   readPolicy?: ReadPolicy; // what the agent may read (D-61, D-98); harnessd always sets it, real paths
+  taskOpen?: () => boolean; // is the task still in progress? The Stop gate keeps the agent going only then (D-100). Unset: yes
+  /** harnessd has work waiting for this turn to end (a sync, D-53): the Stop gate lets it end, and queued notices wait for harnessd's next message (D-100). */
+  turnEndPending?: () => boolean;
   log?: (line: string) => void; // vendor stderr; never contains our options' secrets (none are passed as options)
 };
 
@@ -117,18 +120,23 @@ export type Observation =
   | { kind: 'usage'; input: number; output: number; cacheRead: number; cacheCreation: number; costUsd: number; costBasis: CostBasis; models: string[]; cumulative: true }
   | { kind: 'error'; error: ErrorKind; message: string }
   | { kind: 'delivery'; messageId: string; landed: Landed; deliveredAt: number }
+  /** The Stop gate reached the vendor's continuation cap with notices still queued; they open the next turn (D-100). */
+  | { kind: 'stop.capped'; pending: number }
   | { kind: 'ended'; reason: string };
 
 /**
  * Where an adapter's hooks report to. `gate` runs before every tool call and returns a reason to
  * deny it, or null; the adapter uses it to hold tools until the session's hardening is verified.
  * `notices` runs after each batch of tool calls and returns queued notice text to attach to the
- * results, at most `maxChars` long (or null); what it returns counts as delivered (D-99).
+ * results, at most `maxChars` long (or null); what it returns counts as delivered (D-99). `stop` runs
+ * when the agent is about to end its turn (`continued`: right after a Stop continuation) and returns
+ * notice text to keep it going with, or null (D-100).
  */
 export type HarnessHookSink = {
   observe: (o: Observation) => void;
   gate?: () => Promise<string | null>;
   notices?: (maxChars: number) => string | null;
+  stop?: (continued: boolean) => string | null;
 };
 
 export interface SessionHandle {
@@ -150,9 +158,10 @@ export interface AgentAdapter<PolicyBundle = unknown, HookBundle = unknown> {
    * A high-priority harness notice (coordination.md §3), attached to the agent's context at the vendor's
    * earliest point: after its next batch of tool calls while a turn runs (`between_tools`). A notice too
    * long to attach, or for a session that isn't in a turn, is injected like any message and lands where
-   * injection lands. One still queued when the turn ends opens the next turn (`new_turn`), and one queued
-   * before another message is injected goes out ahead of it. Never a landed notice, which waits for the
-   * sync (D-53, D-99).
+   * injection lands. When the agent is about to end its turn with notices queued and its task open, the
+   * Stop gate keeps it going with them (`stop_hook`, D-100). One still queued when the turn ends opens the
+   * next turn (`new_turn`), and one queued before another message is injected goes out ahead of it. Never
+   * a landed notice, which waits for the sync (D-53, D-99).
    */
   queueNotice(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
   /** Takes back a queued notice not delivered yet, because a newer one replaced it; its receipt rejects. True if it was still queued. */

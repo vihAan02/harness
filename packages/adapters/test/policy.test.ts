@@ -145,6 +145,7 @@ test('session env: the vendor default endpoint gets the key as an API key, and n
   assert.equal(env.ANTHROPIC_BASE_URL, undefined);
   assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined, 'no model configured: the vendor picks its own');
   assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+  assert.equal(env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP, '8', 'the Stop gate counts on the cap (D-100)');
   assert.equal(env.PORT, '3100');
 });
 

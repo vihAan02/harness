@@ -665,8 +665,9 @@ Source for F-101 to F-105: the A3 adversarial review's probes against the pinned
 **F-107 ✔ Stop hook outputs, as the model sees them** (2.1.287, checked 2026-10-03).
 - **`additionalContext` continues the turn** (no `decision` needed). It arrives as a user message, "<system-reminder>\nStop hook additional context: <text>\n</system-reminder>".
 - **`decision: 'block'`** continues it too. Its reason arrives **twice**: as a plain user message, "Stop hook feedback:\n<reason>" (no system-reminder around it), and then as a `system` message, "Stop:Callback hook blocking error from command: \"callback\": <reason>". So only `additionalContext` keeps a Stop hook's text out of a bare user-role message.
-- **`stop_hook_active`** is false on the first Stop of a turn and true on the Stop after a continuation.
-- **The cap of 8 consecutive continuations (F-09) covers `additionalContext` as well:** a hook that always returned context was called 9 times, and the 9th didn't continue.
+- **`stop_hook_active`** is false on the first Stop of a turn, and true on every later Stop of that turn once one continuation has happened, tool batches in between or not.
+- **The cap counts continuations with no tool batch between them:** the CLI starts its count again after every batch. A hook that always returned context, in a turn that ran a tool after each of its first 12 continuations, was called 21 times: 12 with a batch between, then 8 in a row, and the 9th didn't continue.
+- **The cap of 8 consecutive continuations (F-09) covers `additionalContext` as well:** a hook that always returned context was called 9 times, and the 9th didn't continue. The pinned binary reads it as `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP ?? 8`.
 
 **F-108 ✔ An interrupt while the PostToolBatch hooks run ends the session's turn with a crash** (2.1.287, checked 2026-10-03). The CLI checks for an abort right after those hooks and before the next request, and an abort that lands during them escapes as `AbortError` (`error_during_execution: [session_crash] error_name=AbortError`). The same interrupt during PostToolUse ends the turn cleanly (`aborted_tools`). A graceful stop then still ends the session as `stopped`; the only effect is one extra error line. Every session registers PostToolBatch (D-99), so this window exists on every tool batch.
 

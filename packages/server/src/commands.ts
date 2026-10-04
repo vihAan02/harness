@@ -9,7 +9,7 @@ import { inTransaction, isUniqueViolation } from './db.ts';
 import { appendEvents, notifyProject } from './events.ts';
 import { CommandError, type Actor, type Caller, type Handler } from './handler.ts';
 import { createAgent } from './agents.ts';
-import { reportSetup, reportWorktree } from './reports.ts';
+import { reportSetup, reportStopGate, reportWorktree } from './reports.ts';
 import { reportSession } from './sessions.ts';
 import { abandonTask, assignTask, completeTask, createTask } from './tasks.ts';
 import { ackMessage, sendMessage } from './messages.ts';
@@ -28,6 +28,7 @@ const HANDLERS: Record<string, Handler> = {
   'agent.create': createAgent,
   'worktree.report': reportWorktree,
   'setup.report': reportSetup,
+  'stop_gate.report': reportStopGate,
   'session.report': reportSession,
   'task.create': createTask,
   'task.assign': assignTask,
