@@ -64,6 +64,14 @@ test('changed paths diff against the merge base, so a synced base never counts a
   assert.deepEqual(await changedPaths(wt, 'main'), ['src/a.ts', 'src/b.ts', 'src/b2.ts', 'untracked.ts']);
 });
 
+test('a committed rename counts both paths as changed', async () => {
+  const wt = path.join(t.dir, 'wt-mv');
+  await createWorktree(repo, wt, 'task-mv', sha);
+  gitIn(wt, 'mv', 'src/a.ts', 'src/moved.ts');
+  await commitAll(wt, 'agent', { name: 'agent/a', email: 'a@harness.invalid' });
+  assert.deepEqual(await changedPaths(wt, 'main'), ['src/a.ts', 'src/moved.ts']);
+});
+
 test('teardown removes the worktree, and deletes its branch only when merged', async () => {
   const merged = path.join(t.dir, 'wt-4');
   await createWorktree(repo, merged, 'task-4', sha);
