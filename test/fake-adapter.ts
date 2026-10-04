@@ -7,7 +7,9 @@ import type {
   AgentAdapter, Capabilities, DeliveryReceipt, EnvelopedMessage, Observation, ObservedRead, SessionHandle, SessionSpec, SessionStatus,
 } from '../packages/adapters/src/adapter.ts';
 
-export type Injection = { id: string; text: string; hold: string | null; status: SessionStatus; at: number };
+/** `notice`: attached after a tool batch, through the notice queue (D-99); otherwise injected as a message. */
+export type Injection = { id: string; text: string; hold: string | null; status: SessionStatus; at: number; via?: 'notice' };
+type Queued = { msg: EnvelopedMessage; resolve: (r: DeliveryReceipt) => void; reject: (e: Error) => void };
 
 export class FakeSession implements SessionHandle {
   id: string;
@@ -17,6 +19,7 @@ export class FakeSession implements SessionHandle {
   hold: string | null = null;
   holds: (string | null)[] = [];
   injected: Injection[] = [];
+  notices: Queued[] = [];
   out = new AsyncQueue<Observation>();
   spec: SessionSpec;
   private calls = 0;
@@ -26,10 +29,28 @@ export class FakeSession implements SessionHandle {
   }
   emit(o: Observation): void { this.out.push(o); }
   startTurn(): void { this.status = 'working'; this.emit({ kind: 'status', status: 'working' }); }
+  /** Turn end. Notices no tool batch took open the next turn at once, as with the real adapter: no idle in between (D-99). */
   endTurn(): void {
-    this.status = 'idle';
+    const next = this.notices.length > 0;
+    if (!next) this.status = 'idle';
     this.emit({ kind: 'turn.ended', reason: 'completed', isError: false, denied: 0, deniedIds: [] });
+    if (next) return this.flushNotices(true);
     this.emit({ kind: 'status', status: 'idle' });
+  }
+  /** Queued notices go out as messages: at turn end, or ahead of a message injected after them. */
+  flushNotices(atTurnEnd: boolean): void {
+    for (const n of this.notices.splice(0)) n.resolve(this.inject(n.msg, atTurnEnd ? 'idle' : this.status));
+  }
+  /** A batch of tool calls finished: the queued notices are attached to its results. */
+  toolBatch(): void {
+    for (const n of this.notices.splice(0)) {
+      this.injected.push({ id: n.msg.id, text: n.msg.text, hold: this.hold, status: this.status, at: Date.now(), via: 'notice' });
+      n.resolve({ messageId: n.msg.id, landed: 'between_tools', deliveredAt: Date.now() });
+    }
+  }
+  inject(msg: EnvelopedMessage, status: SessionStatus = this.status): DeliveryReceipt {
+    this.injected.push({ id: msg.id, text: msg.text, hold: this.hold, status, at: Date.now() });
+    return { messageId: msg.id, landed: status === 'working' ? 'between_tools' : 'new_turn', deliveredAt: Date.now() };
   }
   /** A tool call the hooks saw, with what it read. */
   read(paths: string[]): void {
@@ -65,14 +86,26 @@ export class FakeAdapter implements AgentAdapter {
   injectMessage(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt> {
     const s = h as FakeSession;
     if (s.status === 'ended') return Promise.reject(new Error('ended'));
-    s.injected.push({ id: msg.id, text: msg.text, hold: s.hold, status: s.status, at: Date.now() });
-    const landed = s.status === 'working' ? 'between_tools' : 'new_turn';
-    return Promise.resolve({ messageId: msg.id, landed, deliveredAt: Date.now() });
+    s.flushNotices(false);
+    return Promise.resolve(s.inject(msg));
+  }
+  queueNotice(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt> {
+    const s = h as FakeSession;
+    if (s.status !== 'working') return this.injectMessage(h, msg);
+    return new Promise((resolve, reject) => { s.notices.push({ msg, resolve, reject }); });
+  }
+  withdrawNotice(h: SessionHandle, messageId: string): boolean {
+    const s = h as FakeSession;
+    const i = s.notices.findIndex((n) => n.msg.id === messageId);
+    if (i < 0) return false;
+    s.notices.splice(i, 1)[0]!.reject(new Error('withdrawn'));
+    return true;
   }
   async stopSession(h: SessionHandle): Promise<void> {
     const s = h as FakeSession;
     if (s.status === 'ended') return;
     s.status = 'ended';
+    for (const n of s.notices.splice(0)) n.reject(new Error('ended'));
     s.emit({ kind: 'ended', reason: 'stopped' });
     s.out.end();
   }

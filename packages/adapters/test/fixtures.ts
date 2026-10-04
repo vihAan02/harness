@@ -43,7 +43,8 @@ export async function fixture(): Promise<Fixture> {
   };
   return {
     root, repo, worktree, gitCommonDir: path.join(repo, '.git'), outside, mock, spec,
-    cleanup: async () => { await mock.close(); fs.rmSync(root, { recursive: true, force: true }); },
+    // A CLI killed a moment ago may still be writing its last files: retry the removal (ENOTEMPTY).
+    cleanup: async () => { await mock.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); },
   };
 }
 

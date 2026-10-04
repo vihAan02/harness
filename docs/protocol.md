@@ -210,12 +210,12 @@ If an agent never calls these tools, the harness still works from its observatio
 | `PostToolUse` (Edit, Write) | Observed claim for `file_path` (F-07) | 0A |
 | `PostToolUse` (Bash) | `bashEditDiff` → observed claims, with `bashEditDiffEnabled: true` in harness settings (F-07). In 0B, also parse the command for reads (`cat`, `head`, `tail`, `sed -n`, `rg`/`grep` on single files) → low-confidence read entries | 0A (writes), 0B (reads) |
 | `PostToolUse` (Read, Grep, LSP) | Add read entries. **Hash the file from disk**, not from `tool_response`: repeated reads can return a "file_unchanged" stub, and partial reads are truncated (F-08). Record offset/limit as the range. Then check the path against active observed claims (coordination §2) | 0B |
-| `PostToolUse` / `PostToolBatch` | Return `additionalContext` with pending high-priority notices (`dependency_changed` with `stage: in_progress`, `claim_conflict`), phrased as facts (F-10), under the 10,000-character cap (F-05). **Never `landed` notices,** which wait for the sync (D-53) | 0B |
+| `PostToolUse` / `PostToolBatch` | Return `additionalContext` with pending high-priority notices (`dependency_changed` with `stage: in_progress`, `claim_conflict`), phrased as facts (F-10), under the 10,000-character cap (F-05). **Never `landed` notices,** which wait for the sync (D-53) | 0B. **Built** (D-99): PostToolBatch, once per batch, the queued notices, oldest first, that fit in 10,000 characters together (F-106); the rest wait for the next batch. Notices still queued at turn end, a single notice over 10,000 characters, and notices for a session not in a turn are injected |
 | `PreToolUse` (Read, Edit, Write, Bash) | Deny actions outside policy (out-of-worktree paths, protected paths, Git write commands) as defense in depth. Optionally *warn* when editing a path hard-claimed by another task | 0B. **Built:** writes outside the worktree (0A); reads (Read, Grep, Glob) outside the read policy, checked at call time (D-98) |
 | `Stop` | Return `decision: block` with a reason when **(open task AND unread high-priority notice) OR a `wait_for` just resolved**. Honor `stop_hook_active` and the 8-continuation cap (F-09). After the cap, escalate to the human. The pending sync (D-53) is **not** run in this callback, which can fail open; `harnessd` runs it when it sees the turn's result in the session stream | 0B |
 
 - **Instruction files:** with `settingSources: []` (D-45), Claude Code doesn't load the repo's CLAUDE.md itself. `harnessd` injects it as context and records it as a read entry (source `instructions`), so no `InstructionsLoaded` hook is needed.
-- **Message delivery in 0A doesn't need hooks.** It uses SDK streaming input through `injectMessage` (F-02).
+- **Message delivery in 0A doesn't need hooks.** It uses SDK streaming input through `injectMessage` (F-02). From 0B, high-priority harness notices go through `queueNotice` and the PostToolBatch hook instead (D-99).
 
 ## 8. Peer-message envelope
 
@@ -227,7 +227,7 @@ If an agent never calls these tools, the harness still works from its observatio
 - **With the SDK,** it's sent as a user message with an explicit `origin` (F-02): `peer` for agents and remote humans, `coordinator` for harness notices, `human` for the local owner.
 - **Phrased as facts,** not imperative "system" commands. The vendor docs warn that imperative injected text can trigger prompt-injection defenses (F-10).
 - **The standing instruction** about untrusted peers ([coordination.md §3](coordination.md#3-messages-d-24-d-25-d-26)) goes in the **system prompt** at session start, not in each message.
-- **As built (D-80):** untrusted text is quoted line by line (`> `), so a peer can't forge a header or a second envelope inside it. Paths shown in envelopes never contain control characters.
+- **As built (D-80):** untrusted text is quoted line by line (`> `), so a peer can't forge a header or a second envelope inside it. Paths shown in envelopes never contain control characters; from D-99, harnessd also leaves out names with C1 controls, format characters (such as bidi overrides) and line or paragraph separators.
 
 **Sender classes:**
 

@@ -6,6 +6,8 @@
 //   paths the static deny rules couldn't name, such as a sibling worktree created after the session started (F-100).
 // - PostToolUse captures edits: file-tool paths, plus `bashEditDiff` for Bash writes (F-07). It
 //   fails open, so harnessd backs it up with worktree diffs (D-70).
+// - PostToolBatch attaches queued high-priority notices to the batch's results (D-99): it runs once per
+//   batch, and its context reaches the next model request (F-106).
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HookCallbackMatcher, HookEvent } from '@anthropic-ai/claude-agent-sdk';
@@ -13,6 +15,8 @@ import type { HarnessHookSink, ObservedRead, SessionSpec } from '../adapter.ts';
 import { readAllowed } from '../readpolicy.ts';
 
 export const DEAD_MAN_TIMEOUT_S = 5;
+/** Hook context up to this many characters reaches the model whole; longer, the CLI saves it to a file and sends a preview (F-106). */
+export const NOTICE_CONTEXT_CAP = 10_000;
 const FILE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
@@ -198,9 +202,19 @@ export function claudeHooks(spec: Pick<SessionSpec, 'worktree' | 'readPolicy'>, 
     }
     return {};
   };
+  const postToolBatch = async () => {
+    try {
+      const text = sink.notices?.(NOTICE_CONTEXT_CAP);
+      if (text) return { hookSpecificOutput: { hookEventName: 'PostToolBatch' as const, additionalContext: text } };
+    } catch {
+      // Fails open: a notice not taken stays queued, and goes out after the next batch or at turn end.
+    }
+    return {};
+  };
   return {
     PreToolUse: [{ timeout: DEAD_MAN_TIMEOUT_S, hooks: [preToolUse] }],
     PostToolUse: [{ hooks: [postToolUse] }],
     PostToolUseFailure: [{ hooks: [postToolUseFailure] }],
+    PostToolBatch: [{ hooks: [postToolBatch] }],
   };
 }

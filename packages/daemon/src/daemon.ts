@@ -71,6 +71,12 @@ const SYNC_HOLD = 'The harness is updating your branch with work that just lande
 const BLOCKED_HOLD = 'This task is paused: updating your branch with work that landed conflicted, and your human is resolving it. Stop and wait.';
 /** The most paths one report to the server lists (its own cap, kept under its message size limit). */
 const MAX_REPORT_PATHS = 5000;
+/**
+ * What a file name that reaches another agent's notice may not contain: control characters (C0 and C1),
+ * format characters such as bidi overrides, and line and paragraph separators. Any of them could forge a
+ * line of the notice or hide text in it (D-25, D-99).
+ */
+const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 /** Nobody approved a setup or test command in time (D-52); a land that hits it fails as `not_approved`. */
 export class ApprovalTimeout extends Error {}
 export type DaemonOptions = {
@@ -186,6 +192,17 @@ export class Daemon {
       const run = m?.to ? [...this.running.values()].find((r) => r.projectId === e.project_id && r.agent.id === m.to && (!m.toTask || r.taskId === m.toTask)) : undefined;
       if (m && run) void this.deliver(run, m);
     }
+    if (e.kind === 'message.superseded') {
+      // A notice still in the agent's queue is old news when the newer one is about the same writer's change
+      // (in progress, or landed). Another writer's notice doesn't tell it, so that one still goes (D-99).
+      const d = e.data as { message_id: string; by?: string; to_task_id?: string };
+      const run = d.to_task_id ? this.running.get(d.to_task_id) : undefined;
+      const messages = this.views.get(e.project_id)?.messages;
+      const writer = messages?.get(d.message_id)?.data.writer_task;
+      if (run && run.projectId === e.project_id && typeof writer === 'string' && d.by && messages?.get(d.by)?.data.writer_task === writer) {
+        run.adapter.withdrawNotice(run.handle, d.message_id);
+      }
+    }
     if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
       const d = e.data as { land_id: string; task_id: string; run_tests?: boolean };
       this.queueLand(e.project_id, () => this.land(e.project_id, d.land_id, d.task_id, d.run_tests !== false));
@@ -251,8 +268,9 @@ export class Daemon {
 
   /**
    * Injects a message into the recipient's live session at its next safe boundary (D-26), rendered in
-   * its envelope (D-25), then acknowledges where it landed. Held (over-budget) messages are never
-   * delivered. Messages for an agent with no live session wait in the log until its session starts.
+   * its envelope (D-25), then acknowledges where it landed. A high-priority harness notice goes to the
+   * adapter's notice queue instead (D-99). Held (over-budget) messages are never delivered. Messages for
+   * an agent with no live session wait in the log until its session starts.
    */
   async deliver(run: RunningAgent, m: MessageInfo): Promise<void> {
     if (m.held || m.deliveredAt || m.supersededBy || this.delivering.has(m.id) || this.delivered.has(m.id)) return;
@@ -275,7 +293,9 @@ export class Daemon {
       };
       const text = renderMessage(msg);
       const origin = msg.sender.kind === 'harness' ? 'coordinator' : msg.sender.kind === 'human' && msg.sender.local ? 'human' : 'peer';
-      const receipt = await run.adapter.injectMessage(run.handle, { id: m.id, text, origin });
+      // The harness's own high-priority notices ride the agent's next tool results (D-99); everything else is injected.
+      const notice = msg.sender.kind === 'harness' && m.priority === 'high';
+      const receipt = await (notice ? run.adapter.queueNotice(run.handle, { id: m.id, text, origin }) : run.adapter.injectMessage(run.handle, { id: m.id, text, origin }));
       this.delivered.add(m.id);
       await this.report(run.projectId, 'message.ack', {
         message_id: m.id, delivered_at: new Date(receipt.deliveredAt).toISOString(), delivery: receipt.landed, est_tokens: Math.ceil(text.length / 4),
@@ -288,11 +308,11 @@ export class Daemon {
   }
 
   /**
-   * File names with control characters are never reported: they'd end up in other agents' notices,
-   * where a newline could forge a line (D-25). They're logged for the human instead.
+   * File names with control, format or line-separator characters are never reported: they'd end up in other
+   * agents' notices, where one could forge a line (D-25, D-99). They're logged for the human instead.
    */
   reportablePaths(run: RunningAgent, paths: string[]): string[] {
-    const bad = paths.filter((p) => /[\u0000-\u001f\u007f]/.test(p));
+    const bad = paths.filter((p) => UNSAFE_NAME.test(p));
     if (bad.length) this.log(`${run.agent.name} (${run.taskId}): not reporting ${bad.length} file name(s) with control characters: ${JSON.stringify(bad)}`);
     return paths.filter((p) => !bad.includes(p));
   }
@@ -424,7 +444,7 @@ export class Daemon {
     const blobs = await blobsAt(project.repo, merge, changed);
     await this.report(projectId, 'land.complete', {
       land_id: landId, old_base_sha: baseSha, new_base_sha: merge,
-      changed: changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
+      changed: changed.filter((p) => !UNSAFE_NAME.test(p)).map((p) => ({ path: p, new_hash: blobs.get(p) ?? null })),
     });
     this.log(`landed ${taskId}: ${project.baseBranch} is now ${merge.slice(0, 12)}`);
     this.leases.untrack(taskId);
@@ -579,9 +599,9 @@ export class Daemon {
 
   async injectLanded(run: RunningAgent, m: MessageInfo, oldBase: string, newBase: string, changed: string[]): Promise<void> {
     if (this.delivered.has(m.id)) return;
-    // File names come from Git and the server. Any with control characters were already dropped (reportablePaths);
-    // dropped again here, since a newline in one could forge a line of the notice (D-25).
-    changed = changed.filter((p) => !/[\u0000-\u001f\u007f]/.test(p));
+    // File names come from Git and the server. Unsafe ones were already dropped (reportablePaths); dropped again
+    // here, since a line break in one could forge a line of the notice (D-25).
+    changed = changed.filter((p) => !UNSAFE_NAME.test(p));
     const paths = (Array.isArray(m.data.paths) ? m.data.paths as string[] : []).filter((p) => changed.includes(p));
     const writer = typeof m.data.changed_by === 'string' ? this.view(run.projectId).agentName(m.data.changed_by) : 'another task';
     const excerpts: string[] = [];

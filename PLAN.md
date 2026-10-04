@@ -983,6 +983,20 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - **Negative controls:** each layer, and each fix of the A3 review, has one.
   - **Review:** an adversarial review (four empirical lenses plus a skeptic) confirmed 12 findings, all fixed: 3 critical leaks (the `~` paths, toolchain roots opening `~/.local` and `~/.cargo`, symlinked credential directories) and 9 that broke legitimate work or weakened a layer.
   - *Source:* 0B item 7, D-61, S10. *Status:* Proposal.
+- **D-99 High-priority notices ride tool results (0B item 3; refines D-26).**
+  - **What:** a harness notice with high priority (`dependency_changed` in progress, `claim_conflict`; coordination §3) goes through `AgentAdapter.queueNotice`, not `injectMessage`. Landed notices never do: they wait for the sync (D-53).
+  - **How, for Claude Code:**
+    - While a turn runs, the notice waits in the session's queue. The PostToolBatch hook attaches the queued notices, oldest first, as many as fit in 10,000 characters together (F-106), and they count as delivered (`between_tools`).
+    - A notice that's too long to attach whole, or one for a session that isn't in a turn, is injected like any message.
+    - **At turn end,** notices still queued are injected and open the next turn at once (`new_turn`). The session reports the turn's end but is never idle in between, as when the CLI chains a queued message itself, so harnessd never starts a sync or a stop in that gap. A5b's Stop gate gets a chance at them first.
+    - **Order:** a message injected while notices are queued sends them first, so a later message never overtakes them.
+    - When the session ends, queued notices fail, so harnessd delivers them to the task's next session.
+  - **Why not just inject them:** injection lands at the same boundary, but the CLI frames a mid-turn injection as "The user sent a new message" (C-14). Hook context arrives as the harness's own context. And a queue the harness holds is one it can still change, which injection isn't.
+  - **Withdrawn when replaced by the same writer's news:** when the server supersedes a notice that's still queued and the newer notice is about the same writer's change (its next edit, or its land), harnessd takes it back (`withdrawNotice`). So the Stop gate never keeps an agent going for old news. The server's rule (D-92) supersedes across writers too; another writer's notice says nothing about this one, so harnessd still delivers it.
+  - **Trust:** a hook-attached notice arrives as `system` text. Its only parts not written by the harness are file paths and agent names (`agent/…`, validated). harnessd never reports, or names in a notice, a file name with a control character (C0 or C1), a format character (such as a bidi override) or a line or paragraph separator; it logs them for the human instead. (The server still refuses only C0 controls.)
+  - **Tests:** `packages/adapters/test/notices.test.ts` (the real CLI: batching, the exact cap, every fallback, order, no idle at a turn-end flush, withdrawal, the session's end) and `test/sync-land.integration.test.ts` (harnessd's routing, withdrawal for the same writer only, and unsafe file names), each with negative controls.
+  - **Review:** an adversarial review (four lenses, each checked by a skeptic) confirmed seven findings, all fixed: withdrawal across writers; F-107's account of a `block` reason; a later message overtaking a queued notice; an idle gap at a turn-end flush; the untested boundary; and two doc inaccuracies, one of them the trust sentence above.
+  - *Source:* 0B item 3, D-26, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
