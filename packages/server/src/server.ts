@@ -13,6 +13,7 @@ import { PROTOCOL_VERSION, type Command, type ErrorCode, type EventMessage, type
 import { CommandError, EVENTS_CHANNEL, executeCommand } from './commands.ts';
 import { readEvents, type StoredEvent } from './events.ts';
 import { heartbeat, sweepOffline } from './presence.ts';
+import { sweepWaits } from './waits.ts';
 
 export type ServerOptions = {
   pool: pg.Pool;
@@ -24,6 +25,7 @@ export type ServerOptions = {
   port?: number; // default 7400; 0 picks a free port
   pollIntervalMs?: number; // default 5000
   offlineAfterMs?: number; // default 30000: a device silent this long is marked offline (D-75)
+  waitSweepMs?: number; // default 1000: how often open waits are resolved, timed out or cancelled (D-95)
   helloTimeoutMs?: number; // default 10000
   onError?: (e: unknown) => void;
 };
@@ -100,6 +102,12 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
   const poll = setInterval(pumpAll, o.pollIntervalMs ?? 5000);
   const offlineAfterMs = o.offlineAfterMs ?? 30_000;
   const sweep = setInterval(() => { sweepOffline(o.pool, offlineAfterMs).catch((e) => { if (!closing) onError(e); }); }, Math.max(250, Math.min(5000, offlineAfterMs / 3)));
+  let sweepingWaits = false; // one wait sweep at a time
+  const waitSweep = setInterval(() => {
+    if (sweepingWaits) return;
+    sweepingWaits = true;
+    sweepWaits(o.pool).catch((e) => { if (!closing) onError(e); }).finally(() => { sweepingWaits = false; });
+  }, o.waitSweepMs ?? 1000);
 
   // ---------- connections ----------
   async function headsFor(principal: string, subs: Subscription[]): Promise<ProjectHead[]> {
@@ -202,6 +210,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
       closing = true;
       clearInterval(poll);
       clearInterval(sweep);
+      clearInterval(waitSweep);
       for (const c of conns) c.ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await listener.client.end().catch(() => {});

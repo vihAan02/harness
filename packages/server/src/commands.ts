@@ -18,6 +18,7 @@ import { addReadset } from './readsets.ts';
 import { reportSync, unblockTask } from './syncs.ts';
 import { cancelLand, completeLand, failLand, reportLand, requestLand, startLand } from './lands.ts';
 import { acquireLease, releaseLeases, renewLeases } from './leases.ts';
+import { startWait } from './waits.ts';
 
 export { CommandError, type Caller } from './handler.ts';
 export { EVENTS_CHANNEL } from './events.ts';
@@ -47,6 +48,7 @@ const HANDLERS: Record<string, Handler> = {
   'lease.acquire': acquireLease,
   'lease.renew': renewLeases,
   'lease.release': releaseLeases,
+  'wait.start': startWait,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };
