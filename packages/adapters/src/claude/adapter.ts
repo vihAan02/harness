@@ -13,7 +13,7 @@ import { priceOf, sessionCost, type ModelTokens } from '../cost.ts';
 import { isReservedEnvName } from '../env.ts';
 import { AsyncQueue } from '../queue.ts';
 import { deniedEntries, realish } from '../readpolicy.ts';
-import { claudeHooks, NOTICE_CONTEXT_CAP, relativize, type ClaudeHookBundle } from './hooks.ts';
+import { claudeHooks, NOTICE_CONTEXT_CAP, relativize, STOP_CAP, type ClaudeHookBundle } from './hooks.ts';
 import { BASE_TOOLS, compileClaudePermissions, SHIM_SERVER, shimToolName, type ClaudePolicyBundle } from './policy.ts';
 import { shimServer } from './shim.ts';
 import { BUILTIN_SKILLS, claudeCapabilities, installedSdkVersion, PINNED } from './version.ts';
@@ -95,6 +95,8 @@ export class ClaudeSession implements SessionHandle {
   pending = new Map<string, PendingDelivery>();
   /** High-priority notices waiting for the next tool batch, oldest first (D-99). */
   notices: QueuedNotice[] = [];
+  /** Continuations the Stop gate has made in a row (D-100). */
+  stopContinuations = 0;
   resultTimes: number[] = [];
   lastResult: Record<string, unknown> | null = null;
   q!: Query;
@@ -152,8 +154,8 @@ export class ClaudeSession implements SessionHandle {
     return new Promise((resolve, reject) => { this.notices.push({ msg, ...(from ? { from } : {}), resolve, reject }); });
   }
 
-  /** For the PostToolBatch hook: the queued notices, oldest first, that fit in `maxChars` together. Delivered once taken. */
-  takeNotices(maxChars: number): string | null {
+  /** For the PostToolBatch and Stop hooks: the queued notices, oldest first, that fit in `maxChars` together. Delivered once taken. */
+  takeNotices(maxChars: number, landed: Landed = 'between_tools'): string | null {
     const taken: QueuedNotice[] = [];
     let size = 0;
     while (this.notices.length) {
@@ -165,10 +167,27 @@ export class ClaudeSession implements SessionHandle {
     if (!taken.length) return null;
     const deliveredAt = Date.now();
     for (const n of taken) {
-      this.emit({ kind: 'delivery', messageId: n.msg.id, landed: 'between_tools', deliveredAt });
-      n.resolve({ messageId: n.msg.id, landed: 'between_tools', deliveredAt });
+      this.emit({ kind: 'delivery', messageId: n.msg.id, landed, deliveredAt });
+      n.resolve({ messageId: n.msg.id, landed, deliveredAt });
     }
     return taken.map((n) => n.msg.text).join(NOTICE_SEPARATOR);
+  }
+
+  /**
+   * The Stop gate (D-100): the agent is about to end its turn. While its task is in progress, queued notices
+   * keep it going, at most STOP_CAP times in a row; the CLI would ignore one more (F-107). At the cap they
+   * stay queued and open the next turn (D-99), and harnessd tells the human.
+   */
+  atStop(continued: boolean): string | null {
+    if (!continued) this.stopContinuations = 0;
+    if (!this.notices.length || this.spec.taskOpen?.() === false) return null;
+    if (this.stopContinuations >= STOP_CAP) {
+      this.emit({ kind: 'stop.capped', pending: this.notices.length });
+      return null;
+    }
+    const text = this.takeNotices(NOTICE_CONTEXT_CAP, 'stop_hook');
+    if (text) this.stopContinuations++;
+    return text;
   }
 
   withdrawNotice(messageId: string): boolean {
@@ -485,6 +504,7 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
       observe: (o) => session.emit(o),
       gate: async () => (await session.verdict) ?? session.holdReason,
       notices: (maxChars) => session.takeNotices(maxChars),
+      stop: (continued) => session.atStop(continued),
     };
     session.start(this.options(real, sink, (pid) => {
       session.pid = pid;
@@ -548,6 +568,7 @@ export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 
     // Every Bash command starts in the worktree: the shell's directory never carries over from an earlier
     // command, so harnessd resolves a command's relative paths against the worktree correctly (F-97).
     CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1',
+    CLAUDE_CODE_STOP_HOOK_BLOCK_CAP: String(STOP_CAP), // the Stop gate counts on this cap (F-09, D-100)
     // Under read confinement the agent's Git can't read the human's global config (~/.gitconfig,
     // ~/.config/git), and Git stops on a config file it can't read. Agents never commit (D-50), so its Git
     // gets none: the same, empty, global config on every machine (D-98).

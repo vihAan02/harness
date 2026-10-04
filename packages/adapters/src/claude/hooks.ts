@@ -8,6 +8,9 @@
 //   fails open, so harnessd backs it up with worktree diffs (D-70).
 // - PostToolBatch attaches queued high-priority notices to the batch's results (D-99): it runs once per
 //   batch, and its context reaches the next model request (F-106).
+// - Stop is the Stop gate (D-100): while the task is in progress, notices still queued keep the agent going,
+//   as `additionalContext` (never `block`, whose reason also arrives as a bare user message: F-107), at most
+//   STOP_CAP times in a row. It fails open, and never syncs: harnessd does that at turn end (D-53).
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HookCallbackMatcher, HookEvent } from '@anthropic-ai/claude-agent-sdk';
@@ -17,6 +20,8 @@ import { readAllowed } from '../readpolicy.ts';
 export const DEAD_MAN_TIMEOUT_S = 5;
 /** Hook context up to this many characters reaches the model whole; longer, the CLI saves it to a file and sends a preview (F-106). */
 export const NOTICE_CONTEXT_CAP = 10_000;
+/** Stop continuations in a row the CLI honours (F-09, F-107); harnessd pins the CLI to it (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`). */
+export const STOP_CAP = 8;
 const FILE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
@@ -211,10 +216,20 @@ export function claudeHooks(spec: Pick<SessionSpec, 'worktree' | 'readPolicy'>, 
     }
     return {};
   };
+  const stop = async (raw: unknown) => {
+    try {
+      const text = sink.stop?.((raw as { stop_hook_active?: unknown }).stop_hook_active === true);
+      if (text) return { hookSpecificOutput: { hookEventName: 'Stop' as const, additionalContext: text } };
+    } catch {
+      // Fails open: the agent stops, and notices still queued open its next turn (D-99).
+    }
+    return {};
+  };
   return {
     PreToolUse: [{ timeout: DEAD_MAN_TIMEOUT_S, hooks: [preToolUse] }],
     PostToolUse: [{ hooks: [postToolUse] }],
     PostToolUseFailure: [{ hooks: [postToolUseFailure] }],
     PostToolBatch: [{ hooks: [postToolBatch] }],
+    Stop: [{ hooks: [stop] }],
   };
 }

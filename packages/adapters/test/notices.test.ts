@@ -114,7 +114,9 @@ test('a message injected after a queued notice never overtakes it', async () => 
 
 test('a notice is injected instead when it is too long to attach, the session is idle, or the turn ends first; one replaced while queued is withdrawn', async () => {
   bodies = [];
-  const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"sleep 2; echo one"}', 'TEXT done')));
+  // No Stop gate here (the task isn't in progress), so a notice the turn ends before takes the turn-end path.
+  // stopgate.test.ts covers the gate.
+  const h = await adapter.startSession(f.spec({ taskOpen: () => false }), human('m1', script('Bash {"command":"sleep 2; echo one"}', 'TEXT done')));
   const c = collect(adapter.observations(h));
   await c.until((o) => o.kind === 'tool.called');
   const big = notice('big', 'x'.repeat(NOTICE_CONTEXT_CAP));
