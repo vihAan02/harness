@@ -1,7 +1,38 @@
-# Handoff: harness, Phase 0A → 0B (state as of 2026-10-03)
+# Handoff: harness, Phase 0B (state as of 2026-10-04)
 
-## Latest update (2026-10-03, Daniyal's session) — read this first
-This section is the current state. The original 0A handoff from vihAan02 follows it and is still accurate unless this section says otherwise.
+## Latest update (2026-10-04): stream A's first wave — read this first
+This section is the current state. The 2026-10-03 update and the original 0A handoff follow it, and are still accurate unless this section says otherwise.
+
+### How the work runs now
+- **Two people in parallel (D-94):** Daniyal leads stream A and integration; Vihaan (`vihAan02`) leads stream B. AGENTS.md's "Parallel development (0B)" section has the file ownership table and the rules.
+- **The workboard:**
+  - the pinned "0B workboard" issue (#4), and one issue per task, labelled `stream:*` and `status:*`;
+  - squash merges, gated on the required checks (`guard`, `unit-linux`, `full-macos`).
+- **Start every session with:** `git fetch origin && git log --oneline origin/main -15`, `gh pr list -R vihAan02/harness`, and the `status:active` issues.
+
+### Merged into `main` since 2026-10-03 (stream A)
+- **A0 to A2:** the contracts and seams for stream B (D-94, D-97); approvals time out.
+- **A3, read confinement (D-98):** three layers. T-1 passes.
+- **A4 and A6, `wait_for` (D-95, D-101):** the agent ends its turn, and the outcome is pushed.
+- **A5a and A5b (D-99, D-100):** high-priority notices ride tool results, and the Stop gate holds an agent while notices are unread. A capped gate is logged as `stop_gate.capped`.
+- **A fix for a sync/diff deadlock** (#40). It hung about one run in three of `npm run demo:0b`.
+
+**Every security-relevant PR had a multi-agent adversarial review before merging.** The findings and their fixes are in each PR and its D-ID.
+
+### Open
+- **A7** (#44), the A/B baseline launch (D-102). It waits for a run against a real model (Q-18) and B2's U-5 probe.
+- **Stream B:** CI (merged), scenarios (#34), the runner (#36), leases (#37) and the LeaseKeeper with T-2 (#38), which are in Daniyal's review. Also #43: a one-word test change for Vihaan.
+- **Next in stream A:**
+  - **A8, the functional MVP:** needs B3, B6 and B7.
+  - **A9, the scorer:** needs B10.
+  - **A10, the counted runs:** after the `ab-v1` freeze.
+
+### Environment notes
+- Unchanged from the section below.
+- **Still true:** run tests from a checkout outside iCloud.
+- **Also, in an interactive Claude Code session** (as the A/B baseline uses): with an API key in the environment, the CLI asks whether to use it and defaults to *no*, then offers a subscription login (F-109). The baseline launcher seeds the answer.
+
+## Previous update (2026-10-03, Daniyal's session): the first 0B stretch
 
 ### Where the work is
 - **Branch:** `0b/stale-context` in `~/Desktop/harness-ai`, from `main` @ `1a94660`. **Pushed to GitHub on 2026-10-03 at Daniyal's request, as pull request [vihAan02/harness#1](https://github.com/vihAan02/harness/pull/1)** into `main`. `main` itself is unchanged until the PR is merged.

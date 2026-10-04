@@ -190,6 +190,8 @@
    - injected instruction files recorded as `instructions` entries;
    - best-effort parsing of shell reads;
    - coverage plus missed-hook instrumentation (H-03, D-47).
+
+   **Done 2026-10-03** (D-91).
 2. **The invalidation engine and sync:**
    - `dependency_changed` with `stage: in_progress`: when a peer starts editing a file in your read set, **and** when you read a file a peer is already editing;
    - `dependency_changed` with `stage: landed`: when the change lands with a different hash;
@@ -198,18 +200,28 @@
    - `wait_for` timeouts are returned to the waiter.
    
    See [coordination.md §2](coordination.md#2-read-sets-invalidation-and-sync-d-22-d-23-d-53-0b).
+
+   **Done 2026-10-03** (D-92), with a sync/diff deadlock fixed on 2026-10-04.
 3. **Hook-based delivery:**
    - PostToolUse / PostToolBatch notices;
    - the Stop gate: **(open task AND unread high-priority notice) OR a resolved `wait_for`**, within the 8-continuation cap, then escalate.
+
+   **Done 2026-10-04** (D-99, D-100): notices ride tool results; the Stop gate, with a capped gate logged for the human.
 4. **`wait_for(event, timeout)`**: choose the mechanism (end-turn-and-push vs. blocking tool) and record wait-for edges.
+
+   **Done 2026-10-04** (D-95, D-101): end the turn, and the outcome is pushed. Wait-for edges are recorded as waits; cycle detection is Phase 1 (D-27).
 5. **Hard claims and land** (the `srt` config for `test.command` needs loopback binding: Shelf's server tests can't bind or reach `127.0.0.1` without it, D-83):
    - leases with TTL and `harnessd` heartbeat;
    - fencing tokens;
    - the local **land** step, triggered by the human with `harness land <task>`: fencing check → merge + approved `test.command` in an integration worktree → fast-forward the base only if green; otherwise `land.fail` (D-51, D-54);
    - `harness claim` CLI for human-taken hard claims;
    - a fault-injection switch for lease renewal (for T-2).
+
+   **The land step: done 2026-10-03** (D-93). Leases, `harness claim` and the fault switch: in review (B5, B6; D-97).
 6. **Remaining message kinds:** `contract_request`, `task_blocked`.
 7. **`compilePermissions` adds read confinement:** flag-settings `Read(//…)` deny rules outside the worktree and allowlist, good enough to pass T-1. They cover the file tools, `@`-expansion and shell reads; sandbox `denyRead` alone covers shell reads only (D-61, SP-13).
+
+   **Done 2026-10-03** (D-98): three layers (deny rules, a call-time check, the sandbox), and T-1 passes.
 8. **Security tests** T-1 (hostile message), T-1b (guardrail tampering) and T-2 (stale lease, using fault injection) ([validation.md §7](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test)).
 9. **A/B setup:**
    - scenarios SC-0 to SC-4 planted in the benchmark repo: scenario tags, task cards and hidden integration checks (D-58);
