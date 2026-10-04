@@ -11,6 +11,7 @@ import type {
 import { priceOf, sessionCost, type ModelTokens } from '../cost.ts';
 import { isReservedEnvName } from '../env.ts';
 import { AsyncQueue } from '../queue.ts';
+import { deniedEntries, realish } from '../readpolicy.ts';
 import { claudeHooks, relativize, type ClaudeHookBundle } from './hooks.ts';
 import { BASE_TOOLS, compileClaudePermissions, SHIM_SERVER, shimToolName, type ClaudePolicyBundle } from './policy.ts';
 import { shimServer } from './shim.ts';
@@ -304,8 +305,9 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     return claudeCapabilities(version);
   }
 
+  /** The read policy's static deny list is read from the filesystem here, when the session opens (D-98). */
   compilePermissions(spec: SessionSpec): ClaudePolicyBundle {
-    return compileClaudePermissions(spec);
+    return compileClaudePermissions(spec, spec.readPolicy ? deniedEntries(spec.readPolicy) : []);
   }
 
   setupHooks(spec: SessionSpec, sink: HarnessHookSink): ClaudeHookBundle {
@@ -388,8 +390,11 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     if (!UUID.test(spec.sessionId)) throw new Error('sessionId must be a UUID');
     this.checkInputs(spec);
     if (!fs.existsSync(spec.configDir)) throw new Error(`config dir ${spec.configDir} doesn't exist`);
-    // Sandbox and permission rules match resolved paths; the init check compares cwd too.
-    const real = { ...spec, worktree: fs.realpathSync(spec.worktree), gitCommonDir: fs.realpathSync(spec.gitCommonDir) };
+    // Sandbox and permission rules match resolved paths, in their on-disk case (native realpath); the init check compares cwd too.
+    const real = {
+      ...spec, worktree: fs.realpathSync.native(spec.worktree), gitCommonDir: fs.realpathSync.native(spec.gitCommonDir),
+      ...(spec.readPolicy ? { readPolicy: { denyRoots: spec.readPolicy.denyRoots.map(realish), allowRoots: spec.readPolicy.allowRoots.map(realish) } } : {}),
+    };
     const session = new ClaudeSession(real);
     const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: async () => (await session.verdict) ?? session.holdReason };
     session.start(this.options(real, sink, (pid) => {

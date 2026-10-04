@@ -2,15 +2,19 @@
 // - PreToolUse is the dead-man: registered in every session, with a short timeout, and any throw
 //   inside it denies the call. In-process callbacks fail closed on timeout but OPEN on a throw (SP-10).
 //   If harnessd dies, nothing answers it, so an orphaned agent's next tool call times out and is denied.
+//   It also checks every Read, Grep and Glob against the read policy at call time (D-98), which catches
+//   paths the static deny rules couldn't name, such as a sibling worktree created after the session started (F-100).
 // - PostToolUse captures edits: file-tool paths, plus `bashEditDiff` for Bash writes (F-07). It
 //   fails open, so harnessd backs it up with worktree diffs (D-70).
 import fs from 'node:fs';
 import path from 'node:path';
 import type { HookCallbackMatcher, HookEvent } from '@anthropic-ai/claude-agent-sdk';
 import type { HarnessHookSink, ObservedRead, SessionSpec } from '../adapter.ts';
+import { readAllowed } from '../readpolicy.ts';
 
 export const DEAD_MAN_TIMEOUT_S = 5;
 const FILE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
 type ToolHookInput = { tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; tool_use_id?: string };
 /** Search hits recorded per Grep call, at most. */
@@ -49,6 +53,36 @@ export function editedPaths(input: ToolHookInput): string[] {
     return [...files, ...(diff.changedFiles ?? [])].filter((p): p is string => typeof p === 'string');
   }
   return [];
+}
+
+/** The fixed part of a glob pattern: everything before its first wildcard, up to a directory. */
+function globBase(pattern: string): string {
+  const i = pattern.search(/[*?[{]/);
+  if (i < 0) return pattern;
+  const fixed = pattern.slice(0, i);
+  return fixed.endsWith('/') ? fixed : path.dirname(fixed);
+}
+
+/**
+ * The paths a read tool would touch, for the read check (D-98): Read's file; Grep's and Glob's search
+ * root (the cwd if none); and the fixed part of a Glob pattern, which can climb out of its root (`../x/*`).
+ */
+export function readTargets(input: ToolHookInput, cwd: string): string[] {
+  const ti = input.tool_input ?? {};
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+  switch (input.tool_name) {
+    case 'Read':
+      return [str(ti.file_path) ?? cwd];
+    case 'Grep':
+      return [str(ti.path) ?? cwd];
+    case 'Glob': {
+      const root = path.resolve(cwd, str(ti.path) ?? cwd);
+      const pattern = str(ti.pattern);
+      return pattern ? [root, path.resolve(root, globBase(pattern))] : [root];
+    }
+    default:
+      return [];
+  }
 }
 
 /** Is `rel` a regular file in the worktree? Used to tell real paths from text in Grep's content output. */
@@ -110,7 +144,7 @@ export function readsOf(input: ToolHookInput, worktree: string): { reads: Observ
   return { reads, outside };
 }
 
-export function claudeHooks(spec: Pick<SessionSpec, 'worktree'>, sink: HarnessHookSink): ClaudeHookBundle {
+export function claudeHooks(spec: Pick<SessionSpec, 'worktree' | 'readPolicy'>, sink: HarnessHookSink): ClaudeHookBundle {
   const preToolUse = async (raw: unknown) => {
     try {
       const input = raw as ToolHookInput;
@@ -120,6 +154,11 @@ export function claudeHooks(spec: Pick<SessionSpec, 'worktree'>, sink: HarnessHo
       if (FILE_TOOLS.has(input.tool_name ?? '')) {
         const { outside } = relativize(spec.worktree, editedPaths(input));
         if (outside.length) return deny('the harness only allows edits inside this task\'s worktree');
+      }
+      // Read confinement at call time, behind the static deny rules and the sandbox (D-61, D-98).
+      if (spec.readPolicy && READ_TOOLS.has(input.tool_name ?? '')) {
+        const blocked = readTargets(input, spec.worktree).find((p) => !readAllowed(spec.readPolicy!, p, spec.worktree));
+        if (blocked) return deny(`the harness confines reads to this task's worktree; ${blocked} is outside it`);
       }
       return {};
     } catch {

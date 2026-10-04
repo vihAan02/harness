@@ -1,6 +1,7 @@
 // The vendor boundary (D-17; docs/agent-adapters.md §2, §3). Everything harnessd knows about an
 // agent session goes through these types; vendor names, SDK types and quirks stay inside each
 // adapter's own module.
+import type { ReadPolicy } from './readpolicy.ts';
 
 export type SessionStatus = 'starting' | 'working' | 'idle' | 'waiting' | 'errored' | 'ended';
 
@@ -74,6 +75,7 @@ export type SessionSpec = {
   tools: HarnessTool[];
   model?: ModelConfig; // unset: the vendor's default model
   maxBudgetUsd?: number; // per session, against the cost the adapter reports (configured prices where given)
+  readPolicy?: ReadPolicy; // what the agent may read (D-61, D-98); harnessd always sets it, real paths
   log?: (line: string) => void; // vendor stderr; never contains our options' secrets (none are passed as options)
 };
 

@@ -16,23 +16,32 @@ export const SHIM_SERVER = 'harness';
 export const shimToolName = (name: string) => `mcp__${SHIM_SERVER}__${name}`;
 /** Claude Code permission rules write an absolute path as `//abs/path`. */
 const abs = (p: string) => `/${p.replace(/\/+$/, '')}`;
+/** A path a permission rule can name literally: no glob or rule syntax in it. Others are left to the read check and the sandbox. */
+const RULE_SAFE = /^[^()[\]{}*?\\\u0000-\u001f\u007f]+$/;
 
 export type ClaudePolicyBundle = Pick<Options, 'permissionMode' | 'tools' | 'allowedTools' | 'disallowedTools' | 'settingSources' | 'sandbox' | 'settings'>;
 
 /**
  * Pure: the session's permission, sandbox and settings options. Paths must already be real paths
- * (no symlinks), because the sandbox matches resolved paths.
+ * (no symlinks), because the sandbox matches resolved paths. `denied` is the read policy's static deny
+ * list (`deniedEntries`), computed by the caller from the filesystem.
  */
-export function compileClaudePermissions(spec: Pick<SessionSpec, 'worktree' | 'gitCommonDir' | 'ports' | 'tools'>): ClaudePolicyBundle {
-  for (const p of [spec.worktree, spec.gitCommonDir]) {
+export function compileClaudePermissions(spec: Pick<SessionSpec, 'worktree' | 'gitCommonDir' | 'ports' | 'tools' | 'readPolicy'>, denied: string[] = []): ClaudePolicyBundle {
+  const rp = spec.readPolicy;
+  for (const p of [spec.worktree, spec.gitCommonDir, ...(rp ? [...rp.denyRoots, ...rp.allowRoots] : []), ...denied]) {
     if (!p.startsWith('/') || p.includes('/../') || p.endsWith('/..')) throw new Error(`policy paths must be absolute and normalized: ${p}`);
   }
   const editRule = `Edit(${abs(spec.worktree)}/**)`;
   const writeRule = `Write(${abs(spec.worktree)}/**)`;
+  // Read confinement (D-61, D-98): Read deny rules for the file tools, one per denied entry, since a deny
+  // rule beats any allow and can't carve the worktree out of a denied root (F-98). They also reach the
+  // sandbox; the sandbox's own denyRead/allowRead confine shell reads, including entries created later (F-99).
+  const readDeny = denied.filter((p) => RULE_SAFE.test(p)).flatMap((p) => [`Read(${abs(p)})`, `Read(${abs(p)}/**)`]);
   return {
     permissionMode: 'dontAsk', // explicit; never auto (F-11). Nothing prompts; anything off the list is denied
     tools: [...BASE_TOOLS],
-    // D-60: path-scoped Edit/Write, never bare. Reads stay open in 0A; read confinement is 0B (D-61).
+    // D-60: path-scoped Edit/Write, never bare. Reads are allowed, then confined by the deny rules below,
+    // the sandbox and the PreToolUse read check (D-98).
     allowedTools: ['Read', 'Grep', 'Glob', 'Bash', editRule, writeRule, ...spec.tools.map((t) => shimToolName(t.name))],
     disallowedTools: [...PEER_TOOLS],
     settingSources: [], // D-45: no repo or user settings, hooks, MCP servers or plugins
@@ -41,13 +50,16 @@ export function compileClaudePermissions(spec: Pick<SessionSpec, 'worktree' | 'g
       failIfUnavailable: true,
       allowUnsandboxedCommands: false, // load-bearing: with true, dangerouslyDisableSandbox escaped (SP-05)
       autoAllowBashIfSandboxed: true,
-      filesystem: { denyWrite: GIT_DENY_WRITE.map((x) => `${spec.gitCommonDir}/${x}`) },
+      filesystem: {
+        denyWrite: GIT_DENY_WRITE.map((x) => `${spec.gitCommonDir}/${x}`),
+        ...(rp ? { denyRead: rp.denyRoots, allowRead: rp.allowRoots } : {}),
+      },
       credentials: { envVars: AUTH_ENV_VARS.map((name) => ({ name, mode: 'deny' as const })) },
       ...(spec.ports ? { network: { allowLocalBinding: true } } : {}), // D-68
     } as Options['sandbox'],
     // The flag-settings layer reaches the sandbox even with settingSources: [] (SP-13).
     settings: {
-      permissions: { allow: [editRule] },
+      permissions: { allow: [editRule], ...(readDeny.length ? { deny: readDeny } : {}) },
       bashEditDiffEnabled: true, // Bash edits show up in PostToolUse (F-07)
       crossSessionInbound: 'refuse', // D-46
     } as Options['settings'],
