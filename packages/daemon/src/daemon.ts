@@ -730,6 +730,8 @@ export class Daemon {
       ...(provider.model ? { model: provider.model } : {}),
       ...(this.config.agents.maxBudgetUsd ? { maxBudgetUsd: this.config.agents.maxBudgetUsd } : {}),
       log: this.vendorLog(sessionId),
+      // The Stop gate keeps the agent going for its notices only while the task is in progress (D-100).
+      taskOpen: () => this.views.get(ws.projectId)?.tasks.get(ws.taskId)?.status === 'in_progress',
       // Reads stay in the worktree (D-61, D-98): the home directory, harness state and main checkout are denied.
       readPolicy: readPolicyFor({
         home: os.homedir(), harnessRoot: this.home.root, repo: project.repo, worktree: ws.worktree, gitCommonDir: commonDir,
@@ -910,6 +912,12 @@ export class Daemon {
         if (run.sync.pending) void this.runSync(run); // a landed change is waiting for this turn end (D-53)
         break;
       }
+      case 'stop.capped':
+        // The Stop gate kept the agent going as many times in a row as the vendor allows, and notices are still
+        // waiting (they open its next turn). The human is told through the event log (D-100).
+        this.log(`${run.agent.name} (${run.taskId}): the Stop gate reached its cap with ${o.pending} notice(s) still waiting; they open the agent's next turn`);
+        await this.report(run.projectId, 'stop_gate.report', { session_id: run.sessionId, pending: o.pending }, run.agent.id);
+        break;
       case 'error':
         // Pause and alert; the vendor CLI does its own bounded retries, harnessd never loops (F-65).
         this.log(`${run.agent.name} (${run.taskId}): ${o.error}: ${o.message}`);

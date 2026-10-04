@@ -4,6 +4,7 @@
 //  - a worktree diff that comes due during a sync waits for it, and never deadlocks with it;
 //  - an in-progress notice for a working agent rides its next tool batch; one the same writer's land replaces
 //    before then never arrives, while one about another writer still does;
+//  - the Stop gate holds an agent only while its task is in progress, and a capped gate reaches the event log;
 //  - a conflict blocks the task; an unblock with the merge still unfinished blocks it again; once resolved,
 //    the notice and anything held meanwhile are delivered;
 //  - a sync that fails for another reason keeps its notice and runs again at the next turn end;
@@ -220,6 +221,18 @@ test('a queued notice about one writer is not withdrawn when another writer\'s n
   r.toolBatch();
   assert.equal(r.injected.find((i) => i.id === n1)?.via, 'notice', 'the reader hears W1 is changing the file');
   r.endTurn();
+});
+
+test('the Stop gate holds an agent only while its task is in progress, and a capped gate is logged for the human (D-100)', async () => {
+  const a = await agent('agent/gated');
+  const t = await startTask(a, 'gated');
+  const g = fake.of(t);
+  assert.equal(g.spec.taskOpen?.(), true, 'in progress');
+  g.emit({ kind: 'stop.capped', pending: 3 });
+  const logged = await s.nextEvent((e) => e.kind === 'stop_gate.capped' && dataOf(e).task_id === t, 10_000);
+  assert.deepEqual([dataOf(logged).pending, dataOf(logged).session_id], [3, g.spec.sessionId]);
+  await s.command('task.complete', { task_id: t });
+  await s.until(() => g.spec.taskOpen?.() === false, 10_000, 'the gate closed once the task was done');
 });
 
 test('a sync conflict blocks the task; unblocking with the merge unfinished blocks it again; once resolved, everything held is delivered', async () => {
