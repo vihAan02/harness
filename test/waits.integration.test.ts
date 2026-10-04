@@ -23,11 +23,13 @@ const seenBy = (marker: string) => JSON.stringify(s.mock.log.filter((e) => e.kin
 test('an agent waits for an answer: when it comes, harnessd pushes the outcome to the agent', async () => {
   const backend = (await s.command('agent.create', { name: 'agent/answerer', vendor: 'claude' })).agent_id!;
   const frontend = (await s.command('agent.create', { name: 'agent/waiter', vendor: 'claude' })).agent_id!;
-  const tApi = await s.assignTask(backend, 'Login API', ['src/api/'], steps(
+  // The answerer is slow on purpose: if its answer came before the waiter called wait_for, the wait would
+  // resolve inside wait.start, the tool's result would say so, and there would rightly be no pushed outcome.
+  const tApi = await s.assignTask(backend, 'Login API', ['src/api/'], `#SLOW 3000\n${steps(
     'TEXT ready',
     'mcp__harness__answer {"question_id":"{{find:ID: (msg_[0-9a-f]+)}}","text":"email and password"}',
     'TEXT answered',
-  ));
+  )}`);
   await s.turnEnds(tApi);
   const tWeb = await s.assignTask(frontend, 'Login page', ['src/web/'], steps(
     'mcp__harness__ask {"to":"agent/answerer","text":"Which fields does POST /login take?"}',
@@ -44,7 +46,7 @@ test('an agent waits for an answer: when it comes, harnessd pushes the outcome t
   assert.match(seen, new RegExp(`Your wait for the answer to ${dataOf(started).on.id} is over: the answer arrived \\(${dataOf(resolved).result.answer_id}\\)`));
   assert.match(seen, /SOURCE: harness {3}TRUST: system-notice/);
   const results = s.toolResults(`TASK: ${tWeb}`);
-  assert.match(results[1]!, /^Waiting \(wait_id wait_[0-9a-f]+\)\. End your turn now\./);
+  assert.match(results[1]!, /^Waiting \(wait_id wait_[0-9a-f]+\)\. End your turn now\./, 'the wait started before the answer came');
   // A new turn if the agent had ended its turn by then; at Stop if the answer came first (D-100). Never between tools: there were none left.
   const delivery = s.observed.find((x) => x.o.kind === 'delivery' && x.o.messageId === `wait:${dataOf(started).wait_id}`)!.o as { landed: string };
   assert.ok(['new_turn', 'stop_hook'].includes(delivery.landed), delivery.landed);
