@@ -1,0 +1,92 @@
+# CI for every PR and for main (B1, D-94).
+# - guard and unit-linux are the fast required checks (target: 5 minutes or less).
+# - full-macos runs the whole suite, including the real Claude Code CLI and the srt sandboxes, which only
+#   run on macOS. It stays required only while its p90 is 15 minutes or less (`npm run ci:latency`).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: No iCloud duplicates ("name 2.ext") tracked
+        run: |
+          dups="$(git ls-files | grep -E '(^|/)[^/]* [0-9]+(\.[^/]*)?(/|$)' || true)"
+          if [ -n "$dups" ]; then
+            echo "::error::Tracked files that look like iCloud duplicates. Remove them, and work from a clone outside iCloud:"
+            echo "$dups"
+            exit 1
+          fi
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+
+  unit-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: harness_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      HARNESS_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/harness_test
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # Server, CLI and structure tests, plus the daemon and adapter tests that need neither the
+      # Claude Code CLI nor srt. The rest run in full-macos.
+      - run: npm run test:unit
+
+  full-macos:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-macos
+      - name: Full suite
+        run: npm run test:ci 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-macos-logs
+          path: |
+            ${{ runner.temp }}/test.log
+            ${{ runner.temp }}/pg.log
+          retention-days: 14

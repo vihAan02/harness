@@ -1,0 +1,42 @@
+# Prepares a hosted macOS runner for the whole suite (B1): Node from .nvmrc, Postgres 18 with the two
+# databases, and `npm ci`. Only macOS runs the real Claude Code CLI and srt sandboxes (HANDOFF.md).
+name: setup-macos
+description: Node, Postgres 18 and dependencies for the full suite on macOS
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v5
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+
+    - name: Postgres 18
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+        HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        HOMEBREW_NO_ANALYTICS: '1'
+        # Without a locale, Postgres stops with "postmaster became multithreaded" (README, step 2).
+        LC_ALL: en_US.UTF-8
+      run: |
+        brew install --quiet postgresql@18
+        bin="$(brew --prefix postgresql@18)/bin"
+        echo "$bin" >> "$GITHUB_PATH"
+        # Our own data directory and port, so a Postgres preinstalled on the image can't interfere.
+        "$bin/initdb" -D "$RUNNER_TEMP/pg" -U "$USER" -E UTF-8 --locale=en_US.UTF-8 > /dev/null
+        "$bin/pg_ctl" -D "$RUNNER_TEMP/pg" -l "$RUNNER_TEMP/pg.log" -o "-p 5433" -w start
+        "$bin/createdb" -p 5433 harness_dev
+        "$bin/createdb" -p 5433 harness_test
+        {
+          echo "HARNESS_DATABASE_URL=postgresql://localhost:5433/harness_dev"
+          echo "HARNESS_TEST_DATABASE_URL=postgresql://localhost:5433/harness_test"
+        } >> "$GITHUB_ENV"
+
+    - name: Dependencies
+      shell: bash
+      run: |
+        npm ci --no-audit --no-fund
+        # The agent tests need the pinned Claude Code binary, an optional dependency that npm can skip
+        # without failing (HANDOFF.md, step 1). Fail here, not deep in the tests.
+        test -d node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64 \
+          || { echo "::error::npm skipped @anthropic-ai/claude-agent-sdk-darwin-arm64"; exit 1; }

@@ -1,0 +1,70 @@
+# Review routing only (B1, D-94). It mirrors the ownership table in AGENTS.md, "Parallel development (0B)".
+# - A PR that touches the other stream's files asks that owner for a review. Whether the review is
+#   required is the AGENTS.md rule, not GitHub: the main ruleset requires no approvals.
+# - Where both owners are listed, the PR asks the author's partner (GitHub never asks a PR's own author).
+#   Both are listed on shared files, on contracts (Vihaan reviews A's), and on B's leases, delivery and
+#   T-2 files (Daniyal reviews B's).
+# - The last matching pattern wins, so general rules come first.
+
+# Shared or unassigned: spikes/, docs/source/, the root config files.
+*                                       @DaniyalMughal1 @vihAan02
+
+# Stream A: Daniyal
+/packages/protocol/                     @DaniyalMughal1 @vihAan02
+/packages/adapters/                     @DaniyalMughal1
+/packages/server/                       @DaniyalMughal1
+/packages/daemon/                       @DaniyalMughal1
+/test/                                  @DaniyalMughal1
+/scripts/                               @DaniyalMughal1
+/tsconfig.json                          @DaniyalMughal1
+/package-lock.json                      @DaniyalMughal1
+/PLAN.md                                @DaniyalMughal1
+/AGENTS.md                              @DaniyalMughal1
+/CLAUDE.md                              @DaniyalMughal1
+/README.md                              @DaniyalMughal1
+/HANDOFF.md                             @DaniyalMughal1
+/docs/                                  @DaniyalMughal1
+/docs/protocol.md                       @DaniyalMughal1 @vihAan02
+/docs/research/vendor-capabilities.md   @DaniyalMughal1 @vihAan02
+/docs/research/spike-0a.md              @DaniyalMughal1 @vihAan02
+/docs/source/                           @DaniyalMughal1 @vihAan02
+
+# Stream B: Vihaan
+/.github/                               @vihAan02
+/.github/CODEOWNERS                     @vihAan02 @DaniyalMughal1
+/package.json                           @vihAan02 @DaniyalMughal1
+/packages/cli/                          @vihAan02
+/packages/server/src/tasks.ts           @vihAan02
+/packages/server/src/claims.ts          @vihAan02
+/packages/server/src/sessions.ts        @vihAan02
+/packages/server/src/agents.ts          @vihAan02
+/packages/server/src/presence.ts        @vihAan02
+/packages/server/src/messages.ts        @vihAan02 @DaniyalMughal1
+/packages/server/src/leases.ts          @vihAan02 @DaniyalMughal1
+/packages/server/test/tasks.test.ts     @vihAan02
+/packages/server/test/claims.test.ts    @vihAan02
+/packages/server/test/sessions.test.ts  @vihAan02
+/packages/server/test/presence.test.ts  @vihAan02
+/packages/server/test/messages.test.ts  @vihAan02 @DaniyalMughal1
+/packages/server/test/leases*           @vihAan02 @DaniyalMughal1
+/packages/daemon/src/status.ts          @vihAan02
+/packages/daemon/src/metrics.ts         @vihAan02
+/packages/daemon/test/metrics.test.ts   @vihAan02
+/packages/daemon/src/leases.ts          @vihAan02 @DaniyalMughal1
+/packages/daemon/src/tools/leases.ts    @vihAan02 @DaniyalMughal1
+/packages/daemon/src/tools/messages.ts  @vihAan02 @DaniyalMughal1
+/test/lifecycle.integration*            @vihAan02
+/test/claims.integration*               @vihAan02
+/test/messages.integration*             @vihAan02 @DaniyalMughal1
+/test/security/t1b-*                    @vihAan02
+/test/security/t2-*                     @vihAan02 @DaniyalMughal1
+/scripts/demo-*                         @vihAan02
+/scripts/ab/                            @vihAan02
+/scripts/ab/baseline-launch.ts          @DaniyalMughal1
+/scripts/ab/score.ts                    @DaniyalMughal1
+/docs/validation.md                     @vihAan02
+/docs/results/                          @vihAan02
+/docs/examples/providers.toml           @vihAan02
+
+# Migrations last: Daniyal reviews every migration, including B's 0013.
+/packages/server/migrations/            @DaniyalMughal1

@@ -1,0 +1,79 @@
+# Nightly (B1, D-94): the whole suite and both scripted demos on macOS, plus the CI latency report.
+# Never real models: the demos run without --real, so no model key is used or needed.
+name: nightly
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  full-macos-demos:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-macos
+
+      # Shelf lives in the private harness-bench repo. It's checked out here with a read-only token and
+      # handed to the demos as a local path, so the token never reaches the demos, their agents or Git config.
+      - name: Check the harness-bench token
+        env:
+          TOKEN: ${{ secrets.HARNESS_BENCH_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::Set the HARNESS_BENCH_TOKEN secret: a fine-grained token with read-only Contents on vihAan02/harness-bench."; exit 1; }
+      - id: bench
+        uses: actions/checkout@v5
+        with:
+          repository: vihAan02/harness-bench
+          ref: main
+          token: ${{ secrets.HARNESS_BENCH_TOKEN }}
+          path: .bench
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Each of the three runs even if an earlier one failed, so one night shows every failure.
+      - name: Full suite
+        if: ${{ !cancelled() }}
+        run: npm run test:ci 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Demo 0A
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' }}
+        run: npm run demo -- --bench "$GITHUB_WORKSPACE/.bench" 2>&1 | tee "$RUNNER_TEMP/demo-0a.log"
+      - name: Demo 0B
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' }}
+        run: npm run demo:0b -- --bench "$GITHUB_WORKSPACE/.bench" 2>&1 | tee "$RUNNER_TEMP/demo-0b.log"
+
+      - name: Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-logs
+          path: |
+            ${{ runner.temp }}/*.log
+          retention-days: 14
+
+  latency:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - name: CI latency, last 20 runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/ci-latency.ts >> "$GITHUB_STEP_SUMMARY"

@@ -12,7 +12,10 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "node --test \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
+    "test:unit": "node --test \"packages/server/test/*.test.ts\" \"packages/daemon/test/{envelope,git,instructions,integrate,local,metrics,provider,reads,supervision,sync,view}.test.ts\" \"packages/adapters/test/policy.test.ts\" \"packages/cli/test/*.test.ts\" \"test/structure.test.ts\"",
+    "test:ci": "node --test --test-concurrency=2 \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
     "check": "npm run typecheck && npm test",
+    "ci:latency": "node .github/scripts/ci-latency.ts",
     "server": "node packages/server/src/main.ts",
     "daemon": "node packages/daemon/src/main.ts",
     "demo": "node scripts/demo-0a.ts",
