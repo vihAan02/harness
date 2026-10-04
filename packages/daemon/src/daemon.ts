@@ -5,6 +5,7 @@
 // (D-17). Acting on task assignments arrives with the lifecycle (item 9).
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec, type SessionStatus,
@@ -30,6 +31,7 @@ import { providerModel, providerName, resolveProvider, type ResolvedProvider } f
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 import { harnessTools } from './tools.ts';
 import { LeaseKeeper, type LeaseFaults } from './leases.ts';
+import { readPolicyFor } from './readpolicy.ts';
 import { ProjectView, type MessageInfo } from './view.ts';
 
 export type TaskWorkspace = {
@@ -696,8 +698,9 @@ export class Daemon {
       session_id: sessionId, status: 'starting', task_id: ws.taskId, worktree: ws.worktree, branch: ws.branch,
       ...(provider.model ? { model: provider.model.id } : {}), ...(provider.name ? { provider: provider.name } : {}),
     }, agent.id);
+    const commonDir = await gitCommonDir(project.repo);
     const spec: SessionSpec = {
-      sessionId, worktree: ws.worktree, gitCommonDir: await gitCommonDir(project.repo), configDir: ws.configDir,
+      sessionId, worktree: ws.worktree, gitCommonDir: commonDir, configDir: ws.configDir,
       ports: ws.ports, env: ws.env, secrets: ws.secrets, auth: provider.auth,
       tools: tools ?? harnessTools({
         view: this.view(ws.projectId), agentId: agent.id, taskId: ws.taskId,
@@ -707,6 +710,11 @@ export class Daemon {
       ...(provider.model ? { model: provider.model } : {}),
       ...(this.config.agents.maxBudgetUsd ? { maxBudgetUsd: this.config.agents.maxBudgetUsd } : {}),
       log: this.vendorLog(sessionId),
+      // Reads stay in the worktree (D-61, D-98): the home directory, harness state and main checkout are denied.
+      readPolicy: readPolicyFor({
+        home: os.homedir(), harnessRoot: this.home.root, repo: project.repo, worktree: ws.worktree, gitCommonDir: commonDir,
+        readAllow: this.config.agents.readAllow, pathEnv: process.env.PATH ?? '', tmpdir: os.tmpdir(),
+      }, (m) => this.log(`${agent.name} (${ws.taskId}): ${m}`)),
     };
     const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });
     const reads = new ReadTracker({

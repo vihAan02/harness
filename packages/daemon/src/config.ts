@@ -10,6 +10,7 @@
 //   [setup]   allowed_domains = ["registry.npmjs.org"], timeout_seconds = 900
 //   [agents]  provider = "deepseek", max_budget_usd = 2   (both optional; see [providers.<name>] below)
 //             model = "claude-haiku-4-5"                  (only without a provider: the vendor's default endpoint)
+//             read_allow = ["~/.cache/ms-playwright"]     (extra paths agents may read inside the home directory, D-98)
 //   [providers.<name>]  a model endpoint (D-87; README "Choosing a model provider"). Nothing here is a
 //             secret: key_env names the variable in harnessd's environment that holds the key.
 //             base_url = "https://…", auth = "x-api-key" | "bearer", key_env = "…_API_KEY", model = "…",
@@ -43,7 +44,7 @@ export type LocalConfig = {
   projects: ProjectConfig[];
   limits: { maxConcurrentAgents: number; portsPerAgent: number; portRange: [number, number] };
   setup: { allowedDomains: string[]; timeoutSeconds: number };
-  agents: { provider: string | null; model: string | null; maxBudgetUsd: number | null };
+  agents: { provider: string | null; model: string | null; maxBudgetUsd: number | null; readAllow: string[] };
   providers: Record<string, ProviderConfig>;
 };
 
@@ -140,6 +141,8 @@ export function parseConfig(raw: Record<string, unknown>, token: string): LocalC
       provider,
       model: agents.model === undefined ? null : noAlias(str(agents.model, 'agents.model', MODEL_ID), 'agents.model'),
       maxBudgetUsd: (budget as number | undefined) ?? null,
+      // Absolute, or ~/ for the home directory. Never a credential path: readPolicyFor drops those (D-98).
+      readAllow: strings(agents.read_allow, 'agents.read_allow', /^(~\/|\/)[^\u0000-\u001f\u007f]{1,1000}$/),
     },
     providers,
   };
