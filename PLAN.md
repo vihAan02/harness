@@ -997,6 +997,14 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Tests:** `packages/adapters/test/notices.test.ts` (the real CLI: batching, the exact cap, every fallback, order, no idle at a turn-end flush, withdrawal, the session's end) and `test/sync-land.integration.test.ts` (harnessd's routing, withdrawal for the same writer only, and unsafe file names), each with negative controls.
   - **Review:** an adversarial review (four lenses, each checked by a skeptic) confirmed seven findings, all fixed: withdrawal across writers; F-107's account of a `block` reason; a later message overtaking a queued notice; an idle gap at a turn-end flush; the untested boundary; and two doc inaccuracies, one of them the trust sentence above.
   - *Source:* 0B item 3, D-26, S10. *Status:* Proposal.
+- **D-100 The Stop gate, and how a capped gate reaches the human (0B item 3; refines D-26).**
+  - **When it holds an agent:** the agent is about to end its turn, high-priority notices are still queued (D-99), and its task is in progress (not done, blocked or abandoned). The `wait_for` clause (D-26) comes with A6.
+  - **How:** the Stop hook returns the queued notices that fit in 10,000 characters as `additionalContext`, so the agent carries on within the same turn and the notices count as delivered (`stop_hook`). Never `decision: block`: its reason also arrives as a bare user message (F-107).
+  - **The cap:** at most 8 continuations in a row, the CLI's own cap, which harnessd pins (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=8`; F-09, F-107). The count starts again with each turn. At the cap the notices stay queued and open the agent's next turn (D-99), so nothing is lost.
+  - **Escalation (decided by an owner, 2026-10-04):** harnessd logs it and sends `stop_gate.report`. The server records `stop_gate.capped { task_id, agent_id, session_id, pending }` in the event log, which `harness status` can show. The agent isn't stopped.
+  - **Never syncs:** the Stop hook can fail open, so harnessd still syncs at turn end, from the session stream (D-53). Landed notices never wait in this queue.
+  - **Tests:** `packages/adapters/test/stopgate.test.ts` (the real CLI: delivery at Stop within the same turn, no gate once the task isn't in progress, the cap and its report, the count starting again), `packages/server/test/stopgate.test.ts` and `test/sync-land.integration.test.ts` (harnessd's wiring), each with negative controls.
+  - *Source:* 0B item 3, D-26, S10; the escalation channel chosen by an owner in session. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
