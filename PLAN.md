@@ -946,6 +946,10 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - **`lease.expired` is logged only by lease commands.** A wait resolved as `{lease: expired}` (D-95) can come before it in the log; the waiter's result is what counts.
     - **A land that fails its tests** leaves the task `done`, and its leases keep renewing until it lands or is abandoned. Others wait, or a human uses `--force` (no land is in flight then).
     - **Volume:** a `lease.renewed` about every 40 s per task is accepted for 0B.
+  - **Settled in the B5 review (2026-10-04):**
+    - **The time "current" is judged at:** the server's clock read under the lease lock (`clock_timestamp()` after the lock), not the transaction's start (`now()`), wherever expiry or currency is decided. Otherwise a command that began just before a lease expired, and got the lock after another command had seen it expire, could still renew or count it. A lease once seen expired is never renewed.
+    - **Renewal timing in the LeaseKeeper** comes from the device's own receipt of each grant or renewal plus the lease's `ttl_s` / 3, never from comparing the server's `expires_at` with the device clock (one clock for expiry, F-84).
+    - **A task's own released or expired lease doesn't block its land** (D-103).
   - *Source:* 0B item 5, D-89, S10. *Status:* Proposal.
 - **D-98 How read confinement is built (0B item 7; refines D-61).**
   - **Scope:**
