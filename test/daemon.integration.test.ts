@@ -118,7 +118,8 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   await restarted.start();
   await restarted.ready();
   assert.equal((await watcher.next('event', (e) => e.kind === 'device.online')).actor.device_id, 'dev_test');
-  await new Promise((r) => setTimeout(r, 300));
+  // Events arrive in order, so if history were replayed, the first to arrive would be old.
+  for (const end = Date.now() + 10_000; !again.length && Date.now() < end;) await new Promise((r) => setTimeout(r, 25));
   assert.ok(again.length > 0 && again.every((e) => e.seq > lastSeen), `replayed old events: ${JSON.stringify(again.map((e) => e.seq))} after ${lastSeen}`);
   await restarted.teardownTask({ projectId: project, taskId: 't2' }, { force: true });
   await restarted.stop();
