@@ -713,7 +713,7 @@ export class Daemon {
       // Reads stay in the worktree (D-61, D-98): the home directory, harness state and main checkout are denied.
       readPolicy: readPolicyFor({
         home: os.homedir(), harnessRoot: this.home.root, repo: project.repo, worktree: ws.worktree, gitCommonDir: commonDir,
-        readAllow: this.config.agents.readAllow, pathEnv: process.env.PATH ?? '', tmpdir: os.tmpdir(),
+        readAllow: this.config.agents.readAllow, pathEnv: process.env.PATH ?? '', tmpdir: os.tmpdir(), env: process.env,
       }, (m) => this.log(`${agent.name} (${ws.taskId}): ${m}`)),
     };
     const handle = await adapter.startSession(spec, { id: `task:${ws.taskId}`, origin: 'human', text: renderTask(task) });

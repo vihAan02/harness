@@ -19,7 +19,10 @@ const SRT_CLI = path.join(path.dirname(createRequire(import.meta.url).resolve('@
 
 /** Credential locations in the real home directory that no setup command or agent may read (D-52, D-98). */
 export const CREDENTIAL_PATHS = ['.ssh', '.aws', '.gnupg', '.config/gh', '.config/gcloud', '.docker', '.kube', '.netrc', '.npmrc', '.pypirc',
-  '.claude', '.claude.json', '.codex', 'Library/Keychains'];
+  '.claude', '.claude.json', '.codex', 'Library/Keychains',
+  '.git-credentials', '.config/git/credentials', '.config/hub', '.cargo/credentials', '.cargo/credentials.toml', '.gem/credentials',
+  '.local/share/keyrings', '.local/share/uv/credentials', '.azure', '.terraform.d/credentials.tfrc.json', '.vault-token',
+  '.password-store', '.config/op', '.bunfig.toml', '.yarnrc.yml'];
 
 export type SetupRun = {
   home: Home; worktree: string; gitCommonDir: string; scratch: string; command: string;
@@ -43,7 +46,8 @@ export function sandboxSettings(r: SetupRun) {
     filesystem: {
       allowWrite: [worktree, scratch],
       denyWrite: [real(r.gitCommonDir)],
-      denyRead: [real(r.home.root), ...CREDENTIAL_PATHS.map((p) => path.join(realHome, p))],
+      // Each credential path where it is and where it really is (a dotfiles repo may symlink ~/.ssh).
+      denyRead: [...new Set([real(r.home.root), ...CREDENTIAL_PATHS.flatMap((p) => [path.join(realHome, p), real(path.join(realHome, p))])])],
       allowRead: [worktree, scratch],
     },
     network: { allowedDomains: r.allowedDomains, deniedDomains: [], ...(r.allowLocalBinding ? { allowLocalBinding: true } : {}) },
