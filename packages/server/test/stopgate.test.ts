@@ -26,7 +26,7 @@ async function worker(name: string) {
 before(async () => {
   db = await freshSchema();
   project = await seedProject(db.pool);
-  await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_1', 'human_test', 'laptop')");
+  await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_1', 'human_test', 'laptop'), ('dev_2', 'human_test', 'desktop')");
 });
 after(async () => { await db?.drop(); });
 
@@ -43,6 +43,7 @@ test('only the agent\'s own harnessd reports it, for its own session, with a rea
   await rejects(executeCommand(db.pool, human, cmd('stop_gate.report', { session_id: a.session, pending: 1 }, a.agent)), 'forbidden');
   await rejects(executeCommand(db.pool, device, cmd('stop_gate.report', { session_id: a.session, pending: 1 })), 'bad_request', /as the agent/);
   await rejects(executeCommand(db.pool, device, cmd('stop_gate.report', { session_id: a.session, pending: 1 }, b.agent)), 'forbidden', /another agent/);
+  await rejects(executeCommand(db.pool, { ...device, deviceId: 'dev_2' }, cmd('stop_gate.report', { session_id: a.session, pending: 1 }, a.agent)), 'forbidden', /another agent or device/);
   await rejects(executeCommand(db.pool, device, cmd('stop_gate.report', { session_id: randomUUID(), pending: 1 }, a.agent)), 'not_found');
   for (const pending of [0, 1.5, -1, '2', undefined, 10_001]) {
     await rejects(executeCommand(db.pool, device, cmd('stop_gate.report', { session_id: a.session, pending }, a.agent)), 'bad_request', /pending/);
