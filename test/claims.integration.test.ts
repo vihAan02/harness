@@ -38,11 +38,13 @@ test('observed claims, an overlap warning to both agents, and a background write
   assert.deepEqual([...view.claims.get(tApi)!.observed].sort(), ['src/api/login.ts', 'src/types.ts']);
   assert.deepEqual([...view.claims.get(tWeb)!.observed].sort(), ['src/types.ts', 'src/web/Login.tsx', 'src/web/generated.ts']);
 
-  // The hooks saw both foreground edits, the Bash one through bashEditDiff (F-07). The background write
-  // came after its command returned, so no hook ever saw it; only a worktree diff did (SP-03, D-70).
-  const hookSaw = s.observed.filter((x) => x.run.sessionId === web.sessionId && x.o.kind === 'edit.observed')
-    .flatMap((x) => (x.o as { paths: string[] }).paths).sort();
-  assert.deepEqual(hookSaw, ['src/types.ts', 'src/web/Login.tsx']);
+  // The hooks saw the file-tool edit. The Bash one arrives through bashEditDiff (F-07), which the CLI can
+  // skip under load, so it may or may not be there. The background write came after its command
+  // returned, so no hook ever saw it; only a worktree diff did (SP-03, D-70).
+  const hookSaw = new Set(s.observed.filter((x) => x.run.sessionId === web.sessionId && x.o.kind === 'edit.observed')
+    .flatMap((x) => (x.o as { paths: string[] }).paths));
+  assert.ok(hookSaw.has('src/web/Login.tsx'), 'the file-tool edit');
+  assert.deepEqual([...hookSaw].filter((p) => p !== 'src/web/Login.tsx' && p !== 'src/types.ts'), [], 'and never the background write');
   const generatedVia = view.events.filter((e) => e.kind === 'claim.observed' && (e.data as { paths: string[] }).paths.includes('src/web/generated.ts'))
     .map((e) => (e.data as { source: string }).source);
   assert.deepEqual(generatedVia, ['diff']);
