@@ -2,7 +2,7 @@
 
 > **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with the real-model check U-1 deferred until an API key exists ([Q-18](docs/open-questions.md#q-18)). The model endpoint is configurable, with no provider hardcoded; DeepSeek `deepseek-flash` comes first for development and benchmarking (D-87). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. An owner reviews it and decides what's next; a real-model run needs an API key (README, "Choosing a model provider").
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. The rest of 0B is approved and built in two parallel workstreams (D-94; rules in [AGENTS.md](AGENTS.md)), toward the functional MVP and then the formal A/B gate; a real-model run needs an API key (README, "Choosing a model provider").
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -863,6 +863,70 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Not built:** reopening a task whose land failed its tests (D-51's "back to in progress") needs a session restart, which is Phase 1 resume (D-40); the human fixes it and lands again, or abandons it.
   - *Source:* 0B item 5. *Status:* Proposal.
 
+### Owners' decision of 2026-10-03 (S10)
+- **D-94 The rest of 0B is built in two parallel workstreams.** The owners approve the rest of 0B (items 3 to 10), past D-86's stop point (D-44).
+  - **Workstreams:**
+    - **A, Daniyal, the integration owner:** contracts and seams, read confinement and T-1, waits, hook delivery and the Stop gate, the baseline launcher, functional-MVP integration, the A/B scorer, and coordinating the counted A/B runs.
+    - **B, Vihaan:** CI, real-model probes, T-1b, scenarios and hidden checks, leases (server, CLI, the harnessd LeaseKeeper, T-2), agent message kinds, status display, the A/B runner and baseline integration, the playbook, rubric and parameters, and grading.
+    - **Tracking:** each task, its dependencies and its tests are GitHub issues with labels `stream:daniyal`/`stream:vihaan` and `status:*`, plus a pinned "0B workboard" issue. Active work isn't tracked in a repo file, and [coordination.md](docs/coordination.md) stays the product's spec.
+  - **Two milestones:**
+    - **Functional MVP:** items 3 to 7 built; T-1, T-1b and T-2 pass (the 0B exit criterion EC2); a real-model end-to-end run on Shelf works; CI green.
+    - **Formal 0B validation:** the A/B test, with at least 30 counted runs graded and scored against pass bar v1 (D-57, EC3), then the owners' go/no-go D-ID.
+  - **Ownership:** one owner per file; the matrix is in [AGENTS.md](AGENTS.md) ("Parallel development (0B)"). The other person edits only the rows or sections of their own feature, with the owner reviewing. Shared interfaces are contract-first: the owner merges the smallest contract PR, both rebase, then both build against it. Nobody redesigns an interface they don't own.
+  - **IDs, so neither stream collides:**
+    - decisions D-95 to D-119 for A and D-120 to D-139 for B, each appended to its own block at the end of §7;
+    - facts F-98 to F-119 for A and F-120 to F-139 for B, in their own blocks at the end of [vendor-capabilities.md](docs/research/vendor-capabilities.md);
+    - migrations `0012` for A (waits) and `0013` for B (leases).
+  - **Git:**
+    - one branch per task from a fresh `main` (`daniyal/<task>`, `vihaan/<task>`);
+    - squash merges only, linear history;
+    - **a PR merges as soon as its listed dependencies have merged and the required checks are green**, with no global merge order;
+    - the PR description (template) is the handoff record and becomes the squash commit's message: tests run, decisions, migrations, config and environment variables, and notes for the other stream.
+  - **Review:**
+    - Daniyal reviews B's PRs that touch A's files or a shared contract, leases and fencing, delivery semantics, migrations or dependencies, or that add a D-ID.
+    - Vihaan reviews contract PRs, A's PRs that touch B's files, and any change to the A/B parameters.
+    - Everything else merges on green CI.
+    - Security-critical PRs also get an adversarial review.
+  - **CI:**
+    - fast required checks: typecheck and the Linux unit tests on Postgres 18;
+    - the full macOS suite (real CLI, srt) is required only while its p90 stays at 15 minutes or under; otherwise it runs at critical integration points and nightly;
+    - CI latency is tracked as a development metric.
+  - **A/B blinding:** Daniyal coordinates the counted runs and never sees the hidden checks. Vihaan writes them and grades by arm-blinded run ID.
+  - **HANDOFF.md** is Daniyal's, updated at each wave's end, at the functional MVP and at the freeze.
+  - *Why:* both Claude plans productive at once with minimal file overlap, using the higher-capacity plan where context gives the most leverage.
+  - *Source:* S10. *Status:* Locked.
+
+### Stream A decisions (Daniyal; D-95 to D-119)
+- **D-97 The lease contract (0B item 5; D-20, D-21, D-89).** It's the interface stream B builds against; the details are in [protocol.md](docs/protocol.md) §3, §4 and §6.
+  - **Granting:**
+    - one lease per path (a folder prefix ending in `/` or an exact file, D-21), each with its own fencing token from `projects.next_fencing_token`;
+    - `ttl_s` defaults to 120 and must be between 10 and 3,600;
+    - the task must be in progress or blocked;
+    - the caller is the task's agent (through its harnessd) or a human in the project.
+  - **First come, first served (D-89):** a request that overlaps another task's *current* lease is refused as a whole, and the requesting agent gets a `claim_conflict`. A task's own leases never conflict with each other.
+  - **Human `--force`:**
+    - revokes the overlapping leases: a release with reason `revoked`;
+    - grants newer tokens;
+    - sends the revoked agent a `claim_conflict`.
+
+    The land step's fencing check (D-93) then rejects the old holder with `stale_token` or `leased_by_other`.
+  - **One lock order:**
+    - every command that grants, renews, releases or revokes leases takes the project's lease lock first (a transaction-scoped advisory lock), before any row lock;
+    - `land.complete` takes it straight after the invalidation lock;
+    - so first come, first served holds even when no lease rows exist yet.
+  - **Expiry is lazy:**
+    - "current" means not released and `expires_at` later than the server's `now()` (F-84);
+    - no server timer;
+    - `lease.expired` is logged the first time a lease command sees it.
+  - **Renewal:** harnessd's LeaseKeeper renews every current lease of each task its device ran, about every `ttl_s / 3`, **until the task is landed or abandoned** (not only while its session lives), so a finished task waiting to land keeps its leases. A sleeping or suspended device stops renewing, so its leases expire (coordination §1). For T-2, a fault switch suspends renewal.
+  - **Release reasons:** `released`, `landed` (already emitted by `land.complete`), `revoked`, and `abandoned` (a task abandon releases its leases).
+  - *Source:* 0B item 5, D-89, S10. *Status:* Proposal.
+<!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
+
+### Stream B decisions (Vihaan; D-120 to D-139)
+*(none yet)*
+<!-- Stream B: append new D-IDs (D-120 to D-139) above this line. -->
+
 ## 8. Hypotheses (what we're testing, not assuming)
 
 | ID | Hypothesis | Tested by |
@@ -970,8 +1034,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 5. ~~**To close 0A:**~~ **Done 2026-10-03:** a co-owner reviewed 0A and approved 0B, with U-1 deferred (D-86). Budgets ([Q-05](docs/open-questions.md#q-05)) keep the proposal as the default. The benchmark repo is built (D-83).
    - **Still to run when a key exists:** `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and the demos with `--real` for the whole loop with real agents.
 6. **During 0B** (approved, D-86):
-   - ~~**This stretch:** provider integration (D-87); item 1, read capture and the missed-hook monitor; item 2, invalidation and sync; the land part of item 5.~~ **Done 2026-10-03:** providers (D-90), read capture (D-91), invalidation and sync (D-92), the land step (D-93). The S3 example passes end to end with the scripted model (`test/s3.integration.test.ts`); the roadmap's 0B exit criterion 1 is met with the scripted model. **Stop point reached: an owner decides what's next.**
-   - **Later in 0B:** hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
+   - ~~**This stretch:** provider integration (D-87); item 1, read capture and the missed-hook monitor; item 2, invalidation and sync; the land part of item 5.~~ **Done 2026-10-03:** providers (D-90), read capture (D-91), invalidation and sync (D-92), the land step (D-93). The S3 example passes end to end with the scripted model (`test/s3.integration.test.ts`); the roadmap's 0B exit criterion 1 is met with the scripted model. **Stop point reached; the owners approved the rest of 0B in two parallel workstreams (D-94).**
+   - **The rest of 0B** (D-94, two parallel workstreams; tasks and dependencies in the pinned "0B workboard" GitHub issue): hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
 7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
 ## 13. Glossary

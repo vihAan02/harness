@@ -56,7 +56,7 @@ An observed claim lasts until the task is done or landed, or until the file no l
 
 ### Hard claims (0B)
 - **Lease:** `claim(paths, ttl)` returns a lease with an `expires_at` and a **fencing token** (a per-project counter that only goes up).
-- **Heartbeat:** `harnessd` renews held leases while the agent session is alive. A sleeping laptop stops renewing, so the lease expires.
+- **Heartbeat:** `harnessd` renews the leases of each task its device ran until the task is landed or abandoned, so a finished task waiting to land keeps them (D-97). A sleeping laptop stops renewing, so the lease expires.
 - **One clock:** all expiry arithmetic uses the server's clock (F-84).
 - **Why fencing:** TTL alone is unsafe because agents stall for minutes (long turns, rate limits, approvals). Only a token checked at the point of effect is safe (F-80).
 - **Enforced at integration, not on the filesystem (D-20):**

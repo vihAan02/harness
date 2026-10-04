@@ -628,3 +628,14 @@ Sources: [app-server](https://learn.chatgpt.com/docs/app-server), [SIWC](https:/
 | F-94 ✔ | Tools for dependency tracking: LSP references and call hierarchy; Claude Code's LSP tool (its queries are reads too); tree-sitter tags (syntactic); dependency-cruiser `--affected`; Nx affected; Bazel `rdeps`. **TypeScript 7.0 ships with no compiler API**, so use LSP. | [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/), [dependency-cruiser](https://github.com/sverweij/dependency-cruiser/blob/main/doc/cli.md), [TS 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) |
 | F-95 ✔ (preprint) | **Claim Plane** (2026-07): versioned change intents, monotonic fencing tokens, worktree locks, premise invalidation, fail-closed. Tiny evaluation (6 pairs); strict mode removed all parallelism. Closest academic prior art. | [arXiv 2607.21909](https://arxiv.org/abs/2607.21909) |
 | F-96 ? | Unread 2026 preprints in this niche: ATM (2607.00041), AgentRoom (2608.23740), concurrency anomalies in multi-agent LLM systems (2606.17182) | Follow-up |
+
+## Facts added during parallel 0B (D-94)
+Each stream appends new facts to its own block, so the two never edit the same lines. Use the same format as above: an ID, a confidence mark, the claim, then the source and date. A later docs pass may move them into the topical sections.
+
+### Stream A (Daniyal; F-98 to F-119)
+*(none yet)*
+<!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
+
+### Stream B (Vihaan; F-120 to F-139)
+*(none yet)*
+<!-- Stream B: append new F-IDs (F-120 to F-139) above this line. -->
