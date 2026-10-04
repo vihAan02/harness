@@ -1,75 +1,103 @@
 #!/usr/bin/env node
 // The A/B runner, harness arm (B9a; docs/validation.md §3, §8). Each run starts from a fresh clone of the
-// benchmark repo at the scenario's tag, assigns both of the scenario's tasks at once from its cards (the
-// same phrasing in both arms of a pair), and ends when both tasks have landed, at the time cap, or when the
-// coordinator stops it (Ctrl-C). The setup and test commands are approved before the run starts, so the
-// human approves nothing during it.
+// benchmark repo at the scenario's tag (checked against the card's base_sha), assigns both of the scenario's
+// tasks at once from its cards, and ends when both tasks have landed, at the time cap, or when the
+// coordinator stops it (Ctrl-C). The scenario's setup and test commands are approved before the run, so the
+// coordinator normally approves nothing during it; if a manifest changes mid-run, the approval is asked for
+// and recorded (M5c).
 //
-//   node scripts/ab/run.ts --scenario SC-1 --phrasing 1 --real --provider deepseek [--repeat 3] [--cap-min 60]
-//   node scripts/ab/run.ts --scenario SC-0 --dry --auto-land          the pipeline check: scripted model, free
+//   node scripts/ab/run.ts --scenario SC-1 --phrasing 2 --real --provider deepseek     one counted run
+//   node scripts/ab/run.ts --scenario SC-0 --dry --auto-land                          the pipeline check: free
 //
-//   --phrasing n   the cards' nth phrasing (1-3): paired run n uses phrasing n in both arms
-//   --auto-land    the runner lands each task once it's done. Otherwise the coordinator lands with
-//                  `harness land` (the HARNESS_HOME to use is printed); that counts as M5c
+//   --phrasing n   the cards' nth phrasing (1-3). Paired run n uses phrasing n in both arms, so --real needs it.
+//                  With --repeat k, run i uses phrasing n+i-1.
+//   --repeat k     k runs, one after another (default 1)
+//   --auto-land    the runner lands each task once it's done (dry runs and rehearsals). Otherwise the
+//                  coordinator lands with `harness land` (the HARNESS_HOME to use is printed); that counts as M5c
 //   --dry          scripted stand-in agents that make a trivial change and report done: they check the
 //                  runner, not the task. Counted runs use --real
+//   --cap-min m    the time cap (default 60);  --budget-usd d  per session (default 2)
 //   --out <dir>    default runs/ (git-ignored);  --bench <path|url>  default: the card's repo
-//   --budget-usd   per session (default 2);  --keep  keep the temp dir and schema
+//   --keep         keep the temp dir and schema;  --help
 //
 // Output, arm-blinded for grading (B11):
-//   <out>/grade/<run-id>/        the final tree of main, without .git: all the grader gets
+//   <out>/grade/<run-id>/        main's tree when the run ended, without .git, every file dated 2000-01-01:
+//                                all the grader gets. Hand it over packed once, in shuffled order (B11), never
+//                                as the live directory, whose own times still tell when each run was saved.
 //   <out>/grade/<run-id>.json    { run_id, scenario }
-//   <out>/record/<run-id>/       meta.json (arm, scenario, phrasing, outcome), events.jsonl, metrics.json and
-//                                metrics.txt, timeline.jsonl, run.log: the coordinator's side, never the grader's
+//   <out>/record/<run-id>/       meta.json (arm, scenario, phrasing, outcome), events.jsonl and the metrics
+//                                (rebuilt from the database after the stop), timeline.jsonl, run.log: the
+//                                coordinator's side, never the grader's
 // Needs Postgres (README "Running locally") and network for the clone and the setup command.
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { parse as parseToml, stringify as toToml } from 'smol-toml';
 import {
-  Approvals, computeMetrics, Daemon, harnessHome, parseConfig, renderMetrics, resolveProvider, type Home, type ResolvedProvider,
+  Approvals, computeMetrics, Daemon, harnessHome, parseConfig, ProjectView, renderMetrics, resolveProvider, type Home, type ResolvedProvider,
 } from '../../packages/daemon/src/index.ts';
 import { setupHash, testHash } from '../../packages/daemon/src/approvals.ts';
 import { readRepoConfig } from '../../packages/daemon/src/repo-config.ts';
+import { PROTOCOL_VERSION, type EventMessage } from '../../packages/protocol/src/index.ts';
 import { createPool, DEFAULT_DATABASE_URL, migrate } from '../../packages/server/src/db.ts';
+import { readEvents } from '../../packages/server/src/events.ts';
 import { startServer } from '../../packages/server/src/server.ts';
 import { DUMMY_KEY, startMock } from '../../packages/adapters/test/mock-api.ts';
 import { Recorder } from './recorder.ts';
 
 export type CardTask = { key: string; agent: string; title: string; scope: string[]; phrasings: string[] };
-export type Card = { scenario: string; name: string; repo: string; tag: string; tasks: CardTask[] };
+export type Card = { scenario: string; name: string; repo: string; tag: string; base_sha?: string; tasks: CardTask[] };
 
-const argv = process.argv.slice(2);
-const opt = (name: string) => { const i = argv.indexOf(`--${name}`); const v = i >= 0 ? argv[i + 1] : undefined; return v?.startsWith('--') ? undefined : v; };
-const flag = (name: string) => argv.includes(`--${name}`);
-const fail = (msg: string): never => { console.error(msg); process.exit(2); };
+const USAGE = 'usage: node scripts/ab/run.ts --scenario SC-n (--real --provider <name> --phrasing n | --dry) [--repeat k] [--auto-land] [--cap-min m] [--budget-usd d] [--out dir] [--bench path|url] [--providers file] [--keep]';
+const fail = (msg: string): never => { console.error(`${msg}\n${USAGE}`); process.exit(2); };
+let values: Record<string, string | boolean | undefined> = {};
+try {
+  ({ values } = parseArgs({
+    strict: true, allowPositionals: false,
+    options: {
+      scenario: { type: 'string' }, phrasing: { type: 'string' }, repeat: { type: 'string' }, 'cap-min': { type: 'string' }, 'budget-usd': { type: 'string' },
+      out: { type: 'string' }, bench: { type: 'string' }, provider: { type: 'string' }, providers: { type: 'string' },
+      dry: { type: 'boolean' }, real: { type: 'boolean' }, 'auto-land': { type: 'boolean' }, keep: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    },
+  }));
+} catch (e) {
+  fail((e as Error).message); // an unknown flag, or one missing its value
+}
+if (values.help) { console.log(USAGE); process.exit(0); }
+const str = (k: string) => values[k] as string | undefined;
 
-const SCENARIO = opt('scenario') ?? fail('--scenario SC-n is required');
+const SCENARIO = str('scenario') ?? fail('--scenario SC-n is required');
 if (!/^SC-\d$/.test(SCENARIO)) fail(`not a scenario: ${SCENARIO}`);
 const cardFile = path.resolve(import.meta.dirname, 'scenarios', `${SCENARIO}.json`);
 if (!fs.existsSync(cardFile)) fail(`no cards for ${SCENARIO} (${cardFile})`);
 const CARD = JSON.parse(fs.readFileSync(cardFile, 'utf8')) as Card;
-const PHRASING = Number(opt('phrasing') ?? '1');
-if (!Number.isInteger(PHRASING) || PHRASING < 1 || !CARD.tasks.every((t) => t.phrasings.length >= PHRASING)) fail(`--phrasing must be 1 to ${Math.min(...CARD.tasks.map((t) => t.phrasings.length))}`);
-const REPEAT = Number(opt('repeat') ?? '1');
-const CAP_MIN = Number(opt('cap-min') ?? '60');
-const BUDGET = Number(opt('budget-usd') ?? '2');
-const OUT = path.resolve(opt('out') ?? path.join(import.meta.dirname, '../../runs'));
-const BENCH = opt('bench') ?? CARD.repo;
-const DRY = flag('dry');
-const REAL = flag('real');
-const AUTO_LAND = flag('auto-land');
-const KEEP = flag('keep');
-const PROVIDER = opt('provider');
-const PROVIDERS_FILE = opt('providers') ?? path.resolve(import.meta.dirname, '../../docs/examples/providers.toml');
-if (DRY === REAL) fail('choose --real (a counted or rehearsal run, with --provider) or --dry (the scripted pipeline check)');
+const DRY = values.dry === true;
+const REAL = values.real === true;
+const AUTO_LAND = values['auto-land'] === true;
+const KEEP = values.keep === true;
+if (DRY === REAL) fail('choose --real (a counted or rehearsal run, with --provider and --phrasing) or --dry (the scripted pipeline check)');
+if (REAL && str('phrasing') === undefined) fail('--real needs --phrasing n: paired run n uses phrasing n in both arms');
+const PHRASING = Number(str('phrasing') ?? '1');
+const REPEAT = Number(str('repeat') ?? '1');
+const CAP_MIN = Number(str('cap-min') ?? '60');
+const BUDGET = Number(str('budget-usd') ?? '2');
+const PHRASINGS = Math.min(...CARD.tasks.map((t) => t.phrasings.length));
+if (!Number.isInteger(PHRASING) || !Number.isInteger(REPEAT) || PHRASING < 1 || REPEAT < 1 || PHRASING + REPEAT - 1 > PHRASINGS) {
+  fail(`--phrasing and --repeat must pick from the cards' ${PHRASINGS} phrasings (run i of k uses phrasing n+i-1)`);
+}
+if (![CAP_MIN, BUDGET].every((n) => Number.isFinite(n) && n > 0)) fail('--cap-min and --budget-usd must be positive');
+const OUT = path.resolve(str('out') ?? path.join(import.meta.dirname, '../../runs'));
+const BENCH = str('bench') ?? CARD.repo;
+const PROVIDER = str('provider');
+const PROVIDERS_FILE = str('providers') ?? path.resolve(import.meta.dirname, '../../docs/examples/providers.toml');
 if (PROVIDER && !REAL) fail('--provider needs --real');
-if (![REPEAT, CAP_MIN, BUDGET].every((n) => Number.isFinite(n) && n > 0)) fail('--repeat, --cap-min and --budget-usd must be positive');
 
 const PROJECT = 'prj_ab';
+/** Every file the grader gets carries this time, so nothing in the tree tells when its run ended. */
+const FIXED_TIME = new Date('2000-01-01T00:00:00Z');
 const step = (tool: string, input: unknown) => `#STEP ${tool} ${JSON.stringify(input)}`;
 
 /** A scripted stand-in for an agent: it writes one note in its worktree and reports done. It checks the runner, not the task. */
@@ -97,6 +125,32 @@ function preApprove(home: Home, repo: string): string[] {
   return done;
 }
 
+/** Sets every file and directory under `dir`, and `dir` itself, to FIXED_TIME (children first). */
+function fixTimes(dir: string): void {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) fixTimes(p);
+    else fs.lutimesSync(p, FIXED_TIME, FIXED_TIME);
+  }
+  fs.utimesSync(dir, FIXED_TIME, FIXED_TIME);
+}
+
+/** The project's whole event log from the database: what actually committed, including what arrived during the stop. */
+async function logFromDatabase(pool: ReturnType<typeof createPool>): Promise<EventMessage[]> {
+  const out: EventMessage[] = [];
+  for (let after = 0; ;) {
+    const page = await readEvents(pool, PROJECT, after, 1000);
+    if (!page.length) return out;
+    for (const e of page) {
+      out.push({
+        v: PROTOCOL_VERSION, type: 'event', project_id: e.projectId, seq: e.seq, at: e.at.toISOString(),
+        actor: { principal: e.actor, on_behalf_of: e.onBehalfOf, device_id: e.deviceId }, kind: e.kind, data: e.data as Record<string, unknown>,
+      } as EventMessage);
+    }
+    after = page.at(-1)!.seq;
+  }
+}
+
 let stopRequested = false;
 process.on('SIGINT', () => {
   if (stopRequested) process.exit(130);
@@ -106,19 +160,22 @@ process.on('SIGINT', () => {
 
 async function runOnce(n: number): Promise<string> {
   const runId = `r-${randomBytes(4).toString('hex')}`;
+  const phrasing = PHRASING + n - 1;
   const rec = new Recorder(path.join(OUT, 'record', runId));
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-ab-')));
   const cleanups: (() => Promise<void> | void)[] = [];
   const startedAt = new Date().toISOString();
   let outcome = 'error';
-  rec.log(`run ${runId} (${n} of ${REPEAT}): ${CARD.scenario} ${CARD.name}, phrasing ${PHRASING}, harness arm${DRY ? ', dry' : ''}`);
+  rec.log(`run ${runId} (${n} of ${REPEAT}): ${CARD.scenario} ${CARD.name}, phrasing ${phrasing}, harness arm${DRY ? ', dry' : ''}${AUTO_LAND ? ', auto-land' : ''}`);
   try {
     // The scenario's base: a fresh clone at its tag, on a local main, with no remote to fetch from.
     const repo = path.join(root, 'repo');
     execFileSync('git', ['clone', '-q', '--branch', CARD.tag, '--single-branch', '--no-tags', BENCH, repo], { stdio: ['ignore', 'ignore', 'pipe'] });
     execFileSync('git', ['-C', repo, 'checkout', '-q', '-B', 'main']);
     execFileSync('git', ['-C', repo, 'remote', 'remove', 'origin']);
-    const baseSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    const baseSha = git('rev-parse', 'HEAD');
+    if (CARD.base_sha && baseSha !== CARD.base_sha) throw new Error(`${CARD.tag} is at ${baseSha}, but the card pins ${CARD.base_sha}: the scenario moved`);
     rec.mark('cloned', { tag: CARD.tag, base_sha: baseSha });
 
     const databaseUrl = process.env.HARNESS_DATABASE_URL ?? DEFAULT_DATABASE_URL;
@@ -169,10 +226,13 @@ async function runOnce(n: number): Promise<string> {
     cleanups.push(() => daemon.stop());
     await daemon.ready();
     const view = daemon.view(PROJECT);
+    /** The real `harness` CLI. A failure throws: the run can't go on without its agents and tasks. */
     const cli = async (...args: string[]) => {
       const { stdout } = await promisify(execFile)(process.execPath, [path.resolve(import.meta.dirname, '../../packages/cli/src/main.ts'), ...args], { env: { ...process.env, HARNESS_HOME: home.root } });
       return stdout.trim();
     };
+    /** The CLI for a land or its cancel: a non-zero exit (refused, failed, already over) comes back as its output, and the events decide. */
+    const cliOutput = (...args: string[]) => cli(...args).catch((e: { stdout?: string; stderr?: string; message: string }) => `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message);
 
     // Both tasks at once. Task ids come from one sequence, so in a fresh schema they're T-1, T-2, … in card order.
     for (const t of CARD.tasks) await cli('agent', 'add', t.agent);
@@ -180,7 +240,7 @@ async function runOnce(n: number): Promise<string> {
     rec.mark('started', { model });
     for (const t of CARD.tasks) {
       const id = ids.get(t.key)!;
-      const text = DRY ? dryProgram(t, daemon.worktreeOf(PROJECT, id)) : t.phrasings[PHRASING - 1]!;
+      const text = DRY ? dryProgram(t, daemon.worktreeOf(PROJECT, id)) : t.phrasings[phrasing - 1]!;
       await cli('task', 'add', t.title, '--scope', t.scope.join(','), '--assign', t.agent, '--text', text);
       rec.mark('assigned', { task: t.key, task_id: id, agent: `agent/${t.agent}` });
       rec.log(`assigned ${id} "${t.title}" to agent/${t.agent}`);
@@ -209,41 +269,63 @@ async function runOnce(n: number): Promise<string> {
         if (DRY) approvals.approve(r.id);
       }
       if (AUTO_LAND) {
+        // The runner lands each task once; a land the fencing check rejects, or that fails, would wait for a
+        // human, so an auto-landed run ends there.
+        const ended = [...ids.values()].find((id) => has('land.rejected', id) || has('land.failed', id, (d) => d.reason !== 'cancelled'));
+        if (ended) {
+          outcome = has('land.rejected', ended) ? 'land_rejected' : 'land_failed';
+          rec.log(`the land of ${ended} ${outcome === 'land_rejected' ? 'was rejected' : 'failed'}`);
+          break;
+        }
         const inFlight = [...view.lands.values()].some((l) => l.status === 'requested' || l.status === 'accepted');
         for (const id of ids.values()) {
           if (inFlight || !has('worktree.committed', id) || has('land.requested', id)) continue;
           rec.mark('land_requested', { task_id: id });
-          rec.log(`landing ${id}: ${(await cli('land', id)).split('\n')[0]}`);
-          break;
-        }
-        // The runner lands each task once; a failed land would wait for a human, so an auto-landed run ends here.
-        const failed = [...ids.values()].find((id) => has('land.failed', id, (d) => d.reason !== 'cancelled'));
-        if (failed) {
-          outcome = 'land_failed';
-          rec.log(`the land of ${failed} failed`);
+          // --no-wait: the loop keeps watching the cap and Ctrl-C while the land runs.
+          rec.log(`landing ${id}: ${(await cliOutput('land', id, '--no-wait')).split('\n')[0]}`);
           break;
         }
       }
       await new Promise((r) => setTimeout(r, 500));
     }
-    rec.mark('ended', { outcome });
+    // The tree the grader gets is main as the run ended; a land still in flight is cancelled, and awaited, so
+    // its test process doesn't outlive the run.
+    const mainSha = git('rev-parse', 'main');
+    rec.mark('ended', { outcome, main_sha: mainSha });
     rec.log(`run ended: ${outcome}`);
+    // The runner's cancels, not the coordinator's: meta.json lists them, so M5c can discount them.
+    const cancelledAtEnd: string[] = [];
+    for (const l of [...view.lands.values()].filter((x) => x.status === 'requested' || x.status === 'accepted')) {
+      rec.mark('land_cancelled_at_end', { task_id: l.taskId });
+      rec.log(`cancelling the land of ${l.taskId} still in flight: ${(await cliOutput('land', '--cancel', l.taskId)).split('\n')[0]}`);
+      cancelledAtEnd.push(l.taskId);
+    }
+    await Promise.race([daemon.landing.get(PROJECT) ?? Promise.resolve(), new Promise((r) => setTimeout(r, 120_000))]);
     await daemon.stop();
 
-    // The coordinator's record: everything that names the arm.
-    rec.writeLines('events.jsonl', view.events);
-    const metrics = computeMetrics(view);
+    // The coordinator's record: everything that names the arm. Rebuilt from the database, which has what
+    // committed while harnessd was stopping (the last session ends, the final usage) and its view doesn't.
+    const events = await logFromDatabase(pool);
+    const record = new ProjectView(PROJECT);
+    for (const e of events) record.apply(e);
+    if (events.length !== view.events.length) rec.log(`record: ${events.length} events in the database (the live view had ${view.events.length})`);
+    rec.writeLines('events.jsonl', events);
+    const metrics = computeMetrics(record);
     rec.writeJson('metrics.json', metrics);
     fs.writeFileSync(path.join(rec.dir, 'metrics.txt'), `${renderMetrics(metrics)}\n`);
-    // The grader's copy: main's tree and nothing else (no .git, no branch names, no authors).
+    // The grader's copy: main's tree and nothing else (no .git, no branch names, no authors), every file dated
+    // FIXED_TIME so the tree doesn't tell when the run ended (and with the schedule, which arm it was).
     const gradeDir = path.join(OUT, 'grade', runId);
     fs.mkdirSync(gradeDir, { recursive: true });
-    execFileSync('tar', ['-x', '-C', gradeDir], { input: execFileSync('git', ['-C', repo, 'archive', '--format=tar', 'main'], { maxBuffer: 512 * 1024 * 1024 }) });
-    fs.writeFileSync(path.join(OUT, 'grade', `${runId}.json`), `${JSON.stringify({ run_id: runId, scenario: CARD.scenario }, null, 2)}\n`);
+    execFileSync('tar', ['-x', '-C', gradeDir], { input: execFileSync('git', ['-C', repo, 'archive', '--format=tar', '--mtime=2000-01-01 00:00:00 +0000', mainSha], { maxBuffer: 512 * 1024 * 1024 }) });
+    fixTimes(gradeDir);
+    const gradeMeta = path.join(OUT, 'grade', `${runId}.json`);
+    fs.writeFileSync(gradeMeta, `${JSON.stringify({ run_id: runId, scenario: CARD.scenario }, null, 2)}\n`);
+    fs.utimesSync(gradeMeta, FIXED_TIME, FIXED_TIME);
     rec.writeJson('meta.json', {
-      run_id: runId, arm: 'harness', scenario: CARD.scenario, phrasing: PHRASING, dry: DRY, model, cap_min: CAP_MIN, budget_usd: BUDGET,
-      bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: execFileSync('git', ['-C', repo, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
-      started_at: startedAt, ended_at: new Date().toISOString(), outcome,
+      run_id: runId, arm: 'harness', scenario: CARD.scenario, phrasing, dry: DRY, auto_land: AUTO_LAND, model, cap_min: CAP_MIN, budget_usd: BUDGET,
+      bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: new Date().toISOString(), outcome,
+      events: events.length, approvals_mid_run: pendingSeen.size, runner_cancelled_lands: cancelledAtEnd,
       tasks: CARD.tasks.map((t) => ({ key: t.key, task_id: ids.get(t.key), agent: `agent/${t.agent}`, title: t.title, scope: t.scope })),
     });
     rec.log(`saved: grade/${runId}/ (for the grader) and record/${runId}/ (yours)`);
@@ -260,5 +342,5 @@ async function runOnce(n: number): Promise<string> {
 
 const outcomes: string[] = [];
 for (let n = 1; n <= REPEAT && !stopRequested; n++) outcomes.push(await runOnce(n));
-console.log(`\n${outcomes.length} run(s): ${outcomes.join(', ')}. Give the grader ${path.join(OUT, 'grade')} only.`);
+console.log(`\n${outcomes.length} run(s): ${outcomes.join(', ')}. Give the grader ${path.join(OUT, 'grade')} only, packed (B11).`);
 process.exit(outcomes.every((o) => o === 'integrated') ? 0 : 1);

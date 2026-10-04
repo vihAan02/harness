@@ -3,6 +3,7 @@
   "name": "Duplicate-work trap",
   "repo": "https://github.com/vihAan02/harness-bench.git",
   "tag": "SC-4",
+  "base_sha": "ae3198eea31d3ce740d7bff56cca141c233ebf82",
   "tasks": [
     {
       "key": "T1",

@@ -25,7 +25,10 @@ export type RunMetrics = {
   interventions: { total: number; byKind: Record<string, number>; events: { seq: number; kind: string; detail: string }[] };
   /** M5b: tool calls the shared allow list denied. */
   deniedToolCalls: number;
-  /** M5c: human integration actions (`harness land`, cancelling a land, unblocking a sync conflict), apart from M5. */
+  /**
+   * M5c: human integration actions (`harness land`, cancelling a land, unblocking a sync conflict, approving a
+   * setup or test command that changed during the run), apart from M5.
+   */
   integrationActions: { total: number; byKind: Record<string, number> };
   /** M7: messages by kind and by who talked to whom. */
   messages: { total: number; byKind: Record<string, number>; agentToAgent: number; humanToAgent: number; harnessNotices: number; held: number };
@@ -60,8 +63,12 @@ export type RunMetrics = {
    * they were captured; and file edits only a worktree diff found (the hooks missed them, D-70).
    */
   coverage: { hooks: { observed: number; missed: number; rejected: number }; reads: Record<string, number>; editsOnlyByDiff: number };
-  /** H-04: delivered stale-context notices, and how many were followed by a re-read of a file they named. */
-  reReads: { notices: number; reReadAfter: number };
+  /**
+   * H-04: delivered landed-stage notices, and how many were followed by a re-read of a file they named, before
+   * the reader's task ended or the next notice on that file. In-progress notices are counted apart: they're about
+   * another agent's uncommitted edits, so re-reading the unchanged file logs nothing, and the log can't show it.
+   */
+  reReads: { landed: { notices: number; reReadAfter: number }; inProgress: { notices: number } };
   notComputed: Record<string, string>;
 };
 
@@ -111,12 +118,26 @@ export function computeMetrics(view: ProjectView): RunMetrics {
   // M5: human actions after the initial assignments. In 0A a task can only be assigned once, so every
   // task.created / task.assigned is part of the setup, not an intervention.
   const interventions: RunMetrics['interventions'] = { total: 0, byKind: {}, events: [] };
+  let lastLeaseAction = '';
   for (const e of events) {
     const d = data(e);
     let detail: string | null = null;
     if (e.kind === 'message.sent' && isHuman(String(d.from))) detail = `${String(d.kind)} to ${view.agentName(String(d.to))}`;
     else if (e.kind === 'task.completed' && isHuman(String(d.by))) detail = `marked ${String(d.task_id)} done`;
     else if (e.kind === 'task.abandoned') detail = `abandoned ${String(d.task_id)}`;
+    // A human's hard claims: one action per command (its leases share a time). A revoke is part of the
+    // `force` claim that caused it, and an abandon's releases are part of the abandon.
+    else if (e.kind === 'lease.granted' && isHuman(String(d.by))) {
+      const key = `${e.at}|${String(d.task_id)}|${String(d.by)}`;
+      if (key === lastLeaseAction) continue;
+      lastLeaseAction = key;
+      detail = `${d.force === true ? 'took over' : 'claimed'} leases for ${String(d.task_id)}`;
+    } else if (e.kind === 'lease.released' && d.reason === 'released' && isHuman(String(d.by))) {
+      const key = `${e.at}|released|${String(d.by)}`;
+      if (key === lastLeaseAction) continue;
+      lastLeaseAction = key;
+      detail = `released leases of ${String(d.task_id)}`;
+    }
     if (detail === null) continue;
     interventions.total++;
     bump(interventions.byKind, e.kind);
@@ -128,11 +149,14 @@ export function computeMetrics(view: ProjectView): RunMetrics {
   for (const e of events) {
     const d = data(e);
     const human = (who: unknown) => isHuman(String(who ?? e.actor?.principal ?? ''));
+    // An approval mid-run means a setup or test command (or its manifests) changed; the A/B runner approves the
+    // scenario's own beforehand, so these are the human's (D-52, D-51).
+    const approval = e.kind === 'setup.approved' || (e.kind === 'land.progress' && d.step === 'awaiting_approval');
     const counted = (e.kind === 'land.requested' && human(d.requested_by)) || (e.kind === 'task.unblocked' && human(d.by))
-      || (e.kind === 'land.failed' && d.reason === 'cancelled' && human(undefined));
+      || (e.kind === 'land.failed' && d.reason === 'cancelled' && human(undefined)) || approval;
     if (!counted) continue;
     integrationActions.total++;
-    bump(integrationActions.byKind, e.kind === 'land.failed' ? 'land.cancelled' : e.kind);
+    bump(integrationActions.byKind, approval ? 'approval' : e.kind === 'land.failed' ? 'land.cancelled' : e.kind);
   }
 
   const lands: RunMetrics['lands'] = { completed: 0, rejected: 0, failed: {}, conflicts: 0, firstLandTestFailures: 0 };
@@ -163,15 +187,22 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     if (m.data.stage === 'landed' && (!readerDone || Date.parse(m.deliveredAt) <= Date.parse(readerDone.at))) notices.landed.beforeReaderFinished++;
   }
 
-  // H-04: after a notice reached its reader, did the reader read any file it named again?
-  const reReads: RunMetrics['reReads'] = { notices: 0, reReadAfter: 0 };
-  for (const m of view.messages.values()) {
-    if (m.kind !== 'dependency_changed' || !m.deliveredAt || !m.toTask) continue;
-    reReads.notices++;
-    const named = new Set(Array.isArray(m.data.paths) ? (m.data.paths as unknown[]).map(String) : []);
-    const after = Date.parse(m.deliveredAt);
-    if (events.some((e) => e.kind === 'readset.added' && data(e).task_id === m.toTask && Date.parse(e.at) >= after
-      && (data(e).entries as { path?: unknown }[] | undefined ?? []).some((x) => named.has(String(x.path))))) reReads.reReadAfter++;
+  // H-04: after a landed notice reached its reader, did the reader read a file it named again, before its task
+  // ended or the next notice naming that file? (A landed change is in the reader's worktree after its sync, so a
+  // re-read logs the new content.)
+  const reReads: RunMetrics['reReads'] = { landed: { notices: 0, reReadAfter: 0 }, inProgress: { notices: 0 } };
+  const pathsOf = (m: { data: Record<string, unknown> }) => new Set(Array.isArray(m.data.paths) ? (m.data.paths as unknown[]).map(String) : []);
+  const noticesDelivered = [...view.messages.values()].filter((m) => m.kind === 'dependency_changed' && m.deliveredAt && m.toTask);
+  for (const m of noticesDelivered) {
+    if (m.data.stage !== 'landed') { reReads.inProgress.notices++; continue; }
+    reReads.landed.notices++;
+    const named = pathsOf(m);
+    const from = Date.parse(m.deliveredAt!);
+    const ends = [finished.get(m.toTask!)?.at, ...noticesDelivered.filter((o) => o !== m && o.toTask === m.toTask && Date.parse(o.deliveredAt!) > from
+      && [...pathsOf(o)].some((p) => named.has(p))).map((o) => o.deliveredAt!)].filter((x): x is string => !!x).map(Date.parse);
+    const until = ends.length ? Math.min(...ends) : Infinity;
+    if (events.some((e) => e.kind === 'readset.added' && data(e).task_id === m.toTask && Date.parse(e.at) >= from && Date.parse(e.at) <= until
+      && (data(e).entries as { path?: unknown }[] | undefined ?? []).some((x) => named.has(String(x.path))))) reReads.landed.reReadAfter++;
   }
 
   const messages: RunMetrics['messages'] = { total: 0, byKind: {}, agentToAgent: 0, humanToAgent: 0, harnessNotices: 0, held: 0 };
@@ -290,7 +321,11 @@ export function renderMetrics(m: RunMetrics): string {
     lines.push(`H-03 capture: hooks saw ${h.observed} tool call(s), missed ${h.missed}, never reached ${h.rejected}; edits found only by a worktree diff ${m.coverage.editsOnlyByDiff}`);
     if (Object.keys(m.coverage.reads).length) lines.push(`    reads by source: ${Object.entries(m.coverage.reads).map(([k, n]) => `${k} ${n}`).join(', ')}`);
   }
-  if (m.reReads.notices) lines.push(`H-04 re-reads: after ${m.reReads.reReadAfter} of ${m.reReads.notices} delivered notice(s), the reader read a named file again`);
+  const rr = m.reReads;
+  if (rr.landed.notices || rr.inProgress.notices) {
+    lines.push(`H-04 re-reads: after ${rr.landed.reReadAfter} of ${rr.landed.notices} delivered landed notice(s), the reader read a named file again before its task ended or the next notice on it`);
+    if (rr.inProgress.notices) lines.push(`    ${rr.inProgress.notices} in-progress notice(s) not measured: re-reading an unchanged file logs nothing`);
+  }
   lines.push('Not computed from the log:', ...Object.entries(m.notComputed).map(([k, v]) => `  ${k} ${v}`));
   return lines.join('\n');
 }
