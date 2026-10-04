@@ -30,9 +30,10 @@ import { parseShellReads } from './shellreads.ts';
 import { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
 import { harnessTools } from './tools.ts';
+import { waitOutcomeText } from './tools/waits.ts';
 import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { readPolicyFor } from './readpolicy.ts';
-import { ProjectView, type MessageInfo } from './view.ts';
+import { ProjectView, type MessageInfo, type WaitInfo } from './view.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -204,6 +205,11 @@ export class Daemon {
         run.adapter.withdrawNotice(run.handle, d.message_id);
       }
     }
+    if (e.kind === 'wait.resolved' || e.kind === 'wait.timed_out') {
+      const w = this.view(e.project_id).waits.get((e.data as { wait_id: string }).wait_id);
+      const run = w ? this.running.get(w.taskId) : undefined;
+      if (w && run && run.projectId === e.project_id && run.sessionId === w.sessionId) void this.deliverWait(run, w);
+    }
     if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
       const d = e.data as { land_id: string; task_id: string; run_tests?: boolean };
       this.queueLand(e.project_id, () => this.land(e.project_id, d.land_id, d.task_id, d.run_tests !== false));
@@ -318,13 +324,40 @@ export class Daemon {
     return paths.filter((p) => !bad.includes(p));
   }
 
-  /** Messages that arrived while the agent had no live session, or while it was paused. */
+  /**
+   * A settled wait's outcome, pushed to the agent that waited (D-95, D-101). It's a high-priority notice: it
+   * opens a new turn if the agent ended its turn as asked, and the Stop gate keeps the turn going if it hasn't
+   * yet (D-100). Like any delivery, never during a sync, and held while the task is paused on a conflict.
+   */
+  async deliverWait(run: RunningAgent, w: WaitInfo): Promise<void> {
+    const id = `wait:${w.id}`;
+    if (this.delivering.has(id) || this.delivered.has(id)) return;
+    // Resolved by wait.start itself (one transaction, one timestamp): the tool's result already said so.
+    if (w.outcome === 'resolved' && w.finishedAt === w.startedAt) return;
+    await run.sync.running;
+    if (run.sync.blocked || this.delivering.has(id) || this.delivered.has(id)) return; // delivered after the unblock (deliverPending)
+    this.delivering.add(id);
+    try {
+      const text = renderMessage({ id, kind: 'wait_outcome', text: waitOutcomeText(w), fromTask: null, sender: { kind: 'harness' } });
+      await run.adapter.queueNotice(run.handle, { id, text, origin: 'coordinator' });
+      this.delivered.add(id);
+    } catch (e) {
+      this.log(`wait ${w.id} outcome to ${run.agent.name}: not delivered: ${(e as Error).message}`);
+    } finally {
+      this.delivering.delete(id);
+    }
+  }
+
+  /** Messages that arrived while the agent had no live session, or while it was paused, and waits that settled meanwhile. */
   deliverPending(run: RunningAgent): void {
     const view = this.view(run.projectId);
     const pending = [...view.messages.values()]
       .filter((m) => m.to === run.agent.id && (!m.toTask || m.toTask === run.taskId) && !m.held && !m.deliveredAt && !m.supersededBy)
       .sort((a, b) => a.seq - b.seq);
     for (const m of pending) void this.deliver(run, m);
+    for (const w of view.waits.values()) {
+      if (w.sessionId === run.sessionId && (w.outcome === 'resolved' || w.outcome === 'timed_out')) void this.deliverWait(run, w);
+    }
   }
 
   // ---------- the land step (0B item 5; D-51, D-54; local-runtime.md §4) ----------
@@ -724,7 +757,7 @@ export class Daemon {
       sessionId, worktree: ws.worktree, gitCommonDir: commonDir, configDir: ws.configDir,
       ports: ws.ports, env: ws.env, secrets: ws.secrets, auth: provider.auth,
       tools: tools ?? harnessTools({
-        view: this.view(ws.projectId), agentId: agent.id, taskId: ws.taskId,
+        view: this.view(ws.projectId), agentId: agent.id, taskId: ws.taskId, sessionId,
         send: async (name, args) => (await this.link!.command(ws.projectId, name, args, agent.id)).result,
       }),
       instructions: sessionInstructions({ agentName: agent.name, taskId: ws.taskId, ports: ws.ports, repo: readRepoInstructions(ws.worktree) }),

@@ -8,6 +8,8 @@ export type ToolContext = {
   view: ProjectView;
   agentId: string;
   taskId: string;
+  /** The agent's session, for commands about it (`wait.start`). */
+  sessionId?: string;
   /** Sends a command for this agent. Resolves with the command's result. */
   send: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   /** How long a tool waits for the server before telling the agent the command is queued. */

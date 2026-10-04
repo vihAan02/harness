@@ -8,17 +8,18 @@ import { renderAgentStatus } from './status.ts';
 import { commandCall, type CommandCall, type ToolContext } from './tools/common.ts';
 import { LEASE_TOOL_NAMES, leaseTools } from './tools/leases.ts';
 import { MESSAGE_TOOL_NAMES, messageTools } from './tools/messages.ts';
+import { WAIT_TOOL_NAMES, waitTools } from './tools/waits.ts';
 
 export type { ToolContext } from './tools/common.ts';
 
 export const CORE_TOOL_NAMES: readonly string[] = ['harness_status', 'ask', 'answer', 'report_done'];
 /** Every tool the model is offered, in order. Pinned per module; the shim test checks the session sees exactly these. */
-export const HARNESS_TOOL_NAMES: readonly string[] = [...CORE_TOOL_NAMES, ...LEASE_TOOL_NAMES, ...MESSAGE_TOOL_NAMES];
+export const HARNESS_TOOL_NAMES: readonly string[] = [...CORE_TOOL_NAMES, ...LEASE_TOOL_NAMES, ...MESSAGE_TOOL_NAMES, ...WAIT_TOOL_NAMES];
 
-/** The 0A tools, then each 0B module's (wait_for joins with item 4). */
+/** The 0A tools, then each 0B module's. */
 export function harnessTools(ctx: ToolContext): HarnessTool[] {
   const call = commandCall(ctx);
-  return [...coreTools(ctx, call), ...leaseTools(ctx, call), ...messageTools(ctx, call)];
+  return [...coreTools(ctx, call), ...leaseTools(ctx, call), ...messageTools(ctx, call), ...waitTools(ctx, call)];
 }
 
 function coreTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
