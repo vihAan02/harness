@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { inTransaction } from '../src/db.ts';
+import { createPool, inTransaction } from '../src/db.ts';
 import { appendEvents } from '../src/events.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import { TestClient } from './client.ts';
@@ -224,4 +224,34 @@ test('after losing its listener connection, the server reconnects and catches up
   c.send(command(p, 'agent.create', agent(1)));
   assert.equal((await c.next('event', (e) => e.kind === 'agent.created')).seq, 2); // and live NOTIFY works again
   c.close();
+});
+
+test('close() waits for the commands it already received, so the caller can end the pool right after it', async () => {
+  const pool = createPool(TEST_DATABASE_URL, db.schema);
+  const seen: unknown[] = [];
+  const s = await startServer({ pool, databaseUrl: TEST_DATABASE_URL, schema: db.schema, localToken: TOKEN, port: 0, pollIntervalMs: 60_000, onError: (e) => seen.push(e) });
+  const p = await seedProject(db.pool);
+  const c = await joined(p, 0, s.url);
+  // A slow database: every command waits at its first write.
+  const slow = await db.pool.connect();
+  await slow.query('BEGIN');
+  await slow.query('LOCK TABLE commands IN EXCLUSIVE MODE');
+  try {
+    c.send(command(p, 'agent.create', agent(90)));
+    c.send(command(p, 'agent.create', agent(91))); // queued behind the first, on the same connection
+    while (!(await db.pool.query("SELECT 1 FROM pg_locks WHERE relation = 'commands'::regclass AND NOT granted")).rowCount) await sleep(10);
+    let closed = false;
+    const closing = s.close().then(() => { closed = true; });
+    await sleep(200);
+    assert.equal(closed, false, 'close() waits while a received command is still running');
+    await slow.query('COMMIT');
+    await closing;
+  } finally {
+    slow.release();
+  }
+  await pool.end();
+  await sleep(200); // a command still running now would fail on the ended pool
+  assert.deepEqual(seen.map(String), []);
+  const created = (await db.pool.query("SELECT name FROM agent_principals WHERE project_id = $1 ORDER BY name", [p])).rows.map((r) => r.name);
+  assert.deepEqual(created, ['agent/a-90', 'agent/a-91'], 'both received commands ran');
 });

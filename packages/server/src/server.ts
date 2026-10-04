@@ -190,13 +190,16 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
 
   const wss = new WebSocketServer({ host: o.host ?? '127.0.0.1', port: o.port ?? 7400, maxPayload: MAX_MESSAGE_BYTES });
   await new Promise<void>((resolve, reject) => { wss.once('listening', resolve); wss.once('error', reject); });
+  const handling = new Set<Promise<void>>(); // each connection's message chain, until it has run: close() waits for them
   wss.on('connection', (ws) => {
     const c: Conn = { ws, principal: null, deviceId: null, subs: new Map(), queue: Promise.resolve() };
     conns.add(c);
     const helloTimer = setTimeout(() => { if (!c.principal) fail(c, 'unauthorized', 'no hello', true); }, o.helloTimeoutMs ?? 10_000);
     // One message at a time per connection, in arrival order.
     ws.on('message', (data) => {
-      c.queue = c.queue.then(() => handle(c, data.toString())).catch((e) => { onError(e); fail(c, 'internal', 'internal error'); });
+      const q = c.queue = c.queue.then(() => handle(c, data.toString())).catch((e) => { onError(e); fail(c, 'internal', 'internal error'); });
+      handling.add(q);
+      void q.finally(() => handling.delete(q));
     });
     ws.on('close', () => { clearTimeout(helloTimer); conns.delete(c); });
     ws.on('error', () => {});
@@ -213,6 +216,9 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
       clearInterval(waitSweep);
       for (const c of conns) c.ws.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
+      // Commands already received still run to the end (their replies go nowhere), so nothing uses the pool after
+      // close() returns and the caller can end it.
+      await Promise.allSettled([...handling]);
       await listener.client.end().catch(() => {});
       await listening;
     },
