@@ -30,6 +30,8 @@ const USAGE = `usage: harness <command> [--project <id>]
   --version`;
 
 type Args = { positional: string[]; flags: Record<string, string | true> };
+/** Flags that never take a value, so `harness claim T --force a b` keeps `a` as a path. */
+const BOOLEAN_FLAGS = new Set(['force', 'no-tests', 'no-wait', 'follow', 'json', 'yes', 'version']);
 function parseArgs(argv: string[]): Args {
   const out: Args = { positional: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -37,7 +39,7 @@ function parseArgs(argv: string[]): Args {
     if (!a.startsWith('--')) { out.positional.push(a); continue; }
     const key = a.slice(2);
     const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith('--')) { out.flags[key] = next; i++; } else out.flags[key] = true;
+    if (!BOOLEAN_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) { out.flags[key] = next; i++; } else out.flags[key] = true;
   }
   return out;
 }
@@ -173,9 +175,9 @@ async function main(argv: string[]): Promise<void> {
         task_id: task, paths, ...(ttl ? { ttl_s: Number(ttl) } : {}), ...(a.flags.force ? { force: true } : {}),
       });
       const granted = r.granted as { lease_id: string; path: string; token: number; expires_at: string }[];
-      const conflicts = r.conflicts as { path: string; task_id: string; expires_at: string }[];
+      const conflicts = r.conflicts as { path: string; lease_id: string; task_id: string; expires_at: string }[];
       if (!granted.length) {
-        console.log(`Not granted. ${conflicts.map((x) => `${x.path} overlaps a lease of ${x.task_id} (until ${x.expires_at.slice(11, 19)} UTC)`).join('; ')}. Take it over with --force.`);
+        console.log(`Not granted. ${conflicts.map((x) => `${x.path} overlaps lease ${x.lease_id} of ${x.task_id} (until ${x.expires_at.slice(11, 19)} UTC)`).join('; ')}. Take it over with --force.`);
         process.exitCode = 1;
         return;
       }
@@ -189,10 +191,13 @@ async function main(argv: string[]): Promise<void> {
       // Only the named task's leases: the server lets a human release any lease, so the CLI holds <task> to its word.
       const foreign = rest.filter((id) => c.view.leases.get(id)?.taskId !== task);
       if (foreign.length) fail(`${foreign.join(', ')} ${foreign.length === 1 ? 'is not a lease' : 'are not leases'} of ${task}; see harness status`);
-      const ids = rest.length ? rest : c.view.currentLeases(task).map((l) => l.id);
+      // With no ids: every lease of the task this view doesn't know has ended. The server decides which are still
+      // current (one clock, F-84); this device's clock never filters them.
+      const ids = rest.length ? rest : [...c.view.leases.values()].filter((l) => l.taskId === task && !l.releasedAt && !l.expiredAt).map((l) => l.id);
       if (!ids.length) return void console.log(`${task} holds no hard claims.`);
-      const r = await c.command('lease.release', { lease_ids: ids });
-      console.log((r.released as string[]).length ? `Released ${(r.released as string[]).join(', ')}.` : 'Nothing to release: those leases had already ended.');
+      const released: string[] = [];
+      for (let i = 0; i < ids.length; i += 200) released.push(...(await c.command('lease.release', { lease_ids: ids.slice(i, i + 200) })).released as string[]);
+      console.log(released.length ? `Released ${released.join(', ')}.` : 'Nothing to release: those leases had already ended.');
     });
   }
 

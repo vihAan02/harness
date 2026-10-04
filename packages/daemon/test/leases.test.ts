@@ -42,7 +42,7 @@ test('the claim tool asks for a lease for its own task; its result names what wa
   assert.deepEqual(sent.pop(), ['lease.acquire', { task_id: 'T-1', paths: ['src/types.ts'], ttl_s: 60 }]);
   assert.match(r.text, /^Granted:\n- src\/types\.ts: lease ls_9, token 7, renewed by the harness \(expires 12:03:04 UTC unless renewed\)$/);
   reply = { granted: [], conflicts: [{ path: 'src/types.ts', lease_id: 'ls_1', task_id: 'T-2', expires_at: '2026-10-04T12:05:00.000Z' }] };
-  assert.equal((await claim!.run({ paths: ['src/types.ts'] })).text, 'Not granted: src/types.ts overlaps a lease of T-2 until 12:05:00 UTC.');
+  assert.equal((await claim!.run({ paths: ['src/types.ts'] })).text, 'Not granted: src/types.ts overlaps lease ls_1 of T-2 until 12:05:00 UTC.', 'the holder\'s lease id, so the agent can wait for it (D-95)');
   assert.deepEqual(sent.pop(), ['lease.acquire', { task_id: 'T-1', paths: ['src/types.ts'] }], 'no ttl_s unless given');
   reply = { released: ['ls_9'] };
   assert.equal((await release!.run({ lease_ids: ['ls_9'] })).text, 'Released ls_9.');
@@ -59,6 +59,9 @@ test('harness_status and `harness status` show current hard claims, not released
   const human = renderHumanStatus(v, now);
   assert.match(human, /T-1 "API" \[in_progress\][^\n]*\n      scope: src\/api\/\n      changing: none\n      hard claims: src\/types\.ts \(ls_1, token 3, until 12:10:00 UTC\)/);
   const peer = renderAgentStatus(v, 'agent_f', Date.parse('2026-10-04T12:00:30.000Z'));
-  assert.match(peer, /- agent\/backend: working on T-1[^\n]*\n  scope: src\/api\/\n  changing: none\n  hard claims: src\/types\.ts \(token 3, until 12:10:00 UTC\)/);
+  assert.match(peer, /- agent\/backend: working on T-1[^\n]*\n  scope: src\/api\/\n  changing: none\n  hard claims: src\/types\.ts \(ls_1, token 3, until 12:10:00 UTC\)/);
+  // A finished task keeps its leases until it lands; its holder still shows, with the lease id to wait on.
+  v.apply(ev('task.completed', { task_id: 'T-1', by: 'agent_b' }));
+  assert.match(renderAgentStatus(v, 'agent_f', Date.parse('2026-10-04T12:00:30.000Z')), /Hard claims of finished tasks waiting to land:\n- T-1 \(agent\/backend\): src\/types\.ts \(ls_1, token 3, until 12:10:00 UTC\)/);
   assert.match(peer, /Your hard claims: src\/web\/ \(ls_3, token 5, until 12:01:00 UTC\)/);
 });

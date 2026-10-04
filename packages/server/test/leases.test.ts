@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { executeCommand, CommandError } from '../src/commands.ts';
 import type { HandlerContext } from '../src/handler.ts';
 import { lockLeases } from '../src/leases.ts';
-import { freshSchema, seedProject } from './helpers.ts';
+import { freshSchema, holdLeaseLock, seedProject, untilPast } from './helpers.ts';
 
 let db: Awaited<ReturnType<typeof freshSchema>>;
 let project: string;
@@ -64,7 +64,8 @@ test('acquire: one lease and one fencing token per path; first come, first serve
   assert.deepEqual(res(refused).conflicts.map((c: any) => [c.path, c.lease_id, c.task_id]), [['src/api/login.ts', g[0]!.lease_id, a.task]]);
   const told = await events(refused.seqs);
   assert.deepEqual(told.map((e) => [e.kind, e.data.kind, e.data.to, e.data.to_task_id]), [['message.sent', 'claim_conflict', b.agent, b.task]]);
-  assert.match(told[0]!.data.text, /^src\/api\/login\.ts: agent\/acq-a \(task T-\d+\) holds a hard claim until \d\d:\d\d:\d\d UTC\. Your claim was not granted\.$/);
+  assert.match(told[0]!.data.text, new RegExp(`^src/api/login\\.ts: agent/acq-a \\(task T-\\d+\\) holds a hard claim on src/api/ \\(lease ${g[0]!.lease_id}\\) until \\d\\d:\\d\\d:\\d\\d UTC\\. Your claim was not granted\\.$`));
+  assert.deepEqual(told[0]!.data.lease_ids, [g[0]!.lease_id], 'the holder\'s lease id, so the agent can wait for it (D-95)');
   assert.equal((await db.pool.query('SELECT count(*)::int AS n FROM leases WHERE task_id = $1', [b.task])).rows[0].n, 0, 'nothing granted, not even src/web/');
 
   // A human asking for B is refused the same way, but only the human hears about it.
@@ -80,8 +81,24 @@ test('acquire: one lease and one fencing token per path; first come, first serve
   const again = await a.acquire(['src/api/'], { ttl_s: 300 });
   assert.deepEqual(res(again).granted.map((x: any) => [x.lease_id, x.token]), [[g[0]!.lease_id, g[0]!.token]]);
   assert.ok(Date.parse(res(again).granted[0].expires_at) - Date.now() > 290_000, 'pushed out by the new ttl');
-  assert.deepEqual((await events(again.seqs)).map((e) => [e.kind, e.data.leases?.[0]?.lease_id]), [['lease.renewed', g[0]!.lease_id]]);
+  assert.deepEqual((await events(again.seqs)).map((e) => [e.kind, e.data.leases]), [['lease.renewed', [{ lease_id: g[0]!.lease_id, expires_at: res(again).granted[0].expires_at, ttl_s: 300 }]]]);
   assert.equal(await rows(), before, 'no new row');
+});
+
+test('a re-claim keeps the lease\'s own TTL unless it names one, and never moves its expiry earlier', async () => {
+  const a = await worker('agent/keep-a');
+  const first = res(await a.acquire(['keep/'], { ttl_s: 3600 })).granted[0] as { lease_id: string; expires_at: string };
+  const row = async () => (await db.pool.query('SELECT ttl_s, expires_at FROM leases WHERE id = $1', [first.lease_id])).rows[0] as { ttl_s: number; expires_at: Date };
+  const bare = await a.acquire(['keep/']); // no ttl_s: not the 120 s default
+  assert.equal((await row()).ttl_s, 3600);
+  assert.ok((await row()).expires_at.getTime() - Date.now() > 3590_000, 'still about an hour');
+  assert.equal((await events(bare.seqs))[0]!.data.leases[0].ttl_s, 3600, 'lease.renewed carries the TTL, so harnessd can reschedule');
+  const shorter = await a.acquire(['keep/'], { ttl_s: 10 });
+  assert.ok((await row()).expires_at.getTime() - Date.now() > 3590_000, 'a shorter TTL never moves the expiry earlier');
+  assert.deepEqual([(await row()).ttl_s, (await events(shorter.seqs))[0]!.data.leases[0].ttl_s], [10, 10], 'but harnessd now renews by the new TTL');
+  const renewed = await a.renew([first.lease_id]);
+  assert.deepEqual(res(renewed).renewed.map((x: any) => [x.lease_id, x.ttl_s]), [[first.lease_id, 10]], 'renew results carry ttl_s too');
+  assert.equal((await events(renewed.seqs))[0]!.data.leases[0].ttl_s, 10);
 });
 
 test('a task holds at most 200 current leases', async () => {
@@ -201,6 +218,35 @@ test('a lease once seen expired is never renewed, even if its expiry looks later
   assert.deepEqual(r.seqs, [], 'no lease.renewed');
   const b = await worker('agent/nr-b');
   assert.equal(res(await b.acquire(['nr/'])).granted.length, 1, "and it doesn't block another task's claim");
+});
+
+test('releasing a lease that has already expired releases nothing; it stays expired', async () => {
+  const a = await worker('agent/rx-a');
+  const lease = res(await a.acquire(['rx/'])).granted[0].lease_id as string;
+  await expire([lease]);
+  const r = await a.release([lease]);
+  assert.deepEqual(res(r).released, []);
+  assert.deepEqual((await events(r.seqs)).map((e) => e.kind), ['lease.expired'], 'logged as expired, not released');
+  assert.deepEqual(res(await a.renew([lease])).lost, [{ lease_id: lease, reason: 'expired' }]);
+});
+
+test('the clock is read under the lease lock: a renew that waited for the lock across the lease\'s expiry finds it expired', async () => {
+  const a = await worker('agent/clk-a');
+  const lease = res(await a.acquire(['clk/'], { ttl_s: 60 })).granted[0].lease_id as string;
+  const lock = await holdLeaseLock(db.pool, project);
+  let done = false;
+  const renewing = a.renew([lease]).finally(() => { done = true; });
+  try {
+    const began = await lock.queued(() => done);
+    assert.ok(began, 'the renew waits for the lease lock');
+    // The lease runs out after the renew's transaction began (what now() would say), before it gets the lock.
+    await db.pool.query("UPDATE leases SET expires_at = $2::timestamptz + interval '20 milliseconds' WHERE id = $1", [lease, began]);
+    await untilPast(db.pool, (await db.pool.query('SELECT expires_at FROM leases WHERE id = $1', [lease])).rows[0].expires_at);
+  } finally {
+    await lock.release();
+  }
+  const r = res(await renewing);
+  assert.deepEqual([r.renewed, r.lost], [[], [{ lease_id: lease, reason: 'expired' }]], 'never revived');
 });
 
 test('the lease lock is per project and held until the transaction ends (D-97)', async () => {

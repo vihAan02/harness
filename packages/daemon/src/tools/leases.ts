@@ -21,7 +21,7 @@ export function leaseTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
       },
       run: (a) => call('lease.acquire', { task_id: ctx.taskId, paths: a.paths, ...(a.ttl_s !== undefined ? { ttl_s: a.ttl_s } : {}) }, (r) => {
         const { granted, conflicts } = r as { granted: Granted[]; conflicts: Conflict[] };
-        if (!granted.length) return `Not granted: ${conflicts.map((c) => `${c.path} overlaps a lease of ${c.task_id} until ${clock(c.expires_at)}`).join('; ')}.`;
+        if (!granted.length) return `Not granted: ${conflicts.map((c) => `${c.path} overlaps lease ${c.lease_id} of ${c.task_id} until ${clock(c.expires_at)}`).join('; ')}.`;
         return `Granted:\n${granted.map((g) => `- ${g.path}: lease ${g.lease_id}, token ${g.token}, renewed by the harness (expires ${clock(g.expires_at)} unless renewed)`).join('\n')}`;
       }),
     },

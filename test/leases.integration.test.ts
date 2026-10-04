@@ -26,8 +26,9 @@ test('hard claims end to end: an agent claims through its tool, a human takes it
   const tY = await s.assignTask(y, 'Helper', ['lib/util.ts'], steps('TEXT ready'));
   await s.turnEnds(tY);
   const refused = await s.cli('claim', tY, 'lib/util.ts').then(() => 'granted?', (e: { stdout?: string }) => String(e.stdout)); // exit code 1
-  assert.match(refused, new RegExp(`^Not granted\\. lib/util\\.ts overlaps a lease of ${tX} \\(until \\d\\d:\\d\\d:\\d\\d UTC\\)\\. Take it over with --force\\.`));
-  assert.match(await s.cli('claim', tY, 'lib/util.ts', '--force'), new RegExp(`${tY} holds lib/util\\.ts: lease ls_[0-9a-f]{16}, token ${xLease.token + 1},`));
+  assert.match(refused, new RegExp(`^Not granted\\. lib/util\\.ts overlaps lease ${xLease.id} of ${tX} \\(until \\d\\d:\\d\\d:\\d\\d UTC\\)\\. Take it over with --force\\.`));
+  // Flag first: --force never swallows a path.
+  assert.match(await s.cli('claim', tY, '--force', 'lib/util.ts'), new RegExp(`${tY} holds lib/util\\.ts: lease ls_[0-9a-f]{16}, token ${xLease.token + 1},`));
   await s.until(() => view.leases.get(xLease.id)?.releaseReason === 'revoked', 10_000, 'the revoke to reach harnessd');
   const told = [...view.messages.values()].find((m) => m.kind === 'claim_conflict' && m.to === x && m.data.revoked === true);
   assert.match(told!.text, new RegExp(`^lib/: your hard claim was taken over by human_test for task ${tY}\\.`));

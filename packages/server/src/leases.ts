@@ -8,8 +8,11 @@
 // - Expiry is lazy (F-84): "current" is decided on the server's clock, read once per command under the lease
 //   lock (D-97), and `lease.expired` is logged the first time a lease command sees one. A lease once seen
 //   expired is never renewed.
-// - A task re-claiming a path it holds keeps that lease (and its token); a task holds at most MAX_HELD.
+// - A task re-claiming a path it holds keeps that lease and its token, and its own TTL unless a new one is
+//   given; a re-claim never moves an expiry earlier. A task holds at most MAX_HELD current leases.
+// - Every lease.renewed entry carries the lease's ttl_s, so harnessd can reschedule its renewals (D-97).
 import { randomUUID } from 'node:crypto';
+import { serverClock } from './db.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { newMessageId } from './messages.ts';
 import { requireAgentOnDevice } from './sessions.ts';
@@ -39,7 +42,7 @@ type LeaseRow = {
  */
 export async function lockLeases(ctx: HandlerContext): Promise<string> {
   await ctx.tx.query("SELECT pg_advisory_xact_lock(hashtext('harness.leases:' || $1))", [ctx.projectId]);
-  return (await ctx.tx.query<{ t: string }>('SELECT clock_timestamp()::text AS t')).rows[0]!.t;
+  return serverClock(ctx.tx);
 }
 
 const iso = (d: Date) => d.toISOString();
@@ -116,7 +119,8 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
   if (force && isAgent(ctx)) throw new CommandError('forbidden', 'only a human can take a lease over (force)');
   if (!Array.isArray(args.paths) || !args.paths.length || args.paths.length > MAX_PATHS) throw new CommandError('bad_request', `paths must be a list of 1 to ${MAX_PATHS} folders or files`);
   const paths = [...new Set(args.paths.map(normalizeScopePath))].sort();
-  const ttl = ttlOf(args.ttl_s) ?? TTL.default;
+  const asked = ttlOf(args.ttl_s);
+  const ttl = asked ?? TTL.default;
   if (task.status !== 'in_progress' && task.status !== 'blocked') throw new CommandError('conflict', `${task.id} is ${task.status}; only a task in progress or blocked can take a lease`);
 
   const events = await noticeExpired(ctx, at);
@@ -133,8 +137,8 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
     // Refused as a whole (D-89). An agent hears why; a human gets the conflicts in the result only.
     if (isAgent(ctx)) {
       const holders = [...new Map(others.map((l) => [l.task_id, l])).values()];
-      const text = `${conflicts.map((c) => c.path).filter((p, i, a) => a.indexOf(p) === i).join(', ')}: ${holders.map((l) => `${holderOf(names, l)} holds a hard claim until ${iso(l.expires_at).slice(11, 19)} UTC`).join('; ')}. Your claim was not granted.`;
-      events.push(...await tellAgent(ctx, ctx.actor.principal, task.id, text, { paths, other_tasks: holders.map((l) => l.task_id), level: 'lease', refused: true }));
+      const text = `${conflicts.map((c) => c.path).filter((p, i, a) => a.indexOf(p) === i).join(', ')}: ${others.map((l) => `${holderOf(names, l)} holds a hard claim on ${l.path} (lease ${l.id}) until ${iso(l.expires_at).slice(11, 19)} UTC`).join('; ')}. Your claim was not granted.`;
+      events.push(...await tellAgent(ctx, ctx.actor.principal, task.id, text, { paths, other_tasks: holders.map((l) => l.task_id), lease_ids: others.map((l) => l.id), level: 'lease', refused: true }));
     }
     return { result: { granted: [], conflicts }, events };
   }
@@ -155,14 +159,17 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
   }
 
   const granted: { lease_id: string; path: string; token: number; expires_at: string }[] = [];
-  const kept: { lease_id: string; expires_at: string }[] = [];
+  const kept: { lease_id: string; expires_at: string; ttl_s: number }[] = [];
   for (const path of paths) {
     const own = held.get(path);
     if (own) {
+      // Its own TTL unless the claim names one, and never an earlier expiry than it already had.
+      const keep = asked ?? own.ttl_s;
       const exp = (await ctx.tx.query<{ expires_at: Date }>(
-        "UPDATE leases SET expires_at = $2::timestamptz + $3::int * interval '1 second', ttl_s = $3::int WHERE id = $1 RETURNING expires_at", [own.id, at, ttl])).rows[0]!.expires_at;
+        "UPDATE leases SET expires_at = GREATEST(expires_at, $2::timestamptz + $3::int * interval '1 second'), ttl_s = $3::int WHERE id = $1 RETURNING expires_at",
+        [own.id, at, keep])).rows[0]!.expires_at;
       granted.push({ lease_id: own.id, path, token: Number(own.token), expires_at: iso(exp) });
-      kept.push({ lease_id: own.id, expires_at: iso(exp) });
+      kept.push({ lease_id: own.id, expires_at: iso(exp), ttl_s: keep });
       continue;
     }
     const token = Number((await ctx.tx.query<{ t: string }>(
@@ -196,17 +203,19 @@ export async function renewLeases(ctx: HandlerContext, args: Record<string, unkn
       'SELECT device_id FROM agent_sessions WHERE task_id = $1 ORDER BY started_at DESC LIMIT 1', [taskId])).rows[0]?.device_id;
     if (device !== deviceId) throw new CommandError('forbidden', `${taskId} ran on another device; only that device renews its leases`);
   }
-  const renewed: { lease_id: string; expires_at: string }[] = [];
+  const renewed: { lease_id: string; expires_at: string; ttl_s: number }[] = [];
   const lost: { lease_id: string; reason: 'expired' | 'released' | 'revoked' }[] = [];
-  const byTask = new Map<string, { lease_id: string; expires_at: string }[]>();
+  const byTask = new Map<string, { lease_id: string; expires_at: string; ttl_s: number }[]>();
   for (const r of rows) {
     if (!r.current) { // never revived: released, past its expiry at this command's clock, or already seen expired
       lost.push({ lease_id: r.id, reason: r.released_at ? (r.release_reason === 'revoked' ? 'revoked' : 'released') : 'expired' });
       continue;
     }
+    const keep = ttl ?? r.ttl_s;
     const exp = (await ctx.tx.query<{ expires_at: Date }>(
-      "UPDATE leases SET expires_at = $2::timestamptz + $3::int * interval '1 second' WHERE id = $1 RETURNING expires_at", [r.id, at, ttl ?? r.ttl_s])).rows[0]!.expires_at;
-    const one = { lease_id: r.id, expires_at: iso(exp) };
+      "UPDATE leases SET expires_at = GREATEST(expires_at, $2::timestamptz + $3::int * interval '1 second'), ttl_s = $3::int WHERE id = $1 RETURNING expires_at",
+      [r.id, at, keep])).rows[0]!.expires_at;
+    const one = { lease_id: r.id, expires_at: iso(exp), ttl_s: keep };
     renewed.push(one);
     byTask.set(r.task_id, [...(byTask.get(r.task_id) ?? []), one]);
   }
@@ -231,7 +240,8 @@ export async function releaseLeases(ctx: HandlerContext, args: Record<string, un
     const foreign = rows.find((r) => r.assignee_agent_id !== ctx.actor.principal);
     if (foreign) throw new CommandError('forbidden', `lease ${foreign.id} belongs to another agent's task`);
   }
-  const open = rows.filter((r) => !r.released_at);
+  // Only current leases are released: one that has already expired stays expired (and was logged so above).
+  const open = rows.filter((r) => r.current);
   const busy = await landing(ctx, [...new Set(open.map((r) => r.task_id))]);
   if (busy.length) throw new CommandError('conflict', `${busy.join(', ')} is being landed; cancel that land first (harness land --cancel <task>)`);
   if (open.length) await ctx.tx.query("UPDATE leases SET released_at = $2::timestamptz, release_reason = 'released' WHERE id = ANY($1)", [open.map((r) => r.id), at]);

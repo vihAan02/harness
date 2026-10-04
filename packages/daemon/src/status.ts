@@ -38,9 +38,16 @@ export function renderAgentStatus(view: ProjectView, agentId: string, now = Date
     if (t) {
       const c = view.claims.get(t.id);
       lines.push(`  scope: ${list(t.scope)}`, `  changing: ${list(c?.observed ?? [])}`);
-      const held = leaseList(view, t.id, now);
+      const held = leaseList(view, t.id, now, true);
       if (held) lines.push(`  hard claims: ${held}`);
     }
+  }
+
+  // Finished tasks keep their leases until they land (D-97): show them too, so an agent can wait for one (D-95).
+  const waitingToLand = [...view.tasks.values()].filter((t) => t.status === 'done' && t.id !== myTask?.id && leaseList(view, t.id, now));
+  if (waitingToLand.length) {
+    lines.push('', 'Hard claims of finished tasks waiting to land:');
+    for (const t of waitingToLand) lines.push(`- ${t.id} (${view.agentName(t.assignee)}): ${leaseList(view, t.id, now, true)}`);
   }
 
   if (myTask) {
