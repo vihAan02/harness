@@ -53,8 +53,12 @@ test('a hardened session edits inside its worktree only, and reports what it did
   assert.ok(fs.existsSync(path.join(f.worktree, 'src/new.ts')));
   assert.ok(!fs.existsSync(outsideFile), 'a write outside the worktree was denied (D-60)');
   assert.ok(fs.existsSync(path.join(f.worktree, 'src/by-shell.ts')));
-  const edits = c.of('edit.observed').flatMap((o) => o.paths).sort();
-  assert.deepEqual(edits, ['src/by-shell.ts', 'src/new.ts'], 'file-tool and Bash edits both captured (D-70)');
+  // A file-tool edit is always reported by the hooks. A Bash edit is reported when the CLI attaches its
+  // bashEditDiff (F-07), which it can skip under load, so it isn't asserted here: harnessd's worktree
+  // diff is the guaranteed backstop for those (D-70), tested in test/claims.integration.test.ts.
+  const edits = new Set(c.of('edit.observed').flatMap((o) => o.paths));
+  assert.ok(edits.has('src/new.ts'), 'the file-tool edit was captured');
+  assert.deepEqual([...edits].filter((p) => p !== 'src/new.ts' && p !== 'src/by-shell.ts'), [], 'and nothing else was reported');
   assert.deepEqual(c.of('tool.called').map((o) => o.category), ['write', 'write', 'shell', 'mcp']);
   assert.deepEqual(calls, [{ text: 'hi' }]);
   assert.match(toolResults().join('\n'), /echo: hi/);

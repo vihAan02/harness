@@ -7,6 +7,7 @@
 //  - a land requested the moment a task is done waits for its work to be committed;
 //  - a finished task's landed notice never reaches the agent's next task;
 //  - a land interrupted after the base moved is completed at recovery;
+//  - a land whose test command nobody approves gives up, as not_approved;
 //  - a land never moves the base on red tests, a merge conflict, or a missing test command.
 import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,13 +22,14 @@ import { startStack, type Stack } from './support.ts';
 const fake = new FakeAdapter();
 let s: Stack;
 let approver: NodeJS.Timeout;
+let approving = true; // the human approves setup and test commands as they're asked for
 const dataOf = (e: { data: unknown }) => e.data as Record<string, any>;
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.hooksPath=/dev/null', ...args], { cwd, encoding: 'utf8' }).trim();
 
 before(async () => {
   s = await startStack({
     portRange: [31700, 31799],
-    daemonOptions: { adapters: { claude: fake } },
+    daemonOptions: { adapters: { claude: fake }, approvalTimeoutMs: 4000 },
     files: {
       'src/types.ts': 'export type User = { id: string };\n',
       'src/other.ts': 'export const other = 1;\n',
@@ -37,7 +39,7 @@ before(async () => {
       'harness.yaml': 'test:\n  command: node check.mjs\n  manifests: [package.json]\n',
     },
   });
-  approver = setInterval(() => { const a = new Approvals(s.home); for (const r of a.pending()) a.approve(r.id); }, 100);
+  approver = setInterval(() => { if (!approving) return; const a = new Approvals(s.home); for (const r of a.pending()) a.approve(r.id); }, 100);
 });
 after(async () => {
   clearInterval(approver);
@@ -271,6 +273,23 @@ test('a land interrupted after the base moved is completed at recovery, even wit
   const done = await s.nextEvent((e) => e.kind === 'land.completed' && dataOf(e).task_id === t, 30_000);
   assert.equal(dataOf(done).new_base_sha, merge);
   assert.equal((await s.db.pool.query('SELECT status FROM tasks WHERE id = $1', [t])).rows[0].status, 'landed');
+});
+
+test('a land whose test command nobody approves fails as not_approved, and the base does not move', async () => {
+  const a = await agent('agent/unapproved');
+  const t = await startTask(a, 'unapproved');
+  // A changed test command needs its own approval (D-52), and this time nobody gives it.
+  await finish(t, { 'harness.yaml': 'test:\n  command: node check.mjs --again\n  manifests: [package.json]\n' });
+  const before = baseTip();
+  approving = false;
+  try {
+    const out = await land(t);
+    assert.deepEqual([out.kind, dataOf(out).reason], ['land.failed', 'not_approved']);
+    assert.match(String(dataOf(out).detail), /no approval after 4 s/);
+    assert.equal(baseTip(), before);
+  } finally {
+    approving = true;
+  }
 });
 
 test('a land never moves the base on red tests, a merge conflict, or a missing test command', async () => {
