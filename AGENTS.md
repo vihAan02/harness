@@ -23,7 +23,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83);
     - item 11, the 0A demo, `npm run demo`, which meets every 0A exit criterion with a scripted model (D-84).
   - **Deferred from 0A:** the real-model checks need an API key (U-1, Q-18, deferred by D-86).
-  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`).
+  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`). Since D-94: read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), and `wait_for` (D-95, D-101).
   - **The rest of 0B (D-94):** approved 2026-10-03 and built in two parallel workstreams. See "Parallel development (0B)" below before touching any file.
   - **Environment caveat:** if the checkout is inside an iCloud-synced folder (such as `~/Desktop`), real-CLI tests flake and iCloud can create `name 2.ext` duplicate files; run them from a clone outside iCloud (see HANDOFF.md).
 - **Code:**

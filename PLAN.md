@@ -358,7 +358,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
       - That's per-task sync, not a merge train: GitHub, not the harness, decides merge order and merges.
     - After every merge, the harness verifies that the base contains each PR's diff (F-53).
   - *Why:* the merge queue is limited by plan (F-50). The review caught that a harness-run "land train" would quietly pull forward the integration engine that S1 and S3 deferred (D-06).
-  - *Status:* Locked (review-derived).
+  - *Status:* Locked (review-derived). Step 4 is superseded in 0B by D-96: a failed land leaves the task `done`.
 
 ### Security
 - **D-32 The local daemon is the execution and security boundary, and the root of trust.**
@@ -1019,6 +1019,11 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - A timed-out wait also reaches the task's human as the server's `task_blocked` (D-95).
   - **Tests:** `test/waits.integration.test.ts` (the real CLI: an answer arrives; a wait already over; a timeout and the human's `task_blocked`), and the tool and its text in `packages/daemon/test/tools.test.ts`.
   - *Source:* 0B item 4, D-95, S10. *Status:* Proposal.
+- **D-96 A land that fails leaves the task `done` in 0B (supersedes D-51's step 4 until Phase 1; D-93).**
+  - **D-51 said:** on red tests or a conflict, the task goes back to `in_progress` with the failure attached.
+  - **0B instead:** the task stays `done`. The failure is in the log (`land.failed`, with its reason), the task's leases keep renewing (D-97), and the human fixes the branch and lands again, or abandons the task. That's what D-93 built.
+  - **Why:** sending a task back to its agent needs the agent's session restarted with its context, which is Phase 1 resume (D-40).
+  - *Source:* D-93 as built; the approved parallel plan (S10). *Status:* Proposal; D-51's step 4 applies again once resume exists.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
@@ -1134,6 +1139,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 6. **During 0B** (approved, D-86):
    - ~~**This stretch:** provider integration (D-87); item 1, read capture and the missed-hook monitor; item 2, invalidation and sync; the land part of item 5.~~ **Done 2026-10-03:** providers (D-90), read capture (D-91), invalidation and sync (D-92), the land step (D-93). The S3 example passes end to end with the scripted model (`test/s3.integration.test.ts`); the roadmap's 0B exit criterion 1 is met with the scripted model. **Stop point reached; the owners approved the rest of 0B in two parallel workstreams (D-94).**
    - **The rest of 0B** (D-94, two parallel workstreams; tasks and dependencies in the pinned "0B workboard" GitHub issue): hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
+     - **Done by 2026-10-04:** read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), `wait_for` (D-95, D-101). The A/B baseline launch is built (D-102) and waits for a real-model run.
+     - **In review or in progress:** leases and T-2 (B5, B6), T-1b, the message kinds, the A/B scenarios, runner and recorder.
 7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
 ## 13. Glossary
