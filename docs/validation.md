@@ -99,6 +99,24 @@ Run on the purpose-built benchmark repo ([above](#benchmark-repo-d-58)).
 | SC-4 | Duplicate-work trap | Both tasks naturally need the same new helper (e.g. input validation or date formatting). | Two implementations of the same thing |
 | SC-0 | Control | Two independent tasks with no coupling | Measures the harness's overhead when coordination isn't needed |
 
+**Built (2026-10-04, D-120):**
+- **The base:** harness-bench's `ab` branch, commit `ae3198e`. It's Shelf with one change: the land step's test command is `npm run check` (type-check, then tests), so a broken shared-type contract fails integration. Tags `SC-0` to `SC-4` all point at it; `main` stays the demos' base.
+- **The task cards:** [scripts/ab/scenarios/](../scripts/ab/scenarios/), one file per scenario. Each has two tasks, each with an agent name, a title, a declared scope and **three phrasings**: paired run *n* uses phrasing *n* in both arms, so every pair gets fresh wording (§6). The cards stay out of the benchmark repo, so neither agent can read the other's.
+
+  | ID | Task 1 | Task 2 | Does task 2's card mention task 1? |
+  |---|---|---|---|
+  | SC-0 | Sign out everywhere (`POST /logout/all`) | Loan history view | No (no coupling) |
+  | SC-1 | Session expiry in the login response | Show when the session ends (header, client) | Yes: it names the parallel backend change |
+  | SC-2 | Clearer stock numbers in the API (`stock` object) | Low-stock badges and shelf stats in the book list | No |
+  | SC-3 | Report a lost book (loan status migration) | Team stats endpoint (`GET /stats`) | No |
+  | SC-4 | Validate ISBNs on the server | Add-book form with validation | No |
+- **The hidden checks:** a separate private repo that only the grader (Vihaan) reads; agents never see it and the coordinator never reads it (D-94). For each run's final state, its grader reports:
+  - the type-check and test results at integration (M9);
+  - each check;
+  - whether the planted failure reached integration (M6). For SC-4 that means the duplicate helper (M2).
+
+  Its self-test proves, from fresh clones at the tags, that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
+
 **Runs:**
 - At least **3 paired runs per scenario per arm**: 5 scenarios × 3 runs × 2 arms = **30 runs minimum**.
 - **Alternate which arm goes first** to reduce the human learning the scenario.

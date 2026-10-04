@@ -1,0 +1,38 @@
+{
+  "scenario": "SC-1",
+  "name": "API contract",
+  "repo": "https://github.com/vihAan02/harness-bench.git",
+  "tag": "SC-1",
+  "tasks": [
+    {
+      "key": "T1",
+      "agent": "backend",
+      "title": "Session expiry in the login response",
+      "scope": [
+        "src/server/",
+        "src/shared/types.ts",
+        "test/contract/"
+      ],
+      "phrasings": [
+        "Clients need to know when a login session ends. Change the `POST /login` response from `{ token, user }` to `{ user, session: { token, expiresAt } }`: the token moves into `session`, next to the session's expiry time as an ISO 8601 string (sessions last `SESSION_HOURS`). Update `LoginResponse` in `src/shared/types.ts`, the route and the contract tests. A front-end task is building on this response at the same time.",
+        "Restructure the login response so it carries the session's lifetime. `POST /login` should return `{ user, session: { token, expiresAt } }` instead of `{ token, user }`: the token now lives in `session`, and `expiresAt` is when the session expires, as ISO 8601 (`SESSION_HOURS` after login). Change `LoginResponse` in `src/shared/types.ts`, the login route and the contract tests to match. The web front end is being updated for this in a parallel task.",
+        "The front end has to show when a session runs out, so the API must say. New `POST /login` response shape: `{ user, session: { token, expiresAt } }`, replacing `{ token, user }`. `session.token` is the bearer token and `session.expiresAt` the ISO 8601 expiry (login time plus `SESSION_HOURS`). Update the `LoginResponse` type in `src/shared/types.ts`, the server and the contract tests. Someone else is working on the client side of this right now."
+      ]
+    },
+    {
+      "key": "T2",
+      "agent": "frontend",
+      "title": "Show when the session ends",
+      "scope": [
+        "src/client/",
+        "test/unit/views.test.ts",
+        "test/integration/"
+      ],
+      "phrasings": [
+        "The header should tell people when they'll be signed out. A backend task running in parallel is adding the session's expiry time to the `POST /login` response; build the front end against that. `renderWelcome(login)` in `src/client/views.ts` should end with ` until HH:MM UTC` (24-hour clock, the session's expiry in UTC) after the name and email it shows today. Keep `ShelfClient.login()` storing the token and user, and add `ShelfClient.sessionExpiresAt: string | null`, set on login and cleared on logout. Update the unit and integration tests.",
+        "Show users when their session will end. The login response is getting the session's expiry time in a backend task that's happening at the same time as this one; use it. In `src/client/views.ts`, `renderWelcome(login)` keeps the name and email and adds ` until HH:MM UTC` at the end (the expiry, UTC, 24-hour). In `src/client/api.ts`, `ShelfClient.login()` still keeps the token and the user, and a new `sessionExpiresAt: string | null` property holds the expiry after login and goes back to `null` on logout. Update the unit and integration tests.",
+        "Front-end half of session expiry: a parallel backend change puts the session's expiry into the `POST /login` response. Make the header (`renderWelcome(login)`, `src/client/views.ts`) say ` until HH:MM UTC` after the user's name and email, using that expiry in 24-hour UTC time. On `ShelfClient`, keep `login()` saving the token and user, and add `sessionExpiresAt: string | null`: the expiry after `login()`, `null` again after `logout()`. Update the unit and integration tests."
+      ]
+    }
+  ]
+}

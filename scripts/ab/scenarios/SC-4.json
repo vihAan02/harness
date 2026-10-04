@@ -1,0 +1,36 @@
+{
+  "scenario": "SC-4",
+  "name": "Duplicate-work trap",
+  "repo": "https://github.com/vihAan02/harness-bench.git",
+  "tag": "SC-4",
+  "tasks": [
+    {
+      "key": "T1",
+      "agent": "backend",
+      "title": "Validate ISBNs on the server",
+      "scope": [
+        "src/server/",
+        "test/contract/"
+      ],
+      "phrasings": [
+        "`POST /books` accepts any string as an ISBN. Reject invalid ones with 400 `bad_request`. Valid means an ISBN-10 (the last character may be `X`) or an ISBN-13, each with a correct check digit; hyphens and spaces in the input are allowed and are removed before the ISBN is stored. Add contract tests for valid and invalid ISBNs.",
+        "Stop bad ISBNs getting onto the shelf. `POST /books` should answer 400 `bad_request` unless the ISBN is a valid ISBN-10 (whose last character may be `X`) or ISBN-13, including a correct check digit. People type hyphens and spaces, so accept them, but strip them before saving the ISBN. Add contract tests covering valid and invalid ISBNs.",
+        "Right now `POST /books` takes any ISBN string. Validate it: accept an ISBN-10 (last character may be `X`) or an ISBN-13, either with a correct check digit, allowing hyphens and spaces in the input and storing the ISBN without them; anything else gets 400 `bad_request`. Add contract tests for both valid and invalid ISBNs."
+      ]
+    },
+    {
+      "key": "T2",
+      "agent": "frontend",
+      "title": "Add-book form",
+      "scope": [
+        "src/client/",
+        "test/unit/views.test.ts"
+      ],
+      "phrasings": [
+        "Add an \"Add a book\" form to the web front end, in `src/client/views.ts`. First `validateNewBook(input: NewBook)`, which returns an object with an error message for each invalid field (and `{}` when all is well): title and author must not be blank, copies must be a whole number from 1 to 50, and isbn must be a valid ISBN-10 (the last character may be `X`) or ISBN-13 with a correct check digit, ignoring hyphens and spaces. Then `renderAddBookForm(values, errors)`, which renders the four fields with their current values and each field's error next to it. Add unit tests.",
+        "The web front end needs a form for adding books, in `src/client/views.ts`. Write `validateNewBook(input: NewBook)` to check a new book before it's sent: it returns `{}` when everything is fine, otherwise an object with a message for each bad field. Rules: title and author can't be blank; copies is a whole number from 1 to 50; isbn is a valid ISBN-10 (last character may be `X`) or ISBN-13 with a correct check digit, with hyphens and spaces ignored. Also write `renderAddBookForm(values, errors)`, rendering the four fields with their values and any error beside its field. Add unit tests.",
+        "Build the \"Add a book\" form in `src/client/views.ts`, with validation before submit. `validateNewBook(input: NewBook)` returns a per-field object of error messages, or `{}` if the book is fine: title and author not blank, copies a whole number between 1 and 50, and isbn a valid ISBN-10 (an `X` is allowed as the last character) or ISBN-13 whose check digit is correct, ignoring any hyphens and spaces. `renderAddBookForm(values, errors)` renders the four inputs filled with `values`, each followed by its error if there is one. Add unit tests."
+      ]
+    }
+  ]
+}

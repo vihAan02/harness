@@ -1,0 +1,44 @@
+{
+  "scenario": "SC-3",
+  "name": "DB schema",
+  "repo": "https://github.com/vihAan02/harness-bench.git",
+  "tag": "SC-3",
+  "tasks": [
+    {
+      "key": "T1",
+      "agent": "loans",
+      "title": "Report a lost book",
+      "scope": [
+        "src/server/migrations/",
+        "src/server/repos/loans.ts",
+        "src/server/repos/books.ts",
+        "src/server/routes.ts",
+        "src/shared/types.ts",
+        "test/unit/loans.test.ts",
+        "test/contract/"
+      ],
+      "phrasings": [
+        "Borrowers sometimes lose a book, and we need to record that. Give loans a status instead of a nullable return date: add migration `004_loan_status.sql` that replaces `loans.returned_at` with `status` (`active`, `returned` or `lost`) and `closed_at` (when the loan was returned or reported lost), converting existing rows, and drops `returned_at`. Add `POST /loans/:id/lost`: only the borrower, only for an active loan (409 otherwise, like returning twice); it marks the loan lost and takes the copy off the shelf for good (the book's `copies` drops by one). In the API, `Loan` gains `status`, and `returnedAt` stays (set only for returned loans). Update the repos, routes, types and tests.",
+        "Support reporting a lost copy. The loans table moves from a nullable `returned_at` to an explicit status: migration `004_loan_status.sql` adds `status` (`active`, `returned`, `lost`) and `closed_at` (the time it was returned or reported lost), fills them from the existing rows and drops `returned_at`. New endpoint `POST /loans/:id/lost`, for the borrower only and only while the loan is active (409 if it's already closed, as for a second return): the loan becomes `lost` and the book permanently loses that copy (`copies` minus one). API-wise, `Loan` gets a `status` field and keeps `returnedAt`, which is set only for returned loans. Update repos, routes, types and tests.",
+        "Lost books need tracking. Replace the `loans.returned_at` column with `status` (one of `active`, `returned`, `lost`) plus `closed_at` (when it was returned or reported lost) in a new migration, `004_loan_status.sql`, which converts the existing rows and drops `returned_at`. Then add `POST /loans/:id/lost`, which only the borrower may call, and only on an active loan (otherwise 409, the same as returning twice). It sets the loan to `lost` and removes the copy from the shelf for good: the book's `copies` goes down by one. The API's `Loan` adds `status`; `returnedAt` remains, set only when the loan was returned. Update the repos, routes, types and tests."
+      ]
+    },
+    {
+      "key": "T2",
+      "agent": "stats",
+      "title": "Team stats endpoint",
+      "scope": [
+        "src/server/repos/stats.ts",
+        "src/server/routes.ts",
+        "src/shared/types.ts",
+        "src/client/api.ts",
+        "test/contract/"
+      ],
+      "phrasings": [
+        "The team wants a small dashboard. Add `GET /stats` (login required), returning a new `Stats` type: `{ titles, copies, onLoan, overdue, topBorrowed }`: the number of titles, all copies, copies on loan right now, loans still out past their due date, and the five most borrowed books ever as `[{ bookId, title, timesBorrowed }]`, most borrowed first and ties by title. Put the queries in a new `src/server/repos/stats.ts`, the type in `src/shared/types.ts`, and add `stats()` to `ShelfClient`. Add a contract test.",
+        "Build the data for a team dashboard: `GET /stats`, login required, returning `Stats` (a new type in `src/shared/types.ts`) with `titles` (how many books), `copies` (all copies), `onLoan` (copies out right now), `overdue` (loans still out after their due date) and `topBorrowed`, the five books borrowed most often ever, as `[{ bookId, title, timesBorrowed }]`, highest count first and ties broken by title. The SQL goes in a new `src/server/repos/stats.ts`; add a `stats()` method to `ShelfClient` and a contract test.",
+        "Add a stats endpoint for the dashboard we're planning. `GET /stats` needs a login and returns a `Stats` object, defined in `src/shared/types.ts`: `titles`, `copies`, `onLoan` (copies currently borrowed), `overdue` (loans still out whose due date has passed) and `topBorrowed`, the top five books by number of times borrowed ever, `[{ bookId, title, timesBorrowed }]`, sorted by that count descending and then by title. Write the queries in a new `src/server/repos/stats.ts`, expose `stats()` on `ShelfClient`, and add a contract test."
+      ]
+    }
+  ]
+}
