@@ -106,6 +106,7 @@ export async function fencingCheck(ctx: HandlerContext, taskId: string, changed:
 
 /** `land { land_id, base_branch, base_sha, merge_base_sha, head_sha, changed_paths[], lease_tokens[] }` → `land.accepted` | `land.rejected`. */
 export async function startLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  await lockLeases(ctx); // first: no lease is granted between the fencing check and the land's acceptance (D-97)
   const land = await deviceLand(ctx, args.land_id, ['requested']);
   const task = await lockTask(ctx, land.task_id);
   if (task.status !== 'done') {
