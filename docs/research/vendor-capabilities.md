@@ -644,6 +644,17 @@ Each stream appends new facts to its own block, so the two never edit the same l
 - But a sibling directory created after the session started was readable through Read and Grep, so a call-time check is needed for the file tools. That check must compare paths in their on-disk case: Node's `fs.realpathSync` keeps the case it's given, and `fs.realpathSync.native` doesn't. T-1 failed with the former, through a mis-cased read of the later sibling.
 
 Source for all three: a probe against the pinned CLI and the scripted mock, a fake home with a canary, sibling worktrees (one created later) and a symlink; four policy variants (D-98). *Impact: D-98's three layers.*
+**F-101 ✔ The CLI saves a tool result too big for the conversation to a file in its config dir, and tells the agent to read it there** (2.1.287, checked 2026-10-03). From about 30,000 characters (`seq 1 7000`, 33 KB), the result is replaced by "Output too large … Full output saved to: `<CLAUDE_CONFIG_DIR>/projects/<cwd with non-alphanumerics as ->/<session id>/tool-results/<name>.txt`". The config dir is the agent's own (D-65), inside harness state, so a read policy has to allow that one directory.
+
+**F-102 ✔ A leading `~` is expanded in Read's `file_path` before PreToolUse sees it, but in Grep's and Glob's `path` only after** (2.1.287, checked 2026-10-03). A hook resolving `~/x` relative to the cwd judged a different file than the one the tool then read. `$HOME/...` and `~user` aren't expanded. *Impact: D-98's call-time check refuses any `~` path.*
+
+**F-103 ✔ A `Read(//link/**)` deny rule for a symlink denies wherever the link points** (2.1.287, checked 2026-10-03). The CLI resolves the rule's path, so a symlink in the home directory pointing at the agent's worktree (or out of home) denied that target for Read, Grep and Glob. *Impact: the static deny list skips symlinks.*
+
+**F-104 ✔ Read deny rules reach the sandbox one by one, and travel as one command-line argument** (2.1.287, checked 2026-10-03). With 2,000 rules each Bash call took about 5 s (0.07 s without), and with about 4,300 long paths the settings argument passed 1.3 MB and the session failed to start (`spawn E2BIG`). *Impact: a size budget for the static list, with the call-time check and the sandbox covering the rest.*
+
+**F-105 ✔ Git stops when it can't read a global config file that exists** (Git 2.50, checked 2026-10-03). Under read confinement, a `~/.gitconfig` or `~/.config/git/config` gives "fatal: unable to access …: Operation not permitted" (exit 128) for `status`, `log`, `diff` and the rest. `GIT_CONFIG_GLOBAL=/dev/null` plus `core.excludesFile` and `core.attributesFile` set to `/dev/null` (`GIT_CONFIG_COUNT`) fixes it.
+
+Source for F-101 to F-105: the A3 adversarial review's probes against the pinned CLI and the scripted mock, re-run by its skeptic, and the regression tests that now pin them (`test/security/t1-*.integration.test.ts`).
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
