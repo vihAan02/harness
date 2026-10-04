@@ -10,6 +10,7 @@
 // back the record of it (commands.ts).
 import { randomUUID } from 'node:crypto';
 import { normalizeFilePath, overlaps } from './claims.ts';
+import { serverClock } from './db.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { lockInvalidation, noticeLanded } from './invalidation.ts';
 import { lockLeases } from './leases.ts';
@@ -81,12 +82,13 @@ export type FencingProblem = { path: string; reason: 'leased_by_other' | 'stale_
  * another task's current lease covering it rejects the land; and where this task has held leases covering
  * it, its best token must be the highest ever issued for that path, or another task has taken the path
  * since (`stale_token`, T-2). The task's own lease that it released, or that expired while nobody else took
- * the path, doesn't block it (D-103). Tokens the device presents must be this task's.
+ * the path, doesn't block it (D-103). Tokens the device presents must be this task's. "Current" is judged at
+ * `at`, the server's clock read under the lease lock, as the lease commands judge it (D-97).
  */
-export async function fencingCheck(ctx: HandlerContext, taskId: string, changed: string[], presented: { lease_id: string; token: number }[]): Promise<FencingProblem[]> {
+export async function fencingCheck(ctx: HandlerContext, taskId: string, changed: string[], presented: { lease_id: string; token: number }[], at: string): Promise<FencingProblem[]> {
   const leases = (await ctx.tx.query<{ id: string; task_id: string; path: string; token: string; current: boolean }>(
-    `SELECT id, task_id, path, token, (released_at IS NULL AND expires_at > now()) AS current FROM leases WHERE project_id = $1 ORDER BY token`,
-    [ctx.projectId])).rows.map((l) => ({ ...l, token: Number(l.token) }));
+    `SELECT id, task_id, path, token, (released_at IS NULL AND expires_at > $2::timestamptz) AS current FROM leases WHERE project_id = $1 ORDER BY token`,
+    [ctx.projectId, at])).rows.map((l) => ({ ...l, token: Number(l.token) }));
   const problems: FencingProblem[] = [];
   for (const p of presented) {
     if (!leases.some((l) => l.id === p.lease_id && l.task_id === taskId && l.token === p.token)) problems.push({ path: '', reason: 'unknown_token', lease_id: p.lease_id, token: p.token });
@@ -107,6 +109,7 @@ export async function fencingCheck(ctx: HandlerContext, taskId: string, changed:
 /** `land { land_id, base_branch, base_sha, merge_base_sha, head_sha, changed_paths[], lease_tokens[] }` → `land.accepted` | `land.rejected`. */
 export async function startLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   await lockLeases(ctx); // first: no lease is granted between the fencing check and the land's acceptance (D-97)
+  const at = await serverClock(ctx.tx); // under the lock, not the transaction's start: a lease seen expired stays so
   const land = await deviceLand(ctx, args.land_id, ['requested']);
   const task = await lockTask(ctx, land.task_id);
   if (task.status !== 'done') {
@@ -122,7 +125,7 @@ export async function startLand(ctx: HandlerContext, args: Record<string, unknow
   if (!Array.isArray(tokens) || tokens.length > 1000 || !tokens.every((t) => typeof t?.lease_id === 'string' && Number.isSafeInteger(t?.token))) {
     throw new CommandError('bad_request', 'lease_tokens must be [{ lease_id, token }]');
   }
-  const problems = await fencingCheck(ctx, land.task_id, changed, tokens as { lease_id: string; token: number }[]);
+  const problems = await fencingCheck(ctx, land.task_id, changed, tokens as { lease_id: string; token: number }[], at);
   const accepted = problems.length === 0;
   await ctx.tx.query(
     `UPDATE lands SET status = $2, base_branch = $3, base_sha = $4, merge_base_sha = $5, head_sha = $6, changed_paths = $7,

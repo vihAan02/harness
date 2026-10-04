@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import pg from 'pg';
 import { createPool, migrate } from '../src/db.ts';
+import type { HandlerContext } from '../src/handler.ts';
+import { lockLeases } from '../src/leases.ts';
 
 export const TEST_DATABASE_URL = process.env.HARNESS_TEST_DATABASE_URL ?? 'postgresql://localhost:5432/harness_test';
 
@@ -33,4 +36,41 @@ export async function seedProject(pool: pg.Pool): Promise<string> {
   await pool.query('INSERT INTO projects (id, name) VALUES ($1, $1)', [id]);
   await pool.query("INSERT INTO project_memberships (project_id, human_id, role) VALUES ($1, 'human_test', 'owner')", [id]);
   return id;
+}
+
+/**
+ * Holds a project's lease lock in a transaction of its own, like a lease command in progress (D-97), until
+ * `release()`. `queued()` finds a command waiting behind it and returns that command's transaction start,
+ * which is what `now()` means in it; it returns null if `done()` turns true first (nothing waited).
+ */
+export async function holdLeaseLock(pool: pg.Pool, projectId: string) {
+  const tx = await pool.connect();
+  await tx.query('BEGIN');
+  await lockLeases({ tx, projectId } as unknown as HandlerContext);
+  let open = true;
+  return {
+    tx,
+    async queued(done: () => boolean): Promise<Date | null> {
+      for (const until = Date.now() + 10_000; Date.now() < until; await sleep(5)) {
+        const waiting = (await pool.query<{ xact_start: Date }>(
+          `SELECT a.xact_start FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+           WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
+             AND l.classid::bigint = (hashtext('harness.leases:' || $1)::bigint >> 32) & 4294967295
+             AND l.objid::bigint = hashtext('harness.leases:' || $1)::bigint & 4294967295`, [projectId])).rows[0];
+        if (waiting) return waiting.xact_start;
+        if (done()) return null;
+      }
+      throw new Error('nothing queued for the lease lock, and nothing finished');
+    },
+    async release() {
+      if (!open) return;
+      open = false;
+      try { await tx.query('COMMIT'); } finally { tx.release(); }
+    },
+  };
+}
+
+/** Returns once the server's clock is past `at`. */
+export async function untilPast(pool: pg.Pool, at: Date | string): Promise<void> {
+  while (!(await pool.query<{ past: boolean }>('SELECT clock_timestamp() > $1::timestamptz AS past', [at])).rows[0]!.past) await sleep(5);
 }

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { executeCommand, CommandError } from '../src/commands.ts';
 import { sweepWaits } from '../src/waits.ts';
-import { freshSchema, seedProject } from './helpers.ts';
+import { freshSchema, holdLeaseLock, seedProject, untilPast } from './helpers.ts';
 
 let db: Awaited<ReturnType<typeof freshSchema>>;
 let project: string;
@@ -139,4 +139,76 @@ test('two sweeps at once settle each wait exactly once', async () => {
   const [x, y] = await Promise.all([sweepWaits(db.pool), sweepWaits(db.pool)]);
   assert.ok(x + y >= waits.length);
   for (const id of waits) assert.deepEqual(await ofWait(id), ['wait.started', 'wait.resolved']);
+});
+
+// A lease's expiry is judged as the lease commands judge it: under the lease lock, on the clock read there (D-97).
+const leaseRow = async (task: string, expiresIn: string) => {
+  const id = `ls_${randomUUID().slice(0, 8)}`;
+  await db.pool.query("INSERT INTO leases (id, project_id, task_id, path, token, expires_at) VALUES ($1, $2, $3, 'src/y.ts', 1, clock_timestamp() + $4::interval)", [id, project, task, expiresIn]);
+  return { id, expiresAt: (await db.pool.query('SELECT expires_at FROM leases WHERE id = $1', [id])).rows[0].expires_at as Date };
+};
+
+test('a lease renewed while its expiry passed is not reported expired: wait.start and the sweep wait for the lease lock (D-97)', async () => {
+  const a = await worker('agent/wa6');
+  const b = await worker('agent/wb6');
+  const l = await leaseRow(b.task, '300 milliseconds');
+  // b's renewal holds the lease lock and has pushed the expiry out, uncommitted, when the old expiry passes.
+  let lock = await holdLeaseLock(db.pool, project);
+  let done = false;
+  let starting: Promise<Record<string, any>> | undefined;
+  let queued: Date | null = null;
+  try {
+    await lock.tx.query("UPDATE leases SET expires_at = clock_timestamp() + interval '2 minutes' WHERE id = $1", [l.id]);
+    await untilPast(db.pool, l.expiresAt);
+    starting = a.wait({ kind: 'lease', id: l.id }).finally(() => { done = true; });
+    queued = await lock.queued(() => done);
+  } finally {
+    await lock.release();
+  }
+  const w = await starting!;
+  assert.deepEqual([w.outcome, w.result], ['waiting', undefined], 'the renewal committed before the wait looked');
+  assert.ok(queued, 'wait.start took the lease lock');
+
+  // The same at the sweep.
+  await db.pool.query("UPDATE leases SET expires_at = clock_timestamp() + interval '300 milliseconds' WHERE id = $1", [l.id]);
+  const old = (await db.pool.query('SELECT expires_at FROM leases WHERE id = $1', [l.id])).rows[0].expires_at as Date;
+  lock = await holdLeaseLock(db.pool, project);
+  let swept = false;
+  let sweeping: Promise<number> | undefined;
+  try {
+    await lock.tx.query("UPDATE leases SET expires_at = clock_timestamp() + interval '2 minutes' WHERE id = $1", [l.id]);
+    await untilPast(db.pool, old);
+    sweeping = sweepWaits(db.pool).finally(() => { swept = true; });
+    queued = await lock.queued(() => swept);
+  } finally {
+    await lock.release();
+  }
+  await sweeping;
+  assert.deepEqual(await ofWait(w.wait_id), ['wait.started'], 'still waiting: the lease was renewed');
+  assert.ok(queued, 'the sweep took the lease lock');
+
+  // Once it really has run out, the sweep says so.
+  await db.pool.query("UPDATE leases SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1", [l.id]);
+  await sweepWaits(db.pool);
+  assert.deepEqual((await events(['wait.resolved'])).find((e) => e.data.wait_id === w.wait_id)!.data.result, { lease: 'expired' });
+});
+
+test('a lease that runs out while wait.start waits for the lease lock is expired, not judged at the transaction\'s start (D-97)', async () => {
+  const a = await worker('agent/wa7');
+  const b = await worker('agent/wb7');
+  const l = await leaseRow(b.task, '10 minutes');
+  const lock = await holdLeaseLock(db.pool, project);
+  let done = false;
+  const starting = a.wait({ kind: 'lease', id: l.id }).finally(() => { done = true; });
+  try {
+    const began = await lock.queued(() => done);
+    assert.ok(began, 'wait.start waits for the lease lock');
+    // The lease runs out after wait.start's transaction began, and before it gets the lock.
+    await db.pool.query("UPDATE leases SET expires_at = $2::timestamptz + interval '20 milliseconds' WHERE id = $1", [l.id, began]);
+    await untilPast(db.pool, (await db.pool.query('SELECT expires_at FROM leases WHERE id = $1', [l.id])).rows[0].expires_at);
+  } finally {
+    await lock.release();
+  }
+  const w = await starting;
+  assert.deepEqual([w.outcome, w.result], ['resolved', { lease: 'expired' }]);
 });

@@ -4,7 +4,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { executeCommand, CommandError } from '../src/commands.ts';
-import { freshSchema, seedProject } from './helpers.ts';
+import { freshSchema, holdLeaseLock, seedProject, untilPast } from './helpers.ts';
 
 let db: Awaited<ReturnType<typeof freshSchema>>;
 let project: string;
@@ -128,6 +128,29 @@ test('fencing: my current, highest lease → accepted; so is mine expired or rel
   await run('land.fail', { land_id: landId, reason: 'error' }, device);
   landId = await request(a.task);
   assert.deepEqual(res(await run('land', landArgs(landId, [], [{ lease_id: 'lease_forged', token: 999 }]), device)).problems.map((p: any) => p.reason), ['unknown_token']);
+});
+
+test('fencing judges "current" on the clock read under the lease lock, not at the transaction\'s start (D-97)', async () => {
+  const a = await finished('agent/c1');
+  const b = await worker('agent/c2');
+  const held = await lease(b.task, 'src/c/');
+  const landId = await request(a.task);
+  // A lease command holds the lock, and the land queues behind it: its transaction has begun.
+  const lock = await holdLeaseLock(db.pool, project);
+  let done = false;
+  const landing = run('land', landArgs(landId, ['src/c/x.ts']), device).finally(() => { done = true; });
+  try {
+    const began = await lock.queued(() => done);
+    assert.ok(began, 'the land waits for the lease lock');
+    // b's lease runs out after the land's transaction began, and before the land gets the lock.
+    await db.pool.query("UPDATE leases SET expires_at = $2::timestamptz + interval '20 milliseconds' WHERE id = $1", [held.id, began]);
+    await untilPast(db.pool, (await db.pool.query('SELECT expires_at FROM leases WHERE id = $1', [held.id])).rows[0].expires_at);
+  } finally {
+    await lock.release();
+  }
+  const r = res(await landing);
+  assert.deepEqual([r.accepted, r.problems], [true, undefined], 'by the time the land could look, the lease had expired, as any lease command would see it');
+  await run('land.fail', { land_id: landId, reason: 'error' }, device);
 });
 
 test('landing tells every reader whose content differs, including finished-but-unlanded tasks; same content, no notice', async () => {
