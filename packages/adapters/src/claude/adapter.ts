@@ -15,6 +15,7 @@ import { AsyncQueue } from '../queue.ts';
 import { deniedEntries, realish } from '../readpolicy.ts';
 import { claudeHooks, NOTICE_CONTEXT_CAP, relativize, STOP_CAP, type ClaudeHookBundle } from './hooks.ts';
 import { BASE_TOOLS, compileClaudePermissions, SHIM_SERVER, shimToolName, type ClaudePolicyBundle } from './policy.ts';
+import { interactiveLaunch, seedInteractiveConfig, type InteractiveLaunch } from './interactive.ts';
 import { shimServer } from './shim.ts';
 import { BUILTIN_SKILLS, claudeCapabilities, installedSdkVersion, PINNED } from './version.ts';
 
@@ -503,7 +504,8 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     checkSessionInputs(spec);
   }
 
-  open(spec: SessionSpec, resume: string | null): ClaudeSession {
+  /** Checks a spec, and resolves its paths as the sandbox and permission rules need them. */
+  prepare(spec: SessionSpec): SessionSpec {
     const v = this.version();
     if (v.installed !== v.pinned) throw new Error(`Agent SDK ${v.installed} is installed; the harness is pinned to ${v.pinned} (D-49)`);
     if (!UUID.test(spec.sessionId)) throw new Error('sessionId must be a UUID');
@@ -511,7 +513,7 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     if (!fs.existsSync(spec.configDir)) throw new Error(`config dir ${spec.configDir} doesn't exist`);
     // Sandbox and permission rules match resolved paths, in their on-disk case (native realpath); the init check compares cwd too.
     const worktree = fs.realpathSync.native(spec.worktree);
-    const real = {
+    return {
       ...spec, worktree, gitCommonDir: fs.realpathSync.native(spec.gitCommonDir),
       ...(spec.readPolicy ? {
         readPolicy: {
@@ -523,6 +525,21 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
         },
       } : {}),
     };
+  }
+
+  /**
+   * The A/B baseline arm (validation.md §3, D-102): how to start an interactive Claude Code in a terminal with
+   * this spec's policy, exactly as an SDK session gets it (permissions, sandbox, read confinement, settings,
+   * tools, model and env), its instructions appended to the system prompt the same way.
+   */
+  interactiveLaunch(spec: SessionSpec): InteractiveLaunch {
+    const real = this.prepare(spec);
+    seedInteractiveConfig(real.configDir, real.auth.apiKey, real.worktree);
+    return interactiveLaunch(real, this.compilePermissions(real), sessionEnv(real));
+  }
+
+  open(spec: SessionSpec, resume: string | null): ClaudeSession {
+    const real = this.prepare(spec);
     const session = new ClaudeSession(real);
     const sink: HarnessHookSink = {
       observe: (o) => session.emit(o),
