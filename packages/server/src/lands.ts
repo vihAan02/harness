@@ -169,7 +169,7 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
     [land.id, newBase, JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])))]);
   await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
   const released = (await ctx.tx.query<{ id: string }>(
-    'UPDATE leases SET released_at = now() WHERE task_id = $1 AND released_at IS NULL RETURNING id', [task.id])).rows.map((r) => r.id);
+    "UPDATE leases SET released_at = now(), release_reason = 'landed' WHERE task_id = $1 AND released_at IS NULL RETURNING id", [task.id])).rows.map((r) => r.id);
   const events: HandlerOutput['events'] = [
     { kind: 'land.completed', data: { land_id: land.id, task_id: task.id, old_base_sha: oldBase, new_base_sha: newBase, changed_paths: changed.map((c) => c.path) } },
     ...released.map((id) => ({ kind: 'lease.released', data: { lease_id: id, task_id: task.id, reason: 'landed' } })),

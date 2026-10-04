@@ -20,6 +20,9 @@ const USAGE = `usage: harness <command> [--project <id>]
   land <task> [--no-tests] [--no-wait]        land a finished task: its device merges it, runs the approved test command,
                                               and moves the base branch only if green (D-51)
   land --cancel <task>                        give up on a land that hasn't started
+  claim <task> <paths> [--ttl <s>] [--force]  a hard claim (lease) for a task: comma-separated folders and files;
+                                              --force takes over another task's (D-89). Its harnessd renews it
+  release <task> [<lease_id>…]                end a task's hard claims (all of them, or the ones named)
   status                                      agents, tasks, what each agent is changing, overlaps, questions
   log [--follow] [--kind <prefix>]            the project's event log
   metrics [--json]                            A/B metrics for this run, from the event log (validation.md §4)
@@ -157,6 +160,35 @@ async function main(argv: string[]): Promise<void> {
     }
     const task = sub ?? fail('usage: harness land <task> [--no-tests] [--no-wait]');
     return withServer(a, async (c) => land(c, task, { tests: !a.flags['no-tests'], wait: !a.flags['no-wait'], timeoutMs: Number(flag(a, 'timeout') ?? 1800) * 1000 }));
+  }
+
+  if (command === 'claim') {
+    const [task, paths] = [sub, rest[0]];
+    if (!task || !paths) fail('usage: harness claim <task> <paths> [--ttl <s>] [--force]');
+    const ttl = flag(a, 'ttl');
+    return withServer(a, async (c) => {
+      const r = await c.command('lease.acquire', {
+        task_id: task, paths: paths.split(',').map((s) => s.trim()).filter(Boolean), ...(ttl ? { ttl_s: Number(ttl) } : {}), ...(a.flags.force ? { force: true } : {}),
+      });
+      const granted = r.granted as { lease_id: string; path: string; token: number; expires_at: string }[];
+      const conflicts = r.conflicts as { path: string; task_id: string; expires_at: string }[];
+      if (!granted.length) {
+        console.log(`Not granted. ${conflicts.map((x) => `${x.path} overlaps a lease of ${x.task_id} (until ${x.expires_at.slice(11, 19)} UTC)`).join('; ')}. Take it over with --force.`);
+        process.exitCode = 1;
+        return;
+      }
+      for (const g of granted) console.log(`${task} holds ${g.path}: lease ${g.lease_id}, token ${g.token}, until ${g.expires_at.slice(11, 19)} UTC unless its harnessd renews it.`);
+    });
+  }
+
+  if (command === 'release') {
+    const task = sub ?? fail('usage: harness release <task> [<lease_id>…]');
+    return withServer(a, async (c) => {
+      const ids = rest.length ? rest : c.view.currentLeases(task).map((l) => l.id);
+      if (!ids.length) return void console.log(`${task} holds no hard claims.`);
+      const r = await c.command('lease.release', { lease_ids: ids });
+      console.log((r.released as string[]).length ? `Released ${(r.released as string[]).join(', ')}.` : 'Nothing to release: those leases had already ended.');
+    });
   }
 
   if (command === 'status') return withServer(a, async (c) => void console.log(renderHumanStatus(c.view)));

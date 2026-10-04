@@ -10,7 +10,13 @@ function taskLine(view: ProjectView, t: TaskInfo): string {
   return `${t.id} ${quote(t.title, 80)} (${t.status})`;
 }
 
-export function renderAgentStatus(view: ProjectView, agentId: string): string {
+/** A task's current hard claims (D-97), as far as this view knows; the server's clock decides (F-84). */
+function leaseList(view: ProjectView, taskId: string, now: number, ids = false): string {
+  const ls = view.currentLeases(taskId, now).sort((a, b) => a.path.localeCompare(b.path));
+  return ls.map((l) => `${l.path} (${ids ? `${l.id}, ` : ''}token ${l.token}, until ${l.expiresAt.slice(11, 19)} UTC)`).join(', ');
+}
+
+export function renderAgentStatus(view: ProjectView, agentId: string, now = Date.now()): string {
   const me = view.agents.get(agentId);
   const myTask = view.activeTask(agentId);
   const lines: string[] = [];
@@ -19,6 +25,8 @@ export function renderAgentStatus(view: ProjectView, agentId: string): string {
     const c = view.claims.get(myTask.id);
     lines.push(`Your scope: ${list(myTask.scope)}`);
     lines.push(`Files the harness sees you changing: ${list(c?.observed ?? [])}`);
+    const held = leaseList(view, myTask.id, now, true);
+    if (held) lines.push(`Your hard claims: ${held}`);
   }
 
   const others = [...view.agents.values()].filter((a) => a.id !== agentId);
@@ -30,6 +38,8 @@ export function renderAgentStatus(view: ProjectView, agentId: string): string {
     if (t) {
       const c = view.claims.get(t.id);
       lines.push(`  scope: ${list(t.scope)}`, `  changing: ${list(c?.observed ?? [])}`);
+      const held = leaseList(view, t.id, now);
+      if (held) lines.push(`  hard claims: ${held}`);
     }
   }
 
@@ -91,6 +101,8 @@ export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
     lines.push(`  ${t.id} ${quote(t.title, 60)} [${t.status}] owner human/${t.ownerHumanId}, assignee ${t.assignee ? view.agentName(t.assignee) : '(none)'}`);
     lines.push(`      scope: ${list(t.scope)}`);
     if (t.status === 'in_progress') lines.push(`      changing: ${list(c?.observed ?? [])}`);
+    const held = leaseList(view, t.id, now, true);
+    if (held) lines.push(`      hard claims: ${held}`);
     if (t.status === 'done' && t.summary) lines.push(`      summary: ${quote(t.summary, 120)}`);
   }
 
