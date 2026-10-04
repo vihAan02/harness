@@ -137,7 +137,10 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
     // Refused as a whole (D-89). An agent hears why; a human gets the conflicts in the result only.
     if (isAgent(ctx)) {
       const holders = [...new Map(others.map((l) => [l.task_id, l])).values()];
-      const text = `${conflicts.map((c) => c.path).filter((p, i, a) => a.indexOf(p) === i).join(', ')}: ${others.map((l) => `${holderOf(names, l)} holds a hard claim on ${l.path} (lease ${l.id}) until ${iso(l.expires_at).slice(11, 19)} UTC`).join('; ')}. Your claim was not granted.`;
+      const shown = others.slice(0, 5).map((l) => `${holderOf(names, l)} holds a hard claim on ${l.path} (lease ${l.id}) until ${iso(l.expires_at).slice(11, 19)} UTC`);
+      if (others.length > 5) shown.push(`and ${others.length - 5} more lease(s), in harness_status`);
+      const refused = [...new Set(conflicts.map((c) => c.path))];
+      const text = `${refused.slice(0, 10).join(', ')}${refused.length > 10 ? ', …' : ''}: ${shown.join('; ')}. Your claim was not granted.`;
       events.push(...await tellAgent(ctx, ctx.actor.principal, task.id, text, { paths, other_tasks: holders.map((l) => l.task_id), lease_ids: others.map((l) => l.id), level: 'lease', refused: true }));
     }
     return { result: { granted: [], conflicts }, events };

@@ -101,6 +101,17 @@ test('a re-claim keeps the lease\'s own TTL unless it names one, and never moves
   assert.equal((await events(renewed.seqs))[0]!.data.leases[0].ttl_s, 10);
 });
 
+test('a refusal names at most five holder leases', async () => {
+  const a = await worker('agent/many-a');
+  const b = await worker('agent/many-b');
+  await a.acquire(['many/1.ts', 'many/2.ts', 'many/3.ts', 'many/4.ts', 'many/5.ts', 'many/6.ts']);
+  const refused = await b.acquire(['many/']);
+  assert.equal(res(refused).conflicts.length, 6, 'the result still lists every conflict');
+  const text = (await events(refused.seqs))[0]!.data.text as string;
+  assert.equal(text.match(/\(lease ls_/g)!.length, 5);
+  assert.match(text, /; and 1 more lease\(s\), in harness_status\. Your claim was not granted\.$/);
+});
+
 test('a task holds at most 200 current leases', async () => {
   const a = await worker('agent/cap-a');
   for (let i = 0; i < 4; i++) await a.acquire(Array.from({ length: 50 }, (_, j) => `cap/${i}-${j}.ts`));
