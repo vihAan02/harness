@@ -77,6 +77,8 @@ export type SessionSpec = {
   maxBudgetUsd?: number; // per session, against the cost the adapter reports (configured prices where given)
   readPolicy?: ReadPolicy; // what the agent may read (D-61, D-98); harnessd always sets it, real paths
   taskOpen?: () => boolean; // is the task still in progress? The Stop gate keeps the agent going only then (D-100). Unset: yes
+  /** harnessd has work waiting for this turn to end (a sync, D-53): the Stop gate lets it end, and queued notices wait for harnessd's next message (D-100). */
+  turnEndPending?: () => boolean;
   log?: (line: string) => void; // vendor stderr; never contains our options' secrets (none are passed as options)
 };
 

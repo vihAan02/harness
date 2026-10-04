@@ -95,7 +95,7 @@ export class ClaudeSession implements SessionHandle {
   pending = new Map<string, PendingDelivery>();
   /** High-priority notices waiting for the next tool batch, oldest first (D-99). */
   notices: QueuedNotice[] = [];
-  /** Continuations the Stop gate has made in a row (D-100). */
+  /** Continuations the Stop gate has made with no tool batch between them: what the CLI caps (D-100, F-107). */
   stopContinuations = 0;
   resultTimes: number[] = [];
   lastResult: Record<string, unknown> | null = null;
@@ -154,6 +154,12 @@ export class ClaudeSession implements SessionHandle {
     return new Promise((resolve, reject) => { this.notices.push({ msg, ...(from ? { from } : {}), resolve, reject }); });
   }
 
+  /** For the PostToolBatch hook: a batch of tool calls finished. The CLI counts Stop continuations afresh (F-107), and queued notices go. */
+  afterToolBatch(maxChars: number): string | null {
+    this.stopContinuations = 0;
+    return this.takeNotices(maxChars);
+  }
+
   /** For the PostToolBatch and Stop hooks: the queued notices, oldest first, that fit in `maxChars` together. Delivered once taken. */
   takeNotices(maxChars: number, landed: Landed = 'between_tools'): string | null {
     const taken: QueuedNotice[] = [];
@@ -175,12 +181,19 @@ export class ClaudeSession implements SessionHandle {
 
   /**
    * The Stop gate (D-100): the agent is about to end its turn. While its task is in progress, queued notices
-   * keep it going, at most STOP_CAP times in a row; the CLI would ignore one more (F-107). At the cap they
-   * stay queued and open the next turn (D-99), and harnessd tells the human.
+   * keep it going, at most STOP_CAP times with no tool batch between; the CLI would ignore one more (F-107).
+   * At the cap they stay queued and open the next turn (D-99), and harnessd tells the human. A turn's first
+   * Stop (`continued` false) starts the count again too.
    */
   atStop(continued: boolean): string | null {
     if (!continued) this.stopContinuations = 0;
     if (!this.notices.length || this.spec.taskOpen?.() === false) return null;
+    // harnessd is waiting for this turn to end (a sync): let it end; the notices go out with its next message.
+    if (this.spec.turnEndPending?.()) return null;
+    // The CLI wraps Stop context in a <system-reminder> inside a user message (F-107): text that names the tag
+    // could close it early and pose as the user's own words. Such notices never go this way; they open the
+    // next turn instead (D-99).
+    if (this.notices.some((n) => /system-reminder/i.test(n.msg.text))) return null;
     if (this.stopContinuations >= STOP_CAP) {
       this.emit({ kind: 'stop.capped', pending: this.notices.length });
       return null;
@@ -188,6 +201,11 @@ export class ClaudeSession implements SessionHandle {
     const text = this.takeNotices(NOTICE_CONTEXT_CAP, 'stop_hook');
     if (text) this.stopContinuations++;
     return text;
+  }
+
+  /** Fails every queued notice: none of them is delivered. */
+  dropNotices(reason: string): void {
+    for (const n of this.notices.splice(0)) n.reject(new Error(`not delivered: ${reason}`));
   }
 
   withdrawNotice(messageId: string): boolean {
@@ -237,7 +255,7 @@ export class ClaudeSession implements SessionHandle {
     this.settleVerdict('the session has ended');
     for (const p of this.pending.values()) p.reject(new Error(`session ${this.id} ended before the message was delivered`));
     this.pending.clear();
-    for (const n of this.notices.splice(0)) n.reject(new Error(`session ${this.id} ended before the notice was delivered`));
+    this.dropNotices(`session ${this.id} ended before the notice was delivered`);
     this.setStatus('ended');
     this.emit({ kind: 'ended', reason: this.endReason });
     this.out.end();
@@ -279,14 +297,20 @@ export class ClaudeSession implements SessionHandle {
             kind: 'turn.ended', reason: String(r?.terminal_reason ?? 'completed'), isError: r?.is_error === true,
             denied: denials.length, deniedIds: denials.map((d) => String(d.tool_use_id ?? '')).filter(Boolean),
           });
-          if (this.notices.length && r?.is_error !== true) {
+          // The task is no longer in progress (the agent called report_done, say): queued notices don't restart a
+          // finished agent. They fail, so harnessd never acks them, and delivers them again if the task resumes (D-100).
+          if (this.spec.taskOpen?.() === false) this.dropNotices('the task is no longer in progress');
+          // harnessd has work for this turn end (a sync, D-53): the session goes idle for it, and queued notices
+          // go out with harnessd's next message (the landed notice after the sync), just ahead of it (D-100).
+          const waiting = this.spec.turnEndPending?.() === true;
+          if (this.notices.length && r?.is_error !== true && !waiting) {
             // Notices no tool batch took open the next turn at once: harnessd never sees the session idle in
             // between, as with a message the CLI chains itself (D-99).
             this.flushNotices(true);
             this.emit({ kind: 'turn.started' });
           } else {
             this.setStatus(r?.is_error === true ? 'errored' : 'idle');
-            this.flushNotices(true);
+            if (!waiting) this.flushNotices(true);
           }
         } else if (this.status === 'starting') this.setStatus('idle');
       } else if (m.state === 'requires_action') {
@@ -503,7 +527,7 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     const sink: HarnessHookSink = {
       observe: (o) => session.emit(o),
       gate: async () => (await session.verdict) ?? session.holdReason,
-      notices: (maxChars) => session.takeNotices(maxChars),
+      notices: (maxChars) => session.afterToolBatch(maxChars),
       stop: (continued) => session.atStop(continued),
     };
     session.start(this.options(real, sink, (pid) => {

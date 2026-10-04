@@ -112,11 +112,10 @@ test('a message injected after a queued notice never overtakes it', async () => 
   await adapter.stopSession(h, 'graceful');
 });
 
-test('a notice is injected instead when it is too long to attach, the session is idle, or the turn ends first; one replaced while queued is withdrawn', async () => {
+test('a notice is injected instead when it is too long to attach or the session is idle; one replaced while queued is withdrawn', async () => {
   bodies = [];
-  // No Stop gate here (the task isn't in progress), so a notice the turn ends before takes the turn-end path.
-  // stopgate.test.ts covers the gate.
-  const h = await adapter.startSession(f.spec({ taskOpen: () => false }), human('m1', script('Bash {"command":"sleep 2; echo one"}', 'TEXT done')));
+  // A notice the turn ends before goes at Stop, or past the gate's cap opens the next turn: stopgate.test.ts.
+  const h = await adapter.startSession(f.spec(), human('m1', script('Bash {"command":"sleep 2; echo one"}', 'TEXT done')));
   const c = collect(adapter.observations(h));
   await c.until((o) => o.kind === 'tool.called');
   const big = notice('big', 'x'.repeat(NOTICE_CONTEXT_CAP));
@@ -137,24 +136,11 @@ test('a notice is injected instead when it is too long to attach, the session is
   assert.equal(idle.landed, 'new_turn');
   await c.turns(2);
 
-  // A turn that ends without another tool batch: the queued notice opens the next turn.
-  void adapter.injectMessage(h, human('m2', '#SLOW 1500\n#STEP TEXT slow answer'));
-  await c.until(() => c.of('turn.started').length >= 3);
-  const late = await settle(adapter.queueNotice(h, notice('late', '\n#STEP TEXT ok-late')));
-  assert.equal(late.landed, 'new_turn');
-  await c.turns(4);
-  // The notice opened the next turn at once: harnessd never saw the session idle in between.
-  const ends = c.seen.filter((o) => o.kind === 'turn.ended' || (o.kind === 'status' && o.status === 'idle'));
-  const firstEnd = ends.findIndex((o) => o.kind === 'turn.ended');
-  assert.deepEqual(ends.slice(firstEnd).map((o) => o.kind === 'status' ? 'idle' : 'end'), ['end', 'idle', 'end', 'idle', 'end', 'end', 'idle']);
-  const last = tail(bodies.at(-1)!);
-  assert.ok(last.user.includes('[harness notice] late'), 'injected as a message');
-
   // A session that ends with a notice still queued: its receipt fails, so harnessd delivers it to the next session.
   void adapter.injectMessage(h, human('m3', script('Bash {"command":"sleep 5"}', 'TEXT done')));
   await c.until(() => c.of('tool.called').length >= 2);
   const gone = adapter.queueNotice(h, notice('gone'));
   await adapter.stopSession(h, 'kill');
   await assert.rejects(settle(gone), /ended before the notice was delivered/);
-  assert.deepEqual(c.of('delivery').map((d) => [d.messageId, d.landed]), [['m1', 'new_turn'], ['big', 'between_tools'], ['idle', 'new_turn'], ['m2', 'new_turn'], ['late', 'new_turn'], ['m3', 'new_turn']]);
+  assert.deepEqual(c.of('delivery').map((d) => [d.messageId, d.landed]), [['m1', 'new_turn'], ['big', 'between_tools'], ['idle', 'new_turn'], ['m3', 'new_turn']]);
 });
