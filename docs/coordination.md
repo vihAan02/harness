@@ -213,6 +213,7 @@ Agents never get input mid-generation. Messages land only at a **safe boundary**
   - **Mechanism, chosen in 0B** ([protocol.md §6](protocol.md#6-agent-facing-tool-shim)):
     - end the turn and have `harnessd` push the result as a new turn; or
     - a blocking tool call.
+  - **As built** (D-95, D-101): the first. The outcome reaches the agent as a high-priority notice, so the Stop gate holds the turn if it arrives before the agent stops.
   - **Every wait has a timeout.** There are no unbounded waits, even in 0B.
   - **The waiter always gets a result,** either the event or `timed_out`, as a tool result or a pushed turn.
 - **Wait-for graph:** each wait is recorded as an edge `waiter → waited_on` (agent or task).

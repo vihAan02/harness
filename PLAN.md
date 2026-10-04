@@ -1011,6 +1011,14 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Tests:** `packages/adapters/test/stopgate.test.ts` (the real CLI: delivery at Stop within the same turn; nothing once the task isn't in progress; a sync first; the reminder tag; the count starting again after a tool batch and each turn; the cap and its report), `packages/server/test/stopgate.test.ts`, and `test/sync-land.integration.test.ts` (harnessd's wiring, blocked and abandoned tasks, the gate then the sync), each with negative controls.
   - **Review:** an adversarial review (three lenses, each checked by a skeptic) confirmed nine findings, all fixed: the count not starting again after a tool batch (and F-107's account of `stop_hook_active`), the reminder tag, notices restarting a finished agent, an A5a test the gate changed, a timing-dependent assertion in `claims.integration`, two test gaps, a doc claim about `harness status`, and the stop window above (documented).
   - *Source:* 0B item 3, D-26, S10; the escalation channel chosen by an owner in session. *Status:* Proposal.
+- **D-101 `wait_for` in harnessd, as built (0B item 4; D-95).**
+  - **The tool:** `wait_for(kind: answer|task|lease, id, timeout_s?)` sends `wait.start` for the agent's session and returns at once. If the wait is already over, its result says so and the agent carries on. Otherwise it tells the agent to end its turn. Agents are told about it in their standing instructions.
+  - **The outcome:** when the server resolves the wait or it times out, harnessd renders a `[harness notice]` (`KIND: wait_outcome`) and sends it through the notice queue (D-99). The Stop gate's second clause (D-26, D-100) comes free: a wait settled before the agent stops keeps it going; after, the outcome opens its next turn.
+    - Not for a wait resolved by `wait.start` itself: the tool's result already said so.
+    - Never during a sync; held while the task is paused on a conflict, then delivered with what else was held (D-53).
+    - A timed-out wait also reaches the task's human as the server's `task_blocked` (D-95).
+  - **Tests:** `test/waits.integration.test.ts` (the real CLI: an answer arrives; a wait already over; a timeout and the human's `task_blocked`), and the tool and its text in `packages/daemon/test/tools.test.ts`.
+  - *Source:* 0B item 4, D-95, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
