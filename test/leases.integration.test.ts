@@ -34,7 +34,13 @@ test('hard claims end to end: an agent claims through its tool, a human takes it
   await s.until(() => !!view.messages.get(told!.id)?.deliveredAt, 15_000, 'the revoke notice to reach agent/lx');
 
   assert.match(await s.cli('status'), new RegExp(`${tY} "Helper"[^\\n]*\\n      scope: lib/util\\.ts\\n      changing: none\\n      hard claims: lib/util\\.ts \\(ls_`));
-  assert.match(await s.cli('release', tY), /^Released ls_[0-9a-f]{16}\.$/m);
+  // Every path given is claimed (spaces or commas); a bare --ttl is refused; release only takes the task's own ids.
+  assert.equal((await s.cli('claim', tY, 'lib/x.ts', 'lib/y.ts,lib/z.ts')).split('\n').filter((l) => l.startsWith(`${tY} holds`)).length, 3);
+  const fails = (...args: string[]) => s.cli(...args).then(() => 'succeeded?', (e: { stderr?: string }) => String(e.stderr));
+  assert.match(await fails('claim', tY, 'lib/w.ts', '--ttl'), /--ttl needs a number of seconds/);
+  assert.match(await fails('release', tY, xLease.id), new RegExp(`${xLease.id} is not a lease of ${tY}`));
+  assert.equal(view.leases.get(xLease.id)?.releaseReason, 'revoked', "X's lease wasn't touched by that release");
+  assert.match(await s.cli('release', tY), /^Released (ls_[0-9a-f]{16}(, )?){4}\.$/m);
   await s.until(() => view.currentLeases(tY).length === 0, 10_000, 'the release to reach harnessd');
   await Promise.all([s.daemon.stopAgent(tX), s.daemon.stopAgent(tY)]);
 });

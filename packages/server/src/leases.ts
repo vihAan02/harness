@@ -5,8 +5,10 @@
 //   whole; an agent hears why (claim_conflict), a human gets the conflicts back. A human's `force` revokes
 //   the overlapping leases and grants newer tokens, unless one of their tasks is being landed.
 // - Renew: harnessd only, for the device that ran the task; a lost lease is never revived.
-// - Expiry is lazy (F-84): "current" is decided on the server's clock when a command looks, and
-//   `lease.expired` is logged the first time a lease command sees one.
+// - Expiry is lazy (F-84): "current" is decided on the server's clock, read once per command under the lease
+//   lock (D-97), and `lease.expired` is logged the first time a lease command sees one. A lease once seen
+//   expired is never renewed.
+// - A task re-claiming a path it holds keeps that lease (and its token); a task holds at most MAX_HELD.
 import { randomUUID } from 'node:crypto';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { newMessageId } from './messages.ts';
@@ -16,6 +18,8 @@ import { overlaps } from './claims.ts';
 
 const MAX_PATHS = 50;
 const MAX_IDS = 200;
+/** Current leases one task may hold: one lease.renew can renew them all (MAX_IDS). */
+export const MAX_HELD = 200;
 export const TTL = { default: 120, min: 10, max: 3600 };
 const LEASE_ID = /^ls_[0-9a-f]{16}$/;
 
@@ -29,9 +33,13 @@ type LeaseRow = {
  * The project's lease lock (D-97). Every command that grants, renews, releases or revokes leases takes it
  * first, before any row lock (`land.complete` takes it right after the invalidation lock), so first come,
  * first served holds even when no lease rows exist yet, and lease writers share one lock order.
+ * Returns the server's clock read under the lock, as text (microseconds kept): the one time a command judges
+ * expiry by. `now()` is the transaction's start, which can be earlier than another command that already saw
+ * a lease expire (D-97, settled in the B5 review).
  */
-export async function lockLeases(ctx: HandlerContext): Promise<void> {
+export async function lockLeases(ctx: HandlerContext): Promise<string> {
   await ctx.tx.query("SELECT pg_advisory_xact_lock(hashtext('harness.leases:' || $1))", [ctx.projectId]);
+  return (await ctx.tx.query<{ t: string }>('SELECT clock_timestamp()::text AS t')).rows[0]!.t;
 }
 
 const iso = (d: Date) => d.toISOString();
@@ -50,21 +58,25 @@ function leaseIds(v: unknown): string[] {
   return [...new Set(v as string[])];
 }
 
-/** The project's leases, with whether each is current on the server's clock, and its task's agent. */
-async function projectLeases(ctx: HandlerContext, where = 'TRUE', params: unknown[] = []): Promise<LeaseRow[]> {
+/**
+ * The project's leases, with whether each is current at `at` (the command's clock, from lockLeases), and its
+ * task's agent. In `where`, $1 is the project and $2 is `at`; extra params start at $3. A lease already logged
+ * as expired is never current again.
+ */
+async function projectLeases(ctx: HandlerContext, at: string, where = 'TRUE', params: unknown[] = []): Promise<LeaseRow[]> {
   return (await ctx.tx.query<LeaseRow>(
     `SELECT l.id, l.task_id, l.path, l.token, l.expires_at, l.released_at, l.release_reason, l.ttl_s,
-            (l.released_at IS NULL AND l.expires_at > now()) AS current, t.assignee_agent_id
+            (l.released_at IS NULL AND l.expired_logged_at IS NULL AND l.expires_at > $2::timestamptz) AS current, t.assignee_agent_id
      FROM leases l JOIN tasks t ON t.id = l.task_id WHERE l.project_id = $1 AND (${where}) ORDER BY l.token`,
-    [ctx.projectId, ...params])).rows;
+    [ctx.projectId, at, ...params])).rows;
 }
 
 /** Logs `lease.expired` for leases that ran out unnoticed: once each, the first time a lease command looks (D-97). */
-async function noticeExpired(ctx: HandlerContext): Promise<Events> {
+async function noticeExpired(ctx: HandlerContext, at: string): Promise<Events> {
   const rows = (await ctx.tx.query<{ id: string; task_id: string }>(
-    `UPDATE leases SET expired_logged_at = now()
-     WHERE project_id = $1 AND released_at IS NULL AND expires_at <= now() AND expired_logged_at IS NULL RETURNING id, task_id`,
-    [ctx.projectId])).rows;
+    `UPDATE leases SET expired_logged_at = $2::timestamptz
+     WHERE project_id = $1 AND released_at IS NULL AND expires_at <= $2::timestamptz AND expired_logged_at IS NULL RETURNING id, task_id`,
+    [ctx.projectId, at])).rows;
   return rows.sort((a, b) => a.id.localeCompare(b.id)).map((r) => ({ kind: 'lease.expired', data: { lease_id: r.id, task_id: r.task_id } }));
 }
 
@@ -84,9 +96,16 @@ async function tellAgent(ctx: HandlerContext, to: string, toTask: string, text: 
 
 const holderOf = (names: Map<string, string>, l: LeaseRow) => (l.assignee_agent_id ? `${names.get(l.assignee_agent_id) ?? l.assignee_agent_id} (task ${l.task_id})` : `task ${l.task_id}`);
 
+/** Tasks with a land requested or accepted: a revoke or a release can't stop a land past its fencing check (D-97). */
+async function landing(ctx: HandlerContext, taskIds: string[]): Promise<string[]> {
+  if (!taskIds.length) return [];
+  return (await ctx.tx.query<{ task_id: string }>(
+    "SELECT DISTINCT task_id FROM lands WHERE project_id = $1 AND task_id = ANY($2) AND status IN ('requested', 'accepted') ORDER BY task_id", [ctx.projectId, taskIds])).rows.map((r) => r.task_id);
+}
+
 /** `lease.acquire { task_id, paths[], ttl_s?, force? }` → `{ granted[], conflicts[] }` (D-97). */
 export async function acquireLease(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
-  await lockLeases(ctx); // first: see lockLeases
+  const at = await lockLeases(ctx); // first: see lockLeases
   const task = await lockTask(ctx, args.task_id);
   if (isAgent(ctx)) {
     requireAgentOnDevice(ctx);
@@ -100,9 +119,13 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
   const ttl = ttlOf(args.ttl_s) ?? TTL.default;
   if (task.status !== 'in_progress' && task.status !== 'blocked') throw new CommandError('conflict', `${task.id} is ${task.status}; only a task in progress or blocked can take a lease`);
 
-  const events = await noticeExpired(ctx);
-  const others = (await projectLeases(ctx, 'l.task_id <> $2 AND l.released_at IS NULL AND l.expires_at > now()', [task.id]))
-    .filter((l) => paths.some((p) => overlaps(p, l.path)));
+  const events = await noticeExpired(ctx, at);
+  // A path the task already holds keeps its lease and token (pushed out by this ttl); only new paths add rows.
+  const mine = (await projectLeases(ctx, at, 'l.task_id = $3', [task.id])).filter((l) => l.current);
+  const held = new Map(mine.map((l) => [l.path, l]));
+  const fresh = paths.filter((p) => !held.has(p));
+  if (mine.length + fresh.length > MAX_HELD) throw new CommandError('conflict', `${task.id} would hold more than ${MAX_HELD} leases; release some first`);
+  const others = (await projectLeases(ctx, at, 'l.task_id <> $3', [task.id])).filter((l) => l.current && paths.some((p) => overlaps(p, l.path)));
   const conflicts = others.flatMap((l) => paths.filter((p) => overlaps(p, l.path)).map((p) => ({ path: p, lease_id: l.id, task_id: l.task_id, expires_at: iso(l.expires_at) })));
   const names = others.length ? await agentNames(ctx) : new Map<string, string>();
 
@@ -118,11 +141,9 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
 
   if (others.length) {
     // force: a revoke can't stop a land already past its fencing check, so the human cancels that land first.
-    const holding = [...new Set(others.map((l) => l.task_id))];
-    const landing = (await ctx.tx.query<{ task_id: string }>(
-      "SELECT task_id FROM lands WHERE project_id = $1 AND task_id = ANY($2) AND status IN ('requested', 'accepted') ORDER BY task_id", [ctx.projectId, holding])).rows;
-    if (landing.length) throw new CommandError('conflict', `${landing.map((l) => l.task_id).join(', ')} is being landed; cancel that land first (harness land --cancel <task>)`);
-    await ctx.tx.query("UPDATE leases SET released_at = now(), release_reason = 'revoked' WHERE id = ANY($1)", [others.map((l) => l.id)]);
+    const busy = await landing(ctx, [...new Set(others.map((l) => l.task_id))]);
+    if (busy.length) throw new CommandError('conflict', `${busy.join(', ')} is being landed; cancel that land first (harness land --cancel <task>)`);
+    await ctx.tx.query("UPDATE leases SET released_at = $2::timestamptz, release_reason = 'revoked' WHERE id = ANY($1)", [others.map((l) => l.id), at]);
     for (const l of others) events.push({ kind: 'lease.released', data: { lease_id: l.id, task_id: l.task_id, reason: 'revoked', by: ctx.actor.principal } });
     for (const [taskId, ls] of Object.entries(Object.groupBy(others, (l) => l.task_id))) {
       const l = ls![0]!;
@@ -134,28 +155,38 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
   }
 
   const granted: { lease_id: string; path: string; token: number; expires_at: string }[] = [];
+  const kept: { lease_id: string; expires_at: string }[] = [];
   for (const path of paths) {
+    const own = held.get(path);
+    if (own) {
+      const exp = (await ctx.tx.query<{ expires_at: Date }>(
+        "UPDATE leases SET expires_at = $2::timestamptz + $3::int * interval '1 second', ttl_s = $3::int WHERE id = $1 RETURNING expires_at", [own.id, at, ttl])).rows[0]!.expires_at;
+      granted.push({ lease_id: own.id, path, token: Number(own.token), expires_at: iso(exp) });
+      kept.push({ lease_id: own.id, expires_at: iso(exp) });
+      continue;
+    }
     const token = Number((await ctx.tx.query<{ t: string }>(
       'UPDATE projects SET next_fencing_token = next_fencing_token + 1 WHERE id = $1 RETURNING next_fencing_token AS t', [ctx.projectId])).rows[0]!.t);
     const id = `ls_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const row = (await ctx.tx.query<{ expires_at: Date }>(
-      `INSERT INTO leases (id, project_id, task_id, path, token, expires_at, ttl_s, granted_by, force)
-       VALUES ($1, $2, $3, $4, $5, now() + $6::int * interval '1 second', $6::int, $7, $8) RETURNING expires_at`,
-      [id, ctx.projectId, task.id, path, token, ttl, ctx.actor.principal, force])).rows[0]!;
+      `INSERT INTO leases (id, project_id, task_id, path, token, granted_at, expires_at, ttl_s, granted_by, force)
+       VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $6::timestamptz + $7::int * interval '1 second', $7::int, $8, $9) RETURNING expires_at`,
+      [id, ctx.projectId, task.id, path, token, at, ttl, ctx.actor.principal, force])).rows[0]!;
     granted.push({ lease_id: id, path, token, expires_at: iso(row.expires_at) });
-    events.push({ kind: 'lease.granted', data: { lease_id: id, task_id: task.id, path, token, expires_at: iso(row.expires_at), by: ctx.actor.principal, force } });
+    events.push({ kind: 'lease.granted', data: { lease_id: id, task_id: task.id, path, token, expires_at: iso(row.expires_at), ttl_s: ttl, by: ctx.actor.principal, force } });
   }
+  if (kept.length) events.push({ kind: 'lease.renewed', data: { task_id: task.id, leases: kept } });
   return { result: { granted, conflicts: [] }, events };
 }
 
 /** `lease.renew { lease_ids[], ttl_s? }` → `{ renewed[], lost[] }`. harnessd only, from the device that ran the task (D-97). */
 export async function renewLeases(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const { agentId, deviceId } = requireAgentOnDevice(ctx);
-  await lockLeases(ctx);
+  const at = await lockLeases(ctx);
   const ids = leaseIds(args.lease_ids);
   const ttl = ttlOf(args.ttl_s);
-  const events = await noticeExpired(ctx);
-  const rows = await projectLeases(ctx, 'l.id = ANY($2)', [ids]);
+  const events = await noticeExpired(ctx, at);
+  const rows = await projectLeases(ctx, at, 'l.id = ANY($3)', [ids]);
   const missing = ids.filter((id) => !rows.some((r) => r.id === id));
   if (missing.length) throw new CommandError('not_found', `no lease ${missing.join(', ')} in this project`);
   for (const taskId of new Set(rows.map((r) => r.task_id))) {
@@ -169,12 +200,12 @@ export async function renewLeases(ctx: HandlerContext, args: Record<string, unkn
   const lost: { lease_id: string; reason: 'expired' | 'released' | 'revoked' }[] = [];
   const byTask = new Map<string, { lease_id: string; expires_at: string }[]>();
   for (const r of rows) {
-    if (!r.current) {
+    if (!r.current) { // never revived: released, past its expiry at this command's clock, or already seen expired
       lost.push({ lease_id: r.id, reason: r.released_at ? (r.release_reason === 'revoked' ? 'revoked' : 'released') : 'expired' });
       continue;
     }
     const exp = (await ctx.tx.query<{ expires_at: Date }>(
-      "UPDATE leases SET expires_at = now() + $2::int * interval '1 second' WHERE id = $1 RETURNING expires_at", [r.id, ttl ?? r.ttl_s])).rows[0]!.expires_at;
+      "UPDATE leases SET expires_at = $2::timestamptz + $3::int * interval '1 second' WHERE id = $1 RETURNING expires_at", [r.id, at, ttl ?? r.ttl_s])).rows[0]!.expires_at;
     const one = { lease_id: r.id, expires_at: iso(exp) };
     renewed.push(one);
     byTask.set(r.task_id, [...(byTask.get(r.task_id) ?? []), one]);
@@ -183,13 +214,17 @@ export async function renewLeases(ctx: HandlerContext, args: Record<string, unkn
   return { result: { renewed, lost }, events };
 }
 
-/** `lease.release { lease_ids[] }` → `{ released[] }`. The task's agent, or a human (D-97). */
+/**
+ * `lease.release { lease_ids[] }` → `{ released[] }`. The task's agent, or a human (D-97). Refused while a lease's
+ * task is being landed, like `force`: the land is past its fencing check, so freeing the path would let another
+ * task claim it while the land still moves the base.
+ */
 export async function releaseLeases(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   if (isAgent(ctx)) requireAgentOnDevice(ctx);
-  await lockLeases(ctx);
+  const at = await lockLeases(ctx);
   const ids = leaseIds(args.lease_ids);
-  const events = await noticeExpired(ctx);
-  const rows = await projectLeases(ctx, 'l.id = ANY($2)', [ids]);
+  const events = await noticeExpired(ctx, at);
+  const rows = await projectLeases(ctx, at, 'l.id = ANY($3)', [ids]);
   const missing = ids.filter((id) => !rows.some((r) => r.id === id));
   if (missing.length) throw new CommandError('not_found', `no lease ${missing.join(', ')} in this project`);
   if (isAgent(ctx)) {
@@ -197,7 +232,9 @@ export async function releaseLeases(ctx: HandlerContext, args: Record<string, un
     if (foreign) throw new CommandError('forbidden', `lease ${foreign.id} belongs to another agent's task`);
   }
   const open = rows.filter((r) => !r.released_at);
-  if (open.length) await ctx.tx.query("UPDATE leases SET released_at = now(), release_reason = 'released' WHERE id = ANY($1)", [open.map((r) => r.id)]);
+  const busy = await landing(ctx, [...new Set(open.map((r) => r.task_id))]);
+  if (busy.length) throw new CommandError('conflict', `${busy.join(', ')} is being landed; cancel that land first (harness land --cancel <task>)`);
+  if (open.length) await ctx.tx.query("UPDATE leases SET released_at = $2::timestamptz, release_reason = 'released' WHERE id = ANY($1)", [open.map((r) => r.id), at]);
   for (const r of open) events.push({ kind: 'lease.released', data: { lease_id: r.id, task_id: r.task_id, reason: 'released', by: ctx.actor.principal } });
   return { result: { released: open.map((r) => r.id) }, events };
 }

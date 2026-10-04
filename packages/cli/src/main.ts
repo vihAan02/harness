@@ -20,7 +20,7 @@ const USAGE = `usage: harness <command> [--project <id>]
   land <task> [--no-tests] [--no-wait]        land a finished task: its device merges it, runs the approved test command,
                                               and moves the base branch only if green (D-51)
   land --cancel <task>                        give up on a land that hasn't started
-  claim <task> <paths> [--ttl <s>] [--force]  a hard claim (lease) for a task: comma-separated folders and files;
+  claim <task> <paths…> [--ttl <s>] [--force] a hard claim (lease) for a task: folders and files (spaces or commas);
                                               --force takes over another task's (D-89). Its harnessd renews it
   release <task> [<lease_id>…]                end a task's hard claims (all of them, or the ones named)
   status                                      agents, tasks, what each agent is changing, overlaps, questions
@@ -163,12 +163,14 @@ async function main(argv: string[]): Promise<void> {
   }
 
   if (command === 'claim') {
-    const [task, paths] = [sub, rest[0]];
-    if (!task || !paths) fail('usage: harness claim <task> <paths> [--ttl <s>] [--force]');
+    const task = sub;
+    const paths = rest.flatMap((p) => p.split(',')).map((p) => p.trim()).filter(Boolean);
+    if (!task || !paths.length) fail('usage: harness claim <task> <paths…> [--ttl <s>] [--force]');
+    if (a.flags.ttl === true) fail('--ttl needs a number of seconds, e.g. --ttl 300');
     const ttl = flag(a, 'ttl');
     return withServer(a, async (c) => {
       const r = await c.command('lease.acquire', {
-        task_id: task, paths: paths.split(',').map((s) => s.trim()).filter(Boolean), ...(ttl ? { ttl_s: Number(ttl) } : {}), ...(a.flags.force ? { force: true } : {}),
+        task_id: task, paths, ...(ttl ? { ttl_s: Number(ttl) } : {}), ...(a.flags.force ? { force: true } : {}),
       });
       const granted = r.granted as { lease_id: string; path: string; token: number; expires_at: string }[];
       const conflicts = r.conflicts as { path: string; task_id: string; expires_at: string }[];
@@ -184,6 +186,9 @@ async function main(argv: string[]): Promise<void> {
   if (command === 'release') {
     const task = sub ?? fail('usage: harness release <task> [<lease_id>…]');
     return withServer(a, async (c) => {
+      // Only the named task's leases: the server lets a human release any lease, so the CLI holds <task> to its word.
+      const foreign = rest.filter((id) => c.view.leases.get(id)?.taskId !== task);
+      if (foreign.length) fail(`${foreign.join(', ')} ${foreign.length === 1 ? 'is not a lease' : 'are not leases'} of ${task}; see harness status`);
       const ids = rest.length ? rest : c.view.currentLeases(task).map((l) => l.id);
       if (!ids.length) return void console.log(`${task} holds no hard claims.`);
       const r = await c.command('lease.release', { lease_ids: ids });

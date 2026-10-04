@@ -52,8 +52,8 @@ test('acquire: one lease and one fencing token per path; first come, first serve
   assert.deepEqual(g.map((x) => x.path), ['src/api/', 'src/types.ts']);
   assert.ok(g[1]!.token > g[0]!.token, 'tokens only go up');
   const granted = await events(got.seqs);
-  assert.deepEqual(granted.map((e) => [e.kind, e.data.path, e.data.by, e.data.force]), [
-    ['lease.granted', 'src/api/', a.agent, false], ['lease.granted', 'src/types.ts', a.agent, false],
+  assert.deepEqual(granted.map((e) => [e.kind, e.data.path, e.data.ttl_s, e.data.by, e.data.force]), [
+    ['lease.granted', 'src/api/', 60, a.agent, false], ['lease.granted', 'src/types.ts', 60, a.agent, false],
   ]);
   const ttl = Date.parse(g[0]!.expires_at) - Date.now();
   assert.ok(ttl > 50_000 && ttl <= 61_000, `expires in about 60 s, on the server's clock: ${ttl}`);
@@ -73,6 +73,25 @@ test('acquire: one lease and one fencing token per path; first come, first serve
 
   // A task's own leases never conflict.
   assert.equal(res(await a.acquire(['src/api/x.ts'])).granted.length, 1);
+
+  // Claiming a path the task already holds keeps that lease and its token, and only pushes its expiry out.
+  const rows = async () => (await db.pool.query('SELECT count(*)::int AS n FROM leases WHERE task_id = $1', [a.task])).rows[0].n as number;
+  const before = await rows();
+  const again = await a.acquire(['src/api/'], { ttl_s: 300 });
+  assert.deepEqual(res(again).granted.map((x: any) => [x.lease_id, x.token]), [[g[0]!.lease_id, g[0]!.token]]);
+  assert.ok(Date.parse(res(again).granted[0].expires_at) - Date.now() > 290_000, 'pushed out by the new ttl');
+  assert.deepEqual((await events(again.seqs)).map((e) => [e.kind, e.data.leases?.[0]?.lease_id]), [['lease.renewed', g[0]!.lease_id]]);
+  assert.equal(await rows(), before, 'no new row');
+});
+
+test('a task holds at most 200 current leases', async () => {
+  const a = await worker('agent/cap-a');
+  for (let i = 0; i < 4; i++) await a.acquire(Array.from({ length: 50 }, (_, j) => `cap/${i}-${j}.ts`));
+  await rejects(a.acquire(['cap/one-more.ts']), 'conflict', /would hold more than 200 leases/);
+  assert.equal(res(await a.acquire(['cap/0-0.ts'])).granted.length, 1, 'a path it already holds is still fine');
+  const ids = res(await run('lease.acquire', { task_id: a.task, paths: ['cap/0-1.ts'] })).granted.map((x: any) => x.lease_id);
+  await run('lease.release', { lease_ids: ids });
+  assert.equal(res(await a.acquire(['cap/one-more.ts'])).granted.length, 1, 'room again after a release');
 });
 
 test('acquire is checked: the task\'s own agent or a human, a task in progress, at most 50 paths, ttl 10 to 3600', async () => {
@@ -159,6 +178,29 @@ test('release: the task\'s agent its own leases, a human any; abandoning a task 
   const abandoned = await run('task.abandon', { task_id: a.task, reason: 'replanned' });
   assert.deepEqual((await events(abandoned.seqs)).filter((e) => e.kind === 'lease.released').map((e) => [e.data.lease_id, e.data.reason]), [[z!.lease_id, 'abandoned']]);
   assert.equal(res(await b.acquire(['z/'])).granted.length, 1, 'the path is free again');
+});
+
+test('release is refused while the lease\'s task is being landed, like force', async () => {
+  const a = await worker('agent/rl-a');
+  const lease = res(await a.acquire(['rl/'])).granted[0].lease_id as string;
+  await run('task.complete', { task_id: a.task });
+  await run('land.request', { task_id: a.task });
+  await rejects(run('lease.release', { lease_ids: [lease] }), 'conflict', /being landed; cancel that land first/);
+  await run('land.cancel', { task_id: a.task });
+  assert.deepEqual(res(await run('lease.release', { lease_ids: [lease] })).released, [lease]);
+});
+
+test('a lease once seen expired is never renewed, even if its expiry looks later to a delayed command', async () => {
+  const a = await worker('agent/nr-a');
+  const lease = res(await a.acquire(['nr/'], { ttl_s: 60 })).granted[0].lease_id as string;
+  // What a renew that began before the lease expired, and got the lock after another command logged it
+  // expired, would see: an expiry in the future of its own start, and expired_logged_at already set.
+  await db.pool.query("UPDATE leases SET expired_logged_at = now(), expires_at = now() + interval '1 minute' WHERE id = $1", [lease]);
+  const r = await a.renew([lease]);
+  assert.deepEqual([res(r).renewed, res(r).lost], [[], [{ lease_id: lease, reason: 'expired' }]]);
+  assert.deepEqual(r.seqs, [], 'no lease.renewed');
+  const b = await worker('agent/nr-b');
+  assert.equal(res(await b.acquire(['nr/'])).granted.length, 1, "and it doesn't block another task's claim");
 });
 
 test('the lease lock is per project and held until the transaction ends (D-97)', async () => {
