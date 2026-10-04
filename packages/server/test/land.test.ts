@@ -108,15 +108,24 @@ test('fencing: a stale token (a newer lease was issued on the path since) is rej
   assert.deepEqual(res(r).problems, [{ path: 'src/types.ts', reason: 'stale_token', lease_id: mine.id, token: mine.token, highest: theirs.token }]);
 });
 
-test('fencing: my current, highest lease → accepted; an expired one of mine → lease_not_current; unknown tokens rejected', async () => {
+test('fencing: my current, highest lease → accepted; so is mine expired or released when nobody took the path since (D-103); unknown tokens rejected', async () => {
   const a = await finished('agent/m1');
   const cur = await lease(a.task, 'src/m/');
   let landId = await request(a.task);
   assert.equal(res(await run('land', landArgs(landId, ['src/m/x.ts'], [{ lease_id: cur.id, token: cur.token }]), device)).accepted, true);
   await run('land.fail', { land_id: landId, reason: 'error' }, device);
+  // The device slept while the task waited to land: its lease expired, and no other task took the path.
   await db.pool.query("UPDATE leases SET expires_at = now() - interval '1 minute' WHERE id = $1", [cur.id]);
   landId = await request(a.task);
-  assert.deepEqual(res(await run('land', landArgs(landId, ['src/m/x.ts']), device)).problems.map((p: any) => p.reason), ['lease_not_current']);
+  assert.equal(res(await run('land', landArgs(landId, ['src/m/x.ts']), device)).accepted, true, 'an expired lease of mine');
+  await run('land.fail', { land_id: landId, reason: 'error' }, device);
+  // It gave back a narrower lease it no longer needed, while its wider one still covers the file.
+  const wide = await lease(a.task, 'src/w/');
+  const narrow = await lease(a.task, 'src/w/x.ts', { released: true });
+  assert.ok(narrow.token > wide.token);
+  landId = await request(a.task);
+  assert.equal(res(await run('land', landArgs(landId, ['src/w/x.ts']), device)).accepted, true, 'a released lease of mine');
+  await run('land.fail', { land_id: landId, reason: 'error' }, device);
   landId = await request(a.task);
   assert.deepEqual(res(await run('land', landArgs(landId, [], [{ lease_id: 'lease_forged', token: 999 }]), device)).problems.map((p: any) => p.reason), ['unknown_token']);
 });

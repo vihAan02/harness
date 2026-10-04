@@ -74,13 +74,14 @@ export async function requestLand(ctx: HandlerContext, args: Record<string, unkn
   };
 }
 
-export type FencingProblem = { path: string; reason: 'leased_by_other' | 'stale_token' | 'lease_not_current' | 'unknown_token'; lease_id?: string; token?: number; highest?: number };
+export type FencingProblem = { path: string; reason: 'leased_by_other' | 'stale_token' | 'unknown_token'; lease_id?: string; token?: number; highest?: number };
 
 /**
  * The fencing check (D-20, F-80, coordination.md §1), on the server's clock (F-84). For every changed path:
- * another task's current lease covering it rejects the land; and where this task holds leases covering
- * it, its best token must be the highest ever issued for that path, and that lease must still be current.
- * Tokens the device presents must be this task's.
+ * another task's current lease covering it rejects the land; and where this task has held leases covering
+ * it, its best token must be the highest ever issued for that path, or another task has taken the path
+ * since (`stale_token`, T-2). The task's own lease that it released, or that expired while nobody else took
+ * the path, doesn't block it (D-103). Tokens the device presents must be this task's.
  */
 export async function fencingCheck(ctx: HandlerContext, taskId: string, changed: string[], presented: { lease_id: string; token: number }[]): Promise<FencingProblem[]> {
   const leases = (await ctx.tx.query<{ id: string; task_id: string; path: string; token: string; current: boolean }>(
@@ -99,7 +100,6 @@ export async function fencingCheck(ctx: HandlerContext, taskId: string, changed:
     const best = mine.reduce((a, b) => (b.token > a.token ? b : a));
     const highest = Math.max(...covering.map((l) => l.token));
     if (best.token < highest) problems.push({ path, reason: 'stale_token', lease_id: best.id, token: best.token, highest });
-    else if (!best.current) problems.push({ path, reason: 'lease_not_current', lease_id: best.id, token: best.token });
   }
   return problems;
 }

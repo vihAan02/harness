@@ -858,7 +858,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - *Source:* 0B item 2, D-53. *Status:* Proposal.
 - **D-93 How the local land step is built (0B item 5, land part; D-20, D-51, D-54).**
   - **Commands:** `land.request` (a human, `harness land <task>`; the task must be done; one land in flight per project; it runs on the device that ran the task) → `land` from that harnessd, with the commit range and changed paths, for the fencing check → `land.accepted` or `land.rejected` (logged, not thrown) → `land.report` steps → `land.complete` (task `landed`, its leases released, landed notices) or `land.fail` (the task stays `done`). `land.cancel` gives up on one that hasn't started.
-  - **Fencing check** (on the server's clock, F-84): another task's current lease on a changed path rejects; where the task holds leases on a path, its best token must be the highest ever issued for that path, and still current (F-80). The leases table and token counter exist now; the lease commands come later in 0B (D-89).
+  - **Fencing check** (on the server's clock, F-84): another task's current lease on a changed path rejects; where the task holds leases on a path, its best token must be the highest ever issued for that path, and still current (F-80). The leases table and token counter exist now; the lease commands come later in 0B (D-89). *"And still current" is superseded by D-103.*
   - **harnessd:** merges the task's commit into the base tip with `--no-ff` in a detached integration worktree; runs the approved setup, then the approved test command under srt with loopback binding and no other network (D-83, F-58); test approvals are their own kind, so a setup approval never covers a test. Without a `test.command`, a land needs `--no-tests`. The base moves only by compare-and-swap of the ref, or, when checked out (usually the human's checkout), a fast-forward of a clean checkout still at the land's base. After a crash, a land the base already reached is completed, any other is failed as interrupted.
   - **Not built:** reopening a task whose land failed its tests (D-51's "back to in progress") needs a session restart, which is Phase 1 resume (D-40); the human fixes it and lands again, or abandons it.
   - *Source:* 0B item 5. *Status:* Proposal.
@@ -1024,6 +1024,12 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **0B instead:** the task stays `done`. The failure is in the log (`land.failed`, with its reason), the task's leases keep renewing (D-97), and the human fixes the branch and lands again, or abandons the task. That's what D-93 built.
   - **Why:** sending a task back to its agent needs the agent's session restarted with its context, which is Phase 1 resume (D-40).
   - *Source:* D-93 as built; the approved parallel plan (S10). *Status:* Proposal; D-51's step 4 applies again once resume exists.
+- **D-103 Fencing blocks only another task's lease, never the task's own lapsed one (0B item 5; supersedes "and still current" in D-93's fencing check). Decided by an owner, 2026-10-04.**
+  - **The rule now:** a land is rejected on a changed path only if another task holds a current lease covering it (`leased_by_other`), or another task was issued a newer token for it since this task's best one (`stale_token`, as in T-2).
+  - **What changed:** the task's own lease that it released, or that expired while nobody else took the path, no longer blocks it. Before, that gave `lease_not_current`, and a done task couldn't take the lease again (acquire needs a task in progress), so its work could only be abandoned.
+  - **Why it's safe:** fencing protects a current holder and catches a stale one (F-80). With no other holder and no newer token, there's nothing to protect. The check still runs under the lease lock, so no lease is granted between it and the land's acceptance (D-97).
+  - **Found by:** the adversarial review of B5, which makes releases and real expiry reachable.
+  - *Source:* the B5 review; an owner's choice in session. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
