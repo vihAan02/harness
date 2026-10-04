@@ -5,7 +5,8 @@
 //  1. X holds a hard claim on lib/ (token n); harnessd renews it while X's device is awake.
 //  2. X's device sleeps past the TTL.
 //  3. Y claims lib/ (token n+1), changes a file under it, and the human lands Y.
-//  4. X wakes, its task is finished, and the human tries to land X's change under lib/.
+//  4. X wakes, changes another file under lib/, finishes, and the human lands X: harnessd presents X's old
+//     token n, as a stale holder would.
 // Pass: the land step rejects X's change (stale_token), and the base branch doesn't move. Required: 100%.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +21,7 @@ const asleep = new Set<string>(); // tasks whose device "sleeps": the fault swit
 before(async () => {
   s = await startStack({
     portRange: [31800, 31899],
-    daemonOptions: { leaseRenewMs: 1000, faults: { leases: { suspendRenewal: (task) => asleep.has(task) } } },
+    daemonOptions: { faults: { leases: { suspendRenewal: (task) => asleep.has(task) } } },
     files: {
       'lib/index.ts': 'export {};\n',
       'package.json': '{"name":"t2"}\n',
@@ -42,12 +43,16 @@ test('T-2: a lease that expired while its device slept can\'t land over the newe
   const x = (await s.command('agent.create', { name: 'agent/x', vendor: 'claude' })).agent_id!;
   const y = (await s.command('agent.create', { name: 'agent/y', vendor: 'claude' })).agent_id!;
 
-  // 1. X claims lib/ with a 10 s lease and writes a file under it; harnessd keeps the lease renewed.
+  // 1. X claims lib/ with a 10 s lease and writes a file under it; harnessd keeps the lease renewed. Once it's
+  //    woken (step 4), X writes another file under lib/ and reports done.
   const tX = await s.nextTaskId();
   await s.assignTask(x, 'X', ['lib/'], steps(
     'mcp__harness__claim {"paths":["lib/"],"ttl_s":10}',
     `Write {"file_path":"${s.worktreeOf(tX)}/lib/a.ts","content":"export const a = 'x';\\n"}`,
-    'TEXT X is waiting.'));
+    'TEXT X is waiting.',
+    `Write {"file_path":"${s.worktreeOf(tX)}/lib/a2.ts","content":"export const a2 = 'x after waking';\\n"}`,
+    'mcp__harness__report_done {"summary":"lib/a.ts and lib/a2.ts"}',
+    'TEXT done'));
   await s.turnEnds(tX);
   const xLease = view.currentLeases(tX)[0]!;
   assert.equal(xLease.path, 'lib/');
@@ -81,14 +86,18 @@ test('T-2: a lease that expired while its device slept can\'t land over the newe
   }
   const baseAfterY = [...view.lands.values()].find((l) => l.taskId === tY && l.status === 'completed')!.newBaseSha!;
 
-  await s.cli('task', 'done', tX);
+  // X carries on where it left off: a human nudge opens its next turn, it changes lib/ again and finishes.
+  await s.command('message.send', { kind: 'question', to: x, text: 'Are you still on lib/? Carry on.' });
   await s.until(() => view.events.some((e) => e.kind === 'worktree.committed' && (e.data as { task_id: string }).task_id === tX), 60_000, "X's work to be committed");
+  assert.ok(view.events.some((e) => e.kind === 'claim.observed' && (e.data as { task_id: string; paths: string[] }).task_id === tX && (e.data as { paths: string[] }).paths.includes('lib/a2.ts')), 'X changed lib/a2.ts after waking');
+  assert.deepEqual(s.daemon.leases.tokens(s.project, tX), [{ lease_id: xLease.id, token: xLease.token }], 'harnessd presents X\'s old token n at land');
   const out = await landOutput(tX);
 
   // Pass: the land step rejects X's change, and the base doesn't move.
   assert.match(out, /Rejected by the fencing check:\n  lib\/a\.ts: stale_token/);
   const rejected = view.events.find((e) => e.kind === 'land.rejected' && (e.data as { task_id: string }).task_id === tX)!;
-  assert.deepEqual((rejected.data as { problems: { path: string; reason: string; token: number; highest: number }[] }).problems.map((p) => [p.path, p.reason, p.token]), [['lib/a.ts', 'stale_token', xLease.token]]);
+  assert.deepEqual((rejected.data as { problems: { path: string; reason: string; token: number; highest: number }[] }).problems.map((p) => [p.path, p.reason, p.token]).sort(),
+    [['lib/a.ts', 'stale_token', xLease.token], ['lib/a2.ts', 'stale_token', xLease.token]]);
   assert.ok(!view.events.some((e) => e.kind === 'land.completed' && (e.data as { task_id: string }).task_id === tX), 'X never landed');
   assert.equal(execFileSync('git', ['-C', s.repo, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(), baseAfterY, "main is still Y's land");
 });
