@@ -1,6 +1,7 @@
 // Reports from harnessd about things that happen on its machine (protocol.md §4). They change no
 // server state; they put facts in the event log, so the human and the A/B metrics can see them.
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
+import { requireAgentOnDevice } from './sessions.ts';
 
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -53,5 +54,24 @@ export async function reportSetup(ctx: HandlerContext, args: Record<string, unkn
   return {
     result: null,
     events: [{ kind: `setup.${event}`, data: { task_id: taskId, device_id: deviceId, command_hash: hash, ...(exitCode !== undefined ? { exit_code: exitCode } : {}) } }],
+  };
+}
+
+/**
+ * `stop_gate.report { session_id, pending }` → `stop_gate.capped` (D-100). The agent's Stop gate kept it going
+ * as many times in a row as its vendor allows, with `pending` notices still waiting; they open its next turn.
+ * The event is how the human hears about it. Sent as the agent, from its device.
+ */
+export async function reportStopGate(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  const { agentId, deviceId } = requireAgentOnDevice(ctx);
+  if (!Number.isSafeInteger(args.pending) || (args.pending as number) < 1 || (args.pending as number) > 10_000) throw new CommandError('bad_request', 'pending must be a whole number from 1 to 10000');
+  const sess = (await ctx.tx.query<{ task_id: string; agent_id: string; device_id: string }>(
+    'SELECT s.task_id, s.agent_id, s.device_id FROM agent_sessions s JOIN tasks t ON t.id = s.task_id WHERE s.id = $1 AND t.project_id = $2',
+    [args.session_id, ctx.projectId])).rows[0];
+  if (!sess) throw new CommandError('not_found', `no session ${String(args.session_id)} in this project`);
+  if (sess.agent_id !== agentId || sess.device_id !== deviceId) throw new CommandError('forbidden', 'that session belongs to another agent or device');
+  return {
+    result: null,
+    events: [{ kind: 'stop_gate.capped', data: { task_id: sess.task_id, agent_id: agentId, session_id: args.session_id, pending: args.pending } }],
   };
 }
