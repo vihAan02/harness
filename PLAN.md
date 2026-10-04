@@ -1037,7 +1037,18 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
-*(none yet)*
+- **D-120 The A/B scenarios SC-0 to SC-4 (closes Q-02's scenario details; 0B item 9, D-58).** As built in [validation.md §3](docs/validation.md#scenarios-real-coupling-planted-on-purpose).
+  - **Bases:** tags `SC-0` to `SC-4` on harness-bench's `ab` branch, never on `main` (which the demos clone). The only change from Shelf is the land step's test command, `npm run check`, so a broken shared-type contract fails integration.
+  - **Cards:** two tasks per scenario, each with an agent name, a title, a declared scope and three phrasings (one per paired run, the same in both arms). They live in this repo (`scripts/ab/scenarios/`), never in the benchmark repo, so neither agent can read the other's card. Only SC-1's card tells task 2 about task 1; in SC-2 to SC-4 the coupling isn't announced.
+  - **Couplings:**
+    - SC-1: the login response moves the token into `session`, alongside `expiresAt`;
+    - SC-2: the availability numbers become a `stock` object;
+    - SC-3: a migration replaces `loans.returned_at` with a status, while the other task writes stats queries;
+    - SC-4: both tasks need an ISBN check-digit helper;
+    - SC-0: two independent tasks.
+  - **Hidden checks:** a private repo that only the grader reads (D-94). A self-test proves that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
+  - *Why:* every coupling comes from a natural feature request on Shelf, so the agents meet it while doing ordinary work, and the checks test behaviour on real API data rather than the exact code.
+  - *Source:* 0B item 9, Q-02, D-58, S10. *Status:* Proposal (frozen with the `ab-v1` tag).
 <!-- Stream B: append new D-IDs (D-120 to D-139) above this line. -->
 
 ## 8. Hypotheses (what we're testing, not assuming)

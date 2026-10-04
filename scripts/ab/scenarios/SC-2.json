@@ -1,0 +1,37 @@
+{
+  "scenario": "SC-2",
+  "name": "Shared types",
+  "repo": "https://github.com/vihAan02/harness-bench.git",
+  "tag": "SC-2",
+  "tasks": [
+    {
+      "key": "T1",
+      "agent": "backend",
+      "title": "Clearer stock numbers in the API",
+      "scope": [
+        "src/shared/types.ts",
+        "src/server/",
+        "test/contract/"
+      ],
+      "phrasings": [
+        "The `available`, `copies` and `onLoan` numbers in the book API are confusing side by side. Group them into one object, `stock: { total, onShelf, onLoan }`. In `BookSummary` (`GET /books`), `stock` replaces `available` and `copies`; in `BookDetail` (`GET /books/:id`), it replaces `available` and `onLoan` (`Book.copies` stays, since `POST /books` takes and returns it). Update the types in `src/shared/types.ts`, the repos and the contract tests.",
+        "Clean up how the API reports copies. Introduce `stock: { total, onShelf, onLoan }` in `src/shared/types.ts` and use it instead of the loose fields: `BookSummary` (the rows of `GET /books`) drops `available` and `copies` for `stock`, and `BookDetail` (`GET /books/:id`) drops `available` and `onLoan` for `stock`, keeping `Book.copies` because `POST /books` uses it. Update the server's repos and the contract tests.",
+        "API consumers keep mixing up `available`, `copies` and `onLoan`. Replace them with a single `stock` object `{ total, onShelf, onLoan }`: in `BookSummary` (from `GET /books`) instead of `available` and `copies`, and in `BookDetail` (from `GET /books/:id`) instead of `available` and `onLoan`. `Book.copies` is unchanged, because `POST /books` takes and returns it. Change the shared types, the repos and the contract tests."
+      ]
+    },
+    {
+      "key": "T2",
+      "agent": "frontend",
+      "title": "Low-stock badges in the book list",
+      "scope": [
+        "src/client/views.ts",
+        "test/unit/views.test.ts"
+      ],
+      "phrasings": [
+        "Make the book list more useful at a glance. In `renderBookList` (`src/client/views.ts`), add a badge right after a book's title: `<span class=\"badge last\">Last copy</span>` when exactly one copy is on the shelf, and `<span class=\"badge waitlist\">Waitlist</span>` when none is. Also add `renderShelfStats(books: BookSummary[]): string`, returning `<p class=\"shelf-stats\">N titles, M of K copies on the shelf</p>`, where M counts the copies on the shelf now and K all copies. Add unit tests.",
+        "Two small improvements to the book list in `src/client/views.ts`. First, in `renderBookList`, put a badge after the title when stock is low: `<span class=\"badge last\">Last copy</span>` if exactly one copy is on the shelf, `<span class=\"badge waitlist\">Waitlist</span>` if none is. Second, a summary line under the list: a new `renderShelfStats(books: BookSummary[]): string` that returns `<p class=\"shelf-stats\">N titles, M of K copies on the shelf</p>` (M: copies on the shelf right now; K: all copies). Add unit tests.",
+        "People can't tell which books are about to run out. Add low-stock badges to `renderBookList` in `src/client/views.ts`, right after the title: `<span class=\"badge waitlist\">Waitlist</span>` when no copy is on the shelf and `<span class=\"badge last\">Last copy</span>` when exactly one is. Add `renderShelfStats(books: BookSummary[]): string` too, which returns `<p class=\"shelf-stats\">N titles, M of K copies on the shelf</p>` with M the copies on the shelf now and K the total copies. Cover both with unit tests."
+      ]
+    }
+  ]
+}

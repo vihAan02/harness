@@ -7,7 +7,7 @@
 | ID | Question | Blocks | Status |
 |---|---|---|---|
 | [Q-01](#q-01) | Implementation stack | Any 0A code | **Resolved → D-55** (TypeScript) |
-| [Q-02](#q-02) | A/B repo and scenario details | Repo built during 0A; scenarios built in 0B | **Repo resolved → D-58** (purpose-built benchmark repo); scenario details open until 0B |
+| [Q-02](#q-02) | A/B repo and scenario details | Repo built during 0A; scenarios built in 0B | **Resolved:** repo → D-58 (purpose-built benchmark repo); scenarios → D-120 |
 | [Q-03](#q-03) | Approve the A/B pass bar | Running the A/B test | **Resolved → D-57** (v1 approved, versioned) |
 | [Q-04](#q-04) | Vendor login: subscription vs API key | Any commercial launch | **Part 1 resolved → D-56** (API keys for all Phase 0 experiments); part 2 (product default) open |
 | [Q-05](#q-05) | Message budget defaults | Nothing (the proposal is the 0A default unless the owner objects) | Proposal |
@@ -42,7 +42,7 @@
 - **Blocks:** any 0A code ([PLAN.md §12](../PLAN.md#12-what-must-happen-before-and-during-phase-0a)).
 
 ### Q-02
-**A/B repo and scenarios.** **Repo resolved 2026-10-01 → D-58:** a purpose-built benchmark repo for the controlled test, then a real existing project as a separate test. Scenario details are still built in 0B. The text below is kept as the record of the options.
+**A/B repo and scenarios.** **Repo resolved 2026-10-01 → D-58:** a purpose-built benchmark repo for the controlled test, then a real existing project as a separate test. **Scenarios resolved 2026-10-04 → D-120:** SC-0 to SC-4 as tags of the benchmark repo, with task cards and hidden checks. The text below is kept as the record of the options.
 - **What's needed:** a real, small-to-medium repo with a working test suite, a backend API, a frontend consumer, a DB schema and a shared types file, so that SC-1 to SC-4 in [validation.md](validation.md#scenarios-real-coupling-planted-on-purpose) can be planted naturally.
 - **Options:**
   - one of the owner's own projects (best realism, if the coupling exists);

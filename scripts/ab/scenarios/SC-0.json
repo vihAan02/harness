@@ -1,0 +1,36 @@
+{
+  "scenario": "SC-0",
+  "name": "Control: two independent tasks",
+  "repo": "https://github.com/vihAan02/harness-bench.git",
+  "tag": "SC-0",
+  "tasks": [
+    {
+      "key": "T1",
+      "agent": "backend",
+      "title": "Sign out everywhere",
+      "scope": [
+        "src/server/",
+        "test/contract/"
+      ],
+      "phrasings": [
+        "Add a way to sign out of every device at once: a new endpoint `POST /logout/all` (login required) that ends every session of the signed-in user, including the one making the request, and returns 204. Other users' sessions must keep working. Cover it in the contract tests.",
+        "People want a \"sign out everywhere\" button. Build the API side of it: `POST /logout/all` needs a login, ends all of the caller's sessions (the current one too) and answers 204 with no body. Nobody else's sessions are affected. Add contract tests.",
+        "Someone who loses a laptop should be able to end all their sessions. Implement `POST /logout/all`. It requires a login, ends every session that belongs to the calling user, including the calling session, and returns 204. Sessions of other users stay valid. Include contract tests."
+      ]
+    },
+    {
+      "key": "T2",
+      "agent": "frontend",
+      "title": "Loan history view",
+      "scope": [
+        "src/client/views.ts",
+        "test/unit/views.test.ts"
+      ],
+      "phrasings": [
+        "Add a loan history to the web front end. In `src/client/views.ts`, add `renderLoanHistory(loans: LoanView[]): string`. It ignores loans that are still out and groups returned loans by the month they were returned (UTC), newest month first. Each month is a `<section class=\"history-month\">` with an `<h3>` such as `March 2026 (2 books)` (`(1 book)` for one) and a `<ul>` listing each book's title (HTML-escaped) with its return date as `YYYY-MM-DD`, newest first. With no returned loans it returns `<p class=\"empty\">No returned books yet.</p>`. Add unit tests.",
+        "We want a \"what have I read\" page. Write `renderLoanHistory(loans: LoanView[]): string` in `src/client/views.ts`: only returned loans count (skip any still out), grouped by the UTC month of return with the most recent month first. Render each month as `<section class=\"history-month\">` containing an `<h3>` like `March 2026 (2 books)` (singular: `(1 book)`) and a `<ul>` of the books, newest return first, each showing the escaped title and the return date in `YYYY-MM-DD` form. If nothing has been returned, return `<p class=\"empty\">No returned books yet.</p>`. Unit-test it.",
+        "Build the loan history for the web views: `renderLoanHistory(loans: LoanView[]): string` in `src/client/views.ts`. Returned loans are grouped per month of return (UTC); months run newest to oldest, and so do the books inside each month. A month renders as `<section class=\"history-month\"><h3>March 2026 (2 books)</h3><ul>…</ul></section>`, with `(1 book)` when there's only one; each item shows the HTML-escaped title and the return date as `YYYY-MM-DD`. Loans not yet returned don't appear, and with no returned loans the result is `<p class=\"empty\">No returned books yet.</p>`. Add unit tests."
+      ]
+    }
+  ]
+}
