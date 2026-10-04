@@ -983,6 +983,17 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - **Negative controls:** each layer, and each fix of the A3 review, has one.
   - **Review:** an adversarial review (four empirical lenses plus a skeptic) confirmed 12 findings, all fixed: 3 critical leaks (the `~` paths, toolchain roots opening `~/.local` and `~/.cargo`, symlinked credential directories) and 9 that broke legitimate work or weakened a layer.
   - *Source:* 0B item 7, D-61, S10. *Status:* Proposal.
+- **D-99 High-priority notices ride tool results (0B item 3; refines D-26).**
+  - **What:** a harness notice with high priority (`dependency_changed` in progress, `claim_conflict`; coordination §3) goes through `AgentAdapter.queueNotice`, not `injectMessage`. Landed notices never do: they wait for the sync (D-53).
+  - **How, for Claude Code:**
+    - While a turn runs, the notice waits in the session's queue. The PostToolBatch hook attaches the queued notices, oldest first, as many as fit in 10,000 characters together (F-106), and they count as delivered (`between_tools`).
+    - A notice that's too long to attach whole, or one for a session that isn't in a turn, is injected like any message. So is any notice still queued when the turn ends: it opens the next turn (`new_turn`). A5b's Stop gate gets a chance at it first.
+    - When the session ends, queued notices fail, so harnessd delivers them to the task's next session.
+  - **Why not just inject them:** injection lands at the same boundary, but the CLI frames a mid-turn injection as "The user sent a new message" (C-14). Hook context arrives as the harness's own context. And a queue the harness holds is one it can still change, which injection isn't.
+  - **Withdrawn when replaced:** when the server supersedes a notice that's still queued (a newer notice covers its paths, e.g. the change landed), harnessd takes it back (`withdrawNotice`). So the Stop gate never keeps an agent going for old news.
+  - **Trust:** a hook-attached notice arrives as `system` text. Its only parts not written by the harness are file paths (control characters dropped) and agent names (`agent/…`, validated), as before.
+  - **Tests:** `packages/adapters/test/notices.test.ts` (the real CLI: batching, the cap, every fallback, withdrawal, the session's end) and `test/sync-land.integration.test.ts` (harnessd's routing and withdrawal), each with negative controls.
+  - *Source:* 0B item 3, D-26, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)

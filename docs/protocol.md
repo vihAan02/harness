@@ -210,12 +210,12 @@ If an agent never calls these tools, the harness still works from its observatio
 | `PostToolUse` (Edit, Write) | Observed claim for `file_path` (F-07) | 0A |
 | `PostToolUse` (Bash) | `bashEditDiff` → observed claims, with `bashEditDiffEnabled: true` in harness settings (F-07). In 0B, also parse the command for reads (`cat`, `head`, `tail`, `sed -n`, `rg`/`grep` on single files) → low-confidence read entries | 0A (writes), 0B (reads) |
 | `PostToolUse` (Read, Grep, LSP) | Add read entries. **Hash the file from disk**, not from `tool_response`: repeated reads can return a "file_unchanged" stub, and partial reads are truncated (F-08). Record offset/limit as the range. Then check the path against active observed claims (coordination §2) | 0B |
-| `PostToolUse` / `PostToolBatch` | Return `additionalContext` with pending high-priority notices (`dependency_changed` with `stage: in_progress`, `claim_conflict`), phrased as facts (F-10), under the 10,000-character cap (F-05). **Never `landed` notices,** which wait for the sync (D-53) | 0B |
+| `PostToolUse` / `PostToolBatch` | Return `additionalContext` with pending high-priority notices (`dependency_changed` with `stage: in_progress`, `claim_conflict`), phrased as facts (F-10), under the 10,000-character cap (F-05). **Never `landed` notices,** which wait for the sync (D-53) | 0B. **Built** (D-99): PostToolBatch, once per batch, the queued notices that fit in 10,000 characters together (F-106); the rest are injected |
 | `PreToolUse` (Read, Edit, Write, Bash) | Deny actions outside policy (out-of-worktree paths, protected paths, Git write commands) as defense in depth. Optionally *warn* when editing a path hard-claimed by another task | 0B. **Built:** writes outside the worktree (0A); reads (Read, Grep, Glob) outside the read policy, checked at call time (D-98) |
 | `Stop` | Return `decision: block` with a reason when **(open task AND unread high-priority notice) OR a `wait_for` just resolved**. Honor `stop_hook_active` and the 8-continuation cap (F-09). After the cap, escalate to the human. The pending sync (D-53) is **not** run in this callback, which can fail open; `harnessd` runs it when it sees the turn's result in the session stream | 0B |
 
 - **Instruction files:** with `settingSources: []` (D-45), Claude Code doesn't load the repo's CLAUDE.md itself. `harnessd` injects it as context and records it as a read entry (source `instructions`), so no `InstructionsLoaded` hook is needed.
-- **Message delivery in 0A doesn't need hooks.** It uses SDK streaming input through `injectMessage` (F-02).
+- **Message delivery in 0A doesn't need hooks.** It uses SDK streaming input through `injectMessage` (F-02). From 0B, high-priority harness notices go through `queueNotice` and the PostToolBatch hook instead (D-99).
 
 ## 8. Peer-message envelope
 

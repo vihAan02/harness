@@ -187,7 +187,7 @@ Agents never get input mid-generation. Messages land only at a **safe boundary**
 | Point | Mechanism | Phase |
 |---|---|---|
 | **Next safe boundary** | `AgentAdapter.injectMessage`. For Claude this is Agent SDK streaming input. The message is picked up **at the next tool boundary in the running turn**, or starts a new turn if the session is idle, and a running tool is never interrupted (F-02). For Codex via `exec` / TS SDK, delivery happens **between turns only**, through a follow-up `resume` (F-33). | 0A |
-| **Attached to a tool result** | PostToolUse / PostToolBatch hook `additionalContext`, for high-priority harness notices (F-05; 10,000-character cap). Never `landed` notices | 0B, if `supportsHooks` |
+| **Attached to a tool result** | PostToolUse / PostToolBatch hook `additionalContext`, for high-priority harness notices (F-05; 10,000-character cap). Never `landed` notices | 0B, if `supportsHooks`. **Built** (D-99): `queueNotice`; PostToolBatch for Claude (F-106) |
 | **At stop** | Stop gate: blocks stopping when **(the agent has an open task AND an unread high-priority notice) OR a `wait_for` just resolved**. It honors `stop_hook_active` and the vendor's continuation cap, 8 for Claude (F-09). After the cap, escalate to the human. | 0B, if `supportsHooks` |
 
 - **Default policy (Proposal):** push every message immediately, so it lands at the next tool boundary, or as a new turn if the session is idle. **Exception:** `landed` notices wait for the sync (§2, D-53).
