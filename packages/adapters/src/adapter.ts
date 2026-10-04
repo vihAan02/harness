@@ -122,8 +122,14 @@ export type Observation =
 /**
  * Where an adapter's hooks report to. `gate` runs before every tool call and returns a reason to
  * deny it, or null; the adapter uses it to hold tools until the session's hardening is verified.
+ * `notices` runs after each batch of tool calls and returns queued notice text to attach to the
+ * results, at most `maxChars` long (or null); what it returns counts as delivered (D-99).
  */
-export type HarnessHookSink = { observe: (o: Observation) => void; gate?: () => Promise<string | null> };
+export type HarnessHookSink = {
+  observe: (o: Observation) => void;
+  gate?: () => Promise<string | null>;
+  notices?: (maxChars: number) => string | null;
+};
 
 export interface SessionHandle {
   readonly id: string;
@@ -140,6 +146,15 @@ export interface AgentAdapter<PolicyBundle = unknown, HookBundle = unknown> {
   startSession(spec: SessionSpec, firstMessage: EnvelopedMessage): Promise<SessionHandle>;
   resumeSession(ref: VendorSessionRef, spec: SessionSpec, message?: EnvelopedMessage): Promise<SessionHandle>;
   injectMessage(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
+  /**
+   * A high-priority harness notice (coordination.md §3), attached to the agent's context at the vendor's
+   * earliest point: after its next batch of tool calls while a turn runs (`between_tools`). If the session
+   * isn't in a turn, the turn ends first, or the notice is too long to attach, it's injected like any
+   * message (`new_turn`). Never a landed notice, which waits for the sync (D-53, D-99).
+   */
+  queueNotice(h: SessionHandle, msg: EnvelopedMessage): Promise<DeliveryReceipt>;
+  /** Takes back a queued notice not delivered yet, because a newer one replaced it; its receipt rejects. True if it was still queued. */
+  withdrawNotice(h: SessionHandle, messageId: string): boolean;
   stopSession(h: SessionHandle, mode: 'graceful' | 'kill'): Promise<void>;
   /**
    * Holds the agent: while a reason is set, every tool call is denied with it (fail closed). harnessd holds

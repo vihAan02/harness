@@ -13,7 +13,7 @@ import { priceOf, sessionCost, type ModelTokens } from '../cost.ts';
 import { isReservedEnvName } from '../env.ts';
 import { AsyncQueue } from '../queue.ts';
 import { deniedEntries, realish } from '../readpolicy.ts';
-import { claudeHooks, relativize, type ClaudeHookBundle } from './hooks.ts';
+import { claudeHooks, NOTICE_CONTEXT_CAP, relativize, type ClaudeHookBundle } from './hooks.ts';
 import { BASE_TOOLS, compileClaudePermissions, SHIM_SERVER, shimToolName, type ClaudePolicyBundle } from './policy.ts';
 import { shimServer } from './shim.ts';
 import { BUILTIN_SKILLS, claudeCapabilities, installedSdkVersion, PINNED } from './version.ts';
@@ -36,6 +36,8 @@ export function isModelAlias(id: string): boolean {
 const CLI_GUESS_PER_MTOK = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }; // cache rates: the same model's (assumed, not probed)
 /** Graceful stop: how long to wait for the CLI to wind down after interrupt() before closing it. */
 const GRACE_MS = 5000;
+/** Between notices attached to the same tool batch. */
+const NOTICE_SEPARATOR = '\n\n';
 
 function categoryOf(tool: string): ToolCategory {
   if (tool === 'Read') return 'read';
@@ -80,6 +82,7 @@ export function hardeningProblems(init: Record<string, unknown>, spec: Pick<Sess
 }
 
 type PendingDelivery = { messageId: string; pushedAt: number; statusAtPush: SessionStatus; resolve: (r: DeliveryReceipt) => void; reject: (e: Error) => void };
+type QueuedNotice = { msg: EnvelopedMessage; from?: string; resolve: (r: DeliveryReceipt) => void; reject: (e: Error) => void };
 
 export class ClaudeSession implements SessionHandle {
   id: string;
@@ -90,6 +93,8 @@ export class ClaudeSession implements SessionHandle {
   input = new AsyncQueue<SDKUserMessage>();
   out = new AsyncQueue<Observation>();
   pending = new Map<string, PendingDelivery>();
+  /** High-priority notices waiting for the next tool batch, oldest first (D-99). */
+  notices: QueuedNotice[] = [];
   resultTimes: number[] = [];
   lastResult: Record<string, unknown> | null = null;
   q!: Query;
@@ -137,6 +142,44 @@ export class ClaudeSession implements SessionHandle {
     return receipt;
   }
 
+  /** D-99: attached after the next tool batch while a turn runs; otherwise, or if too long to attach whole, injected. */
+  queueNotice(msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {
+    if (this.status === 'ended') return Promise.reject(new Error(`session ${this.id} has ended`));
+    if ((this.status !== 'working' && this.status !== 'waiting') || msg.text.length > NOTICE_CONTEXT_CAP) return this.inject(msg, from);
+    return new Promise((resolve, reject) => { this.notices.push({ msg, ...(from ? { from } : {}), resolve, reject }); });
+  }
+
+  /** For the PostToolBatch hook: the queued notices, oldest first, that fit in `maxChars` together. Delivered once taken. */
+  takeNotices(maxChars: number): string | null {
+    const taken: QueuedNotice[] = [];
+    let size = 0;
+    while (this.notices.length) {
+      const next = this.notices[0]!.msg.text.length + (taken.length ? NOTICE_SEPARATOR.length : 0);
+      if (size + next > maxChars) break;
+      size += next;
+      taken.push(this.notices.shift()!);
+    }
+    if (!taken.length) return null;
+    const deliveredAt = Date.now();
+    for (const n of taken) {
+      this.emit({ kind: 'delivery', messageId: n.msg.id, landed: 'between_tools', deliveredAt });
+      n.resolve({ messageId: n.msg.id, landed: 'between_tools', deliveredAt });
+    }
+    return taken.map((n) => n.msg.text).join(NOTICE_SEPARATOR);
+  }
+
+  withdrawNotice(messageId: string): boolean {
+    const i = this.notices.findIndex((n) => n.msg.id === messageId);
+    if (i < 0) return false;
+    this.notices.splice(i, 1)[0]!.reject(new Error('withdrawn: a newer notice replaced it'));
+    return true;
+  }
+
+  /** At turn end, notices no tool batch took are injected, and open a new turn (D-99). */
+  flushNotices(): void {
+    for (const n of this.notices.splice(0)) this.inject(n.msg, n.from).then(n.resolve, n.reject);
+  }
+
   async stop(mode: 'graceful' | 'kill'): Promise<void> {
     if (mode === 'graceful' && this.status !== 'ended') {
       this.endReason = 'stopped';
@@ -163,6 +206,7 @@ export class ClaudeSession implements SessionHandle {
     this.settleVerdict('the session has ended');
     for (const p of this.pending.values()) p.reject(new Error(`session ${this.id} ended before the message was delivered`));
     this.pending.clear();
+    for (const n of this.notices.splice(0)) n.reject(new Error(`session ${this.id} ended before the notice was delivered`));
     this.setStatus('ended');
     this.emit({ kind: 'ended', reason: this.endReason });
     this.out.end();
@@ -206,6 +250,7 @@ export class ClaudeSession implements SessionHandle {
           });
           this.setStatus(r?.is_error === true ? 'errored' : 'idle');
         } else if (this.status === 'starting') this.setStatus('idle');
+        this.flushNotices();
       } else if (m.state === 'requires_action') {
         this.setStatus('waiting');
       }
@@ -335,6 +380,14 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     return this.session(h).inject(msg, from);
   }
 
+  queueNotice(h: SessionHandle, msg: EnvelopedMessage, from?: string): Promise<DeliveryReceipt> {
+    return this.session(h).queueNotice(msg, from);
+  }
+
+  withdrawNotice(h: SessionHandle, messageId: string): boolean {
+    return this.session(h).withdrawNotice(messageId);
+  }
+
   stopSession(h: SessionHandle, mode: 'graceful' | 'kill'): Promise<void> {
     return this.session(h).stop(mode);
   }
@@ -409,7 +462,11 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
       } : {}),
     };
     const session = new ClaudeSession(real);
-    const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: async () => (await session.verdict) ?? session.holdReason };
+    const sink: HarnessHookSink = {
+      observe: (o) => session.emit(o),
+      gate: async () => (await session.verdict) ?? session.holdReason,
+      notices: (maxChars) => session.takeNotices(maxChars),
+    };
     session.start(this.options(real, sink, (pid) => {
       session.pid = pid;
       session.emit({ kind: 'process.started', pid });
