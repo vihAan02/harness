@@ -67,67 +67,131 @@ test('harness_status and `harness status` show current hard claims, not released
   assert.match(peer, /Your hard claims: src\/web\/ \(ls_3, token 5, until 12:01:00 UTC\)/);
 });
 
-/** A view with tasks T-1 (agent_b, last ran on dev_1) and T-2 (agent_f, last ran on dev_2), and leases granted `sec` seconds ago. */
-function keeperView(grants: { id: string; task: string; ttl: number; age: number }[]): ProjectView {
-  let n = 0;
+/** One event on a fresh sequence: tasks T-1 (agent_b, last ran on dev_1) and T-2 (agent_f, on dev_2) come from `keeperView`. */
+let kseq = 0;
+const kev = (kind: string, data: Record<string, unknown>, at = Date.now()): EventMessage =>
+  ({ v: 1, type: 'event', project_id: 'prj', seq: ++kseq, at: new Date(at).toISOString(), actor: { principal: 'human_a', on_behalf_of: null, device_id: null }, kind, data });
+const grant = (id: string, task: string, ttl: number, at = Date.now(), token = 1) =>
+  kev('lease.granted', { lease_id: id, task_id: task, path: `${id}/`, token, expires_at: new Date(at + ttl * 1000).toISOString(), ttl_s: ttl, by: 'agent_b', force: false }, at);
+
+function keeperView(): ProjectView {
+  kseq = 0;
   const now = Date.now();
-  const e = (kind: string, data: Record<string, unknown>, at = now): EventMessage =>
-    ({ v: 1, type: 'event', project_id: 'prj', seq: ++n, at: new Date(at).toISOString(), actor: { principal: 'human_a', on_behalf_of: null, device_id: null }, kind, data });
   const v = new ProjectView('prj');
-  for (const ev of [
-    e('task.created', { task_id: 'T-1', title: 'a', text: '', scope: [], owner_human_id: 'human_a' }),
-    e('task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_b' }),
-    e('task.created', { task_id: 'T-2', title: 'b', text: '', scope: [], owner_human_id: 'human_a' }),
-    e('task.assigned', { task_id: 'T-2', assignee_agent_id: 'agent_f' }),
-    e('session.started', { session_id: 's0', agent_id: 'agent_b', task_id: 'T-1', device_id: 'dev_2', worktree: '/w1', status: 'starting' }, now - 60_000),
-    e('session.started', { session_id: 's1', agent_id: 'agent_b', task_id: 'T-1', device_id: 'dev_1', worktree: '/w1', status: 'starting' }, now - 30_000),
-    e('session.started', { session_id: 's2', agent_id: 'agent_f', task_id: 'T-2', device_id: 'dev_2', worktree: '/w2', status: 'starting' }, now - 30_000),
-    ...grants.map((g, i) => e('lease.granted', { lease_id: g.id, task_id: g.task, path: `p${i}/`, token: i + 1, expires_at: new Date(now - g.age * 1000 + g.ttl * 1000).toISOString(), by: 'agent_b', force: false }, now - g.age * 1000)),
-  ]) v.apply(ev);
+  for (const e of [
+    kev('task.created', { task_id: 'T-1', title: 'a', text: '', scope: [], owner_human_id: 'human_a' }),
+    kev('task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_b' }),
+    kev('task.created', { task_id: 'T-2', title: 'b', text: '', scope: [], owner_human_id: 'human_a' }),
+    kev('task.assigned', { task_id: 'T-2', assignee_agent_id: 'agent_f' }),
+    kev('session.started', { session_id: 's0', agent_id: 'agent_b', task_id: 'T-1', device_id: 'dev_2', worktree: '/w1', status: 'starting' }, now - 60_000),
+    kev('session.started', { session_id: 's1', agent_id: 'agent_b', task_id: 'T-1', device_id: 'dev_1', worktree: '/w1', status: 'starting' }, now - 30_000),
+    kev('session.started', { session_id: 's2', agent_id: 'agent_f', task_id: 'T-2', device_id: 'dev_2', worktree: '/w2', status: 'starting' }, now - 30_000),
+  ]) v.apply(e);
   return v;
 }
 
+/** A keeper on a clock the test moves; `reply` decides what each lease.renew answers. */
 function keeper(v: ProjectView, extra: Partial<ConstructorParameters<typeof LeaseKeeper>[0]> = {}) {
-  const sent: [string, Record<string, unknown>, string][] = [];
+  const clock = { t: Date.now() };
+  const sent: string[][] = [];
   const logs: string[] = [];
+  let reply: (ids: string[]) => unknown = (ids) => ({ renewed: ids.map((lease_id) => ({ lease_id, expires_at: '' })), lost: [] });
   const k = new LeaseKeeper({
-    view: () => v, log: (m) => logs.push(m), deviceId: 'dev_1', projects: () => ['prj'],
-    send: async (_p, name, args, as) => { sent.push([name, args, as]); return { renewed: [], lost: [{ lease_id: 'ls_old', reason: 'expired' }] }; },
+    view: () => v, log: (m) => logs.push(m), deviceId: 'dev_1', projects: () => ['prj'], now: () => clock.t,
+    send: async (_p, name, args, as) => {
+      assert.deepEqual([name, as], ['lease.renew', 'agent_b']);
+      const ids = args.lease_ids as string[];
+      sent.push(ids);
+      return reply(ids);
+    },
     ...extra,
   });
-  return { k, sent, logs };
+  return { k, sent, logs, clock, setReply: (r: typeof reply) => { reply = r; } };
 }
+const sec = 1000;
 
-test('LeaseKeeper: picks up the tasks this device ran last; renews a lease a third of the way through its TTL', async () => {
-  const v = keeperView([{ id: 'ls_fresh', task: 'T-1', ttl: 120, age: 10 }, { id: 'ls_due', task: 'T-1', ttl: 30, age: 11 }, { id: 'ls_peer', task: 'T-2', ttl: 30, age: 29 }]);
-  const { k, sent, logs } = keeper(v);
+test('LeaseKeeper after a restart: picks up the tasks this device ran last, renews each lease once, then every ttl/3', async () => {
+  const v = keeperView();
+  // Granted an hour ago with a 120 s TTL and renewed since: replaying the log mustn't make it look due forever.
+  v.apply(grant('ls_a', 'T-1', 120, Date.now() - 3600 * sec));
+  v.apply(kev('lease.renewed', { task_id: 'T-1', leases: [{ lease_id: 'ls_a', expires_at: new Date(Date.now() + 100 * sec).toISOString() }] }));
+  v.apply(grant('ls_peer', 'T-2', 30));
+  const { k, sent, clock } = keeper(v);
   k.start();
-  k.stop(); // drive ticks by hand
+  k.stop(); // drive the ticks by hand
   assert.deepEqual([...k.tracked.keys()], ['T-1'], "T-1's latest session ran here; T-2 ran on another device");
   await k.tick();
-  assert.deepEqual(sent, [['lease.renew', { lease_ids: ['ls_fresh', 'ls_due'] }, 'agent_b']], 'one is due (11 of 30 s), so all of the task\'s held leases are renewed together');
-  assert.match(logs[0]!, /T-1: lease ls_old was lost \(expired\)/);
-  assert.deepEqual(k.tokens('prj', 'T-1'), [{ lease_id: 'ls_fresh', token: 1 }, { lease_id: 'ls_due', token: 2 }]);
+  assert.deepEqual(sent, [['ls_a']], 'once, at once');
+  for (let i = 0; i < 5; i++) { clock.t += sec; await k.tick(); }
+  assert.equal(sent.length, 1, 'not again 5 s later');
+  clock.t += 35 * sec; // 40 s after the renewal arrived: a third of 120 s
+  await k.tick();
+  assert.equal(sent.length, 2, 'next renewal a third of the TTL after the last one arrived');
 });
 
-test('LeaseKeeper: nothing due, nothing sent; the fault switch suspends one task; a landed task is dropped', async () => {
-  const v = keeperView([{ id: 'ls_a', task: 'T-1', ttl: 120, age: 5 }]);
-  const quiet = keeper(v);
-  quiet.k.track('prj', 'T-1', 'agent_b');
-  await quiet.k.tick();
-  assert.deepEqual(quiet.sent, [], '5 of 120 s: not due yet');
+test('LeaseKeeper: a lease granted while it runs is first due a third of its TTL after this device received it', async () => {
+  const v = keeperView();
+  const { k, sent, clock } = keeper(v);
+  k.track('prj', 'T-1', 'agent_b');
+  v.apply(grant('ls_new', 'T-1', 30));
+  await k.tick();
+  clock.t += 9 * sec;
+  await k.tick();
+  assert.deepEqual(sent, [], 'not before 10 s');
+  clock.t += 1 * sec;
+  await k.tick();
+  assert.deepEqual(sent, [['ls_new']]);
+});
 
-  const fixed = keeper(v, { renewMs: 50, faults: { suspendRenewal: (t) => t === 'T-1' } });
-  fixed.k.track('prj', 'T-1', 'agent_b');
-  await fixed.k.tick();
-  assert.deepEqual(fixed.sent, [], 'suspended (T-2)');
+test('LeaseKeeper: renews in batches of 200; backs off after a failure; logs and drops lost leases', async () => {
+  const v = keeperView();
+  const { k, sent, logs, clock, setReply } = keeper(v);
+  k.track('prj', 'T-1', 'agent_b');
+  for (let i = 0; i < 250; i++) v.apply(grant(`ls_${i}`, 'T-1', 30, Date.now(), i + 1));
+  await k.tick(); // received
+  clock.t += 10 * sec;
+  await k.tick();
+  assert.deepEqual(sent.map((b) => b.length), [200, 50]);
+
+  setReply(() => { throw new Error('server unreachable'); });
+  sent.length = 0;
+  clock.t += 10 * sec;
+  await k.tick();
+  assert.equal(sent.length, 2, 'both batches tried, both failed');
+  assert.match(logs.at(-1)!, /renewing 50 lease\(s\) failed \(server unreachable\); retrying in 1 s/);
+  clock.t += 500;
+  await k.tick();
+  assert.equal(sent.length, 2, 'not before the backoff');
+  clock.t += 500;
+  await k.tick();
+  assert.equal(sent.length, 4, 'retried after 1 s');
+  clock.t += 1 * sec;
+  await k.tick();
+  assert.equal(sent.length, 4, 'the second failure waits 2 s');
+  clock.t += 1 * sec;
+  setReply((ids) => ({ renewed: [], lost: ids.map((lease_id) => ({ lease_id, reason: 'expired' })) }));
+  await k.tick();
+  assert.equal(sent.length, 6);
+  assert.match(logs.at(-1)!, /T-1: lease ls_\d+ was lost \(expired\); it isn't renewed again/);
+});
+
+test('LeaseKeeper: the fault switch suspends one task; a landed task is dropped; tokens include expired leases', async () => {
+  const v = keeperView();
+  v.apply(grant('ls_a', 'T-1', 30));
+  v.apply(grant('ls_b', 'T-1', 30, Date.now(), 2));
+  v.apply(kev('lease.expired', { lease_id: 'ls_b', task_id: 'T-1' }));
+  const asleep = keeper(v, { renewMs: 50, faults: { suspendRenewal: (t) => t === 'T-1' } });
+  asleep.k.track('prj', 'T-1', 'agent_b');
+  await asleep.k.tick();
+  assert.deepEqual(asleep.sent, [], 'suspended (T-2)');
 
   const every = keeper(v, { renewMs: 50 });
   every.k.track('prj', 'T-1', 'agent_b');
   await every.k.tick();
-  assert.equal(every.sent.length, 1, 'with a fixed interval, every tick renews');
-  v.apply({ v: 1, type: 'event', project_id: 'prj', seq: 99, at: new Date().toISOString(), actor: { principal: 'h', on_behalf_of: null, device_id: null }, kind: 'task.completed', data: { task_id: 'T-1', by: 'agent_b' } });
-  v.apply({ v: 1, type: 'event', project_id: 'prj', seq: 100, at: new Date().toISOString(), actor: { principal: 'h', on_behalf_of: null, device_id: null }, kind: 'land.completed', data: { land_id: 'l', task_id: 'T-1', new_base_sha: 'x', changed_paths: [] } });
+  assert.deepEqual(every.sent, [['ls_a']], 'with a fixed interval, every tick renews; an expired lease is never sent');
+  assert.deepEqual(every.k.tokens('prj', 'T-1'), [{ lease_id: 'ls_a', token: 1 }, { lease_id: 'ls_b', token: 2 }], 'the server decides if an expired lease still counts');
+  v.apply(kev('task.completed', { task_id: 'T-1', by: 'agent_b' }));
+  v.apply(kev('land.completed', { land_id: 'l', task_id: 'T-1', new_base_sha: 'x', changed_paths: [] }));
   await every.k.tick();
   assert.equal(every.sent.length, 1, 'a landed task is no longer renewed');
   assert.deepEqual([...every.k.tracked.keys()], []);
