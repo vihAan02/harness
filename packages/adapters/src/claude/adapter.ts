@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentAdapter, DeliveryReceipt, EnvelopedMessage, ErrorKind, HarnessHookSink, Landed, Observation, Prices, SessionHandle,
@@ -307,7 +308,10 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
 
   /** The read policy's static deny list is read from the filesystem here, when the session opens (D-98). */
   compilePermissions(spec: SessionSpec): ClaudePolicyBundle {
-    return compileClaudePermissions(spec, spec.readPolicy ? deniedEntries(spec.readPolicy) : []);
+    if (!spec.readPolicy) return compileClaudePermissions(spec);
+    const { entries, coarse } = deniedEntries(spec.readPolicy);
+    if (coarse) spec.log?.(`harness: read confinement's static deny list was over budget; using ${entries.length} top-level entries, the rest is confined at call time and by the sandbox\n`);
+    return compileClaudePermissions(spec, entries);
   }
 
   setupHooks(spec: SessionSpec, sink: HarnessHookSink): ClaudeHookBundle {
@@ -391,9 +395,18 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
     this.checkInputs(spec);
     if (!fs.existsSync(spec.configDir)) throw new Error(`config dir ${spec.configDir} doesn't exist`);
     // Sandbox and permission rules match resolved paths, in their on-disk case (native realpath); the init check compares cwd too.
+    const worktree = fs.realpathSync.native(spec.worktree);
     const real = {
-      ...spec, worktree: fs.realpathSync.native(spec.worktree), gitCommonDir: fs.realpathSync.native(spec.gitCommonDir),
-      ...(spec.readPolicy ? { readPolicy: { denyRoots: spec.readPolicy.denyRoots.map(realish), allowRoots: spec.readPolicy.allowRoots.map(realish) } } : {}),
+      ...spec, worktree, gitCommonDir: fs.realpathSync.native(spec.gitCommonDir),
+      ...(spec.readPolicy ? {
+        readPolicy: {
+          denyRoots: spec.readPolicy.denyRoots.map(realish),
+          // The CLI saves a tool result too big for the conversation under its config dir and tells the agent
+          // to read it there (F-101): that one directory of this session's is readable too.
+          allowRoots: [...spec.readPolicy.allowRoots, toolResultsDir(spec.configDir, worktree, spec.sessionId)].map(realish),
+          ...(spec.readPolicy.allowLinks ? { allowLinks: spec.readPolicy.allowLinks } : {}),
+        },
+      } : {}),
     };
     const session = new ClaudeSession(real);
     const sink: HarnessHookSink = { observe: (o) => session.emit(o), gate: async () => (await session.verdict) ?? session.holdReason };
@@ -433,7 +446,12 @@ export function checkSessionInputs(spec: Pick<SessionSpec, 'secrets' | 'model' |
  * options become CLI arguments visible in `ps` (SP-01); secrets only travel in env. Order: the base, then
  * the task's secrets (never a reserved name), then harness-set values, which always win.
  */
-export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 'model' | 'configDir'>): Record<string, string> {
+/** Where the pinned CLI saves a session's oversized tool results: `<config>/projects/<cwd, non-alphanumerics as ->/<session>/tool-results` (F-101). */
+export function toolResultsDir(configDir: string, worktree: string, sessionId: string): string {
+  return path.join(configDir, 'projects', worktree.replace(/[^a-zA-Z0-9]/g, '-'), sessionId, 'tool-results');
+}
+
+export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 'model' | 'configDir' | 'readPolicy'>): Record<string, string> {
   const { auth, model } = spec;
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -454,6 +472,15 @@ export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 
     // Every Bash command starts in the worktree: the shell's directory never carries over from an earlier
     // command, so harnessd resolves a command's relative paths against the worktree correctly (F-97).
     CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1',
+    // Under read confinement the agent's Git can't read the human's global config (~/.gitconfig,
+    // ~/.config/git), and Git stops on a config file it can't read. Agents never commit (D-50), so its Git
+    // gets none: the same, empty, global config on every machine (D-98).
+    ...(spec.readPolicy ? {
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'core.excludesFile', GIT_CONFIG_VALUE_0: '/dev/null',
+      GIT_CONFIG_KEY_1: 'core.attributesFile', GIT_CONFIG_VALUE_1: '/dev/null',
+    } : {}),
   };
   if (model) {
     // Every alias resolves to the configured model, so nothing bills at another model's price (F-25).

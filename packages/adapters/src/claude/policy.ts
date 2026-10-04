@@ -52,7 +52,7 @@ export function compileClaudePermissions(spec: Pick<SessionSpec, 'worktree' | 'g
       autoAllowBashIfSandboxed: true,
       filesystem: {
         denyWrite: GIT_DENY_WRITE.map((x) => `${spec.gitCommonDir}/${x}`),
-        ...(rp ? { denyRead: rp.denyRoots, allowRead: rp.allowRoots } : {}),
+        ...(rp ? { denyRead: rp.denyRoots, allowRead: [...rp.allowRoots, ...(rp.allowLinks ?? [])] } : {}),
       },
       credentials: { envVars: AUTH_ENV_VARS.map((name) => ({ name, mode: 'deny' as const })) },
       ...(spec.ports ? { network: { allowLocalBinding: true } } : {}), // D-68

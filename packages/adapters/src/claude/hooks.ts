@@ -157,6 +157,14 @@ export function claudeHooks(spec: Pick<SessionSpec, 'worktree' | 'readPolicy'>, 
       }
       // Read confinement at call time, behind the static deny rules and the sandbox (D-61, D-98).
       if (spec.readPolicy && READ_TOOLS.has(input.tool_name ?? '')) {
+        // The CLI expands a leading ~ in some fields (Grep's and Glob's path) after this hook has seen it,
+        // so a ~ path can't be judged here: refuse it. Agents work in their worktree, by absolute or
+        // relative path.
+        const ti = input.tool_input ?? {};
+        const pathFields = input.tool_name === 'Read' ? ['file_path'] : input.tool_name === 'Glob' ? ['path', 'pattern'] : ['path'];
+        if (pathFields.some((k) => typeof ti[k] === 'string' && (ti[k] as string).trimStart().startsWith('~'))) {
+          return deny('the harness doesn\'t accept ~ paths; use a path inside this task\'s worktree');
+        }
         const blocked = readTargets(input, spec.worktree).find((p) => !readAllowed(spec.readPolicy!, p, spec.worktree));
         if (blocked) return deny(`the harness confines reads to this task's worktree; ${blocked} is outside it`);
       }
