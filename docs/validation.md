@@ -116,6 +116,10 @@ Run on the purpose-built benchmark repo ([above](#benchmark-repo-d-58)).
   - whether the planted failure reached integration (M6). For SC-4 that means the duplicate helper (M2).
 
   Its self-test proves, from fresh clones at the tags, that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
+- **The runner, harness arm (B9a):** `node scripts/ab/run.ts --scenario SC-n --phrasing n --real --provider <name>`.
+  - **Each run:** a fresh clone at the tag, the setup and test commands approved beforehand, both tasks assigned at once, and an end when both have landed, at the time cap, or when the coordinator stops it.
+  - **What it saves:** `runs/grade/<run-id>/`, main's final tree without `.git`, which is all the grader gets; and `runs/record/<run-id>/`, the coordinator's side (meta, event log, metrics, timeline).
+  - **Dry runs:** `--dry --auto-land` runs scripted stand-ins that check the pipeline, not the tasks.
 
 **Runs:**
 - At least **3 paired runs per scenario per arm**: 5 scenarios × 3 runs × 2 arms = **30 runs minimum**.

@@ -100,3 +100,41 @@ test('with the land step, M1 runs until tasks land; M3, M9 and the stale-context
   assert.match(renderMetrics(m), /M9  failed tests at first integration: 1/);
   assert.equal(m.notComputed.M3, undefined, 'M3 and M9 come from the land step now');
 });
+
+test('M5c counts human integration actions apart from M5; H-03 sums capture coverage; H-04 counts re-reads after notices', () => {
+  const view = new ProjectView('prj');
+  let seq = 0;
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 4, 12, 0, s)).toISOString();
+  const e = (s: number, kind: string, data: Record<string, unknown>, principal = 'human_a'): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'prj', seq: ++seq, at: at(s), actor: { principal, on_behalf_of: null, device_id: null }, kind, data });
+  for (const ev of [
+    e(0, 'task.created', { task_id: 'T-1', title: 'a', text: '', scope: [], owner_human_id: 'human_a' }),
+    e(0, 'task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_a' }),
+    e(1, 'session.started', { session_id: 's1', agent_id: 'agent_a', task_id: 'T-1', device_id: 'd', worktree: '/w1' }),
+    e(2, 'readset.added', { task_id: 'T-1', session_id: 's1', agent_id: 'agent_a', entries: [{ path: 'src/x.ts', hash: 'h1', source: 'read_tool', confidence: 'high' }] }, 'agent_a'),
+    e(4, 'message.sent', { message_id: 'm1', kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage: 'in_progress', paths: ['src/x.ts'], text: 'x' }, 'harness'),
+    e(5, 'message.delivered', { message_id: 'm1', delivery: 'between_tools', delivered_at: at(5) }),
+    e(6, 'readset.added', { task_id: 'T-1', session_id: 's1', agent_id: 'agent_a', entries: [{ path: 'src/x.ts', hash: 'h2', source: 'read_tool', confidence: 'high' }] }, 'agent_a'),
+    e(7, 'message.sent', { message_id: 'm2', kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage: 'landed', paths: ['src/y.ts'], text: 'y' }, 'harness'),
+    e(8, 'message.delivered', { message_id: 'm2', delivery: 'new_turn', delivered_at: at(8) }),
+    e(9, 'claim.observed', { task_id: 'T-1', session_id: 's1', paths: ['src/gen.ts', 'src/gen2.ts'], source: 'diff' }),
+    e(9, 'claim.observed', { task_id: 'T-1', session_id: 's1', paths: ['src/x.ts'], source: 'hook' }),
+    e(10, 'usage.reported', { session_id: 's1', input: 1, output: 1, tool_calls: { Read: 3 }, denied_calls: 1, hook_coverage: { observed: 5, missed: 1, rejected: 2 }, read_coverage: { read_tool: 3, shell_heuristic: 1, unparsed_shell: 2 } }),
+    e(11, 'task.blocked', { task_id: 'T-1', reason: 'sync_conflict', paths: ['src/x.ts'] }),
+    e(12, 'task.unblocked', { task_id: 'T-1', by: 'human_a' }),
+    e(13, 'task.completed', { task_id: 'T-1', by: 'agent_a' }, 'agent_a'),
+    e(14, 'land.requested', { land_id: 'l1', task_id: 'T-1', device_id: 'd', requested_by: 'human_a', run_tests: true }),
+    e(15, 'land.failed', { land_id: 'l1', task_id: 'T-1', reason: 'cancelled' }),
+    e(16, 'land.requested', { land_id: 'l2', task_id: 'T-1', device_id: 'd', requested_by: 'human_a', run_tests: true }),
+    e(17, 'land.completed', { land_id: 'l2', task_id: 'T-1', new_base_sha: 'b', changed_paths: ['src/x.ts'] }),
+  ]) view.apply(ev);
+  const m = computeMetrics(view);
+  assert.deepEqual(m.integrationActions, { total: 4, byKind: { 'task.unblocked': 1, 'land.requested': 2, 'land.cancelled': 1 } });
+  assert.equal(m.interventions.total, 0, 'integration actions are not M5 interventions');
+  assert.deepEqual(m.coverage, { hooks: { observed: 5, missed: 1, rejected: 2 }, reads: { read_tool: 3, shell_heuristic: 1, unparsed_shell: 2 }, editsOnlyByDiff: 2 });
+  assert.deepEqual(m.reReads, { notices: 2, reReadAfter: 1 }, 'm1 was followed by a re-read of src/x.ts; m2 named src/y.ts, never read again');
+  const text = renderMetrics(m);
+  assert.match(text, /M5c human integration actions: 4 \(task\.unblocked 1, land\.requested 2, land\.cancelled 1\)/);
+  assert.match(text, /H-03 capture: hooks saw 5 tool call\(s\), missed 1, never reached 2; edits found only by a worktree diff 2/);
+  assert.match(text, /H-04 re-reads: after 1 of 2 delivered notice\(s\), the reader read a named file again/);
+});
