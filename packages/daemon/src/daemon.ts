@@ -74,9 +74,10 @@ const MAX_REPORT_PATHS = 5000;
 /**
  * What a file name that reaches another agent's notice may not contain: control characters (C0 and C1),
  * format characters such as bidi overrides, and line and paragraph separators. Any of them could forge a
- * line of the notice or hide text in it (D-25, D-99).
+ * line of the notice or hide text in it (D-25, D-99). Nor `<` or `>`: a notice may arrive inside a
+ * `<system-reminder>`, which a name could close early (D-100).
  */
-const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>]/u;
 /** Nobody approved a setup or test command in time (D-52); a land that hits it fails as `not_approved`. */
 export class ApprovalTimeout extends Error {}
 export type DaemonOptions = {
@@ -732,6 +733,8 @@ export class Daemon {
       log: this.vendorLog(sessionId),
       // The Stop gate keeps the agent going for its notices only while the task is in progress (D-100).
       taskOpen: () => this.views.get(ws.projectId)?.tasks.get(ws.taskId)?.status === 'in_progress',
+      // A landed change waits for this turn's end (D-53): the gate lets the turn end so the sync runs first.
+      turnEndPending: () => this.running.get(ws.taskId)?.sync.pending === true,
       // Reads stay in the worktree (D-61, D-98): the home directory, harness state and main checkout are denied.
       readPolicy: readPolicyFor({
         home: os.homedir(), harnessRoot: this.home.root, repo: project.repo, worktree: ws.worktree, gitCommonDir: commonDir,
