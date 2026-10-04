@@ -358,7 +358,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
       - That's per-task sync, not a merge train: GitHub, not the harness, decides merge order and merges.
     - After every merge, the harness verifies that the base contains each PR's diff (F-53).
   - *Why:* the merge queue is limited by plan (F-50). The review caught that a harness-run "land train" would quietly pull forward the integration engine that S1 and S3 deferred (D-06).
-  - *Status:* Locked (review-derived).
+  - *Status:* Locked (review-derived). Step 4 is superseded in 0B by D-96: a failed land leaves the task `done`.
 
 ### Security
 - **D-32 The local daemon is the execution and security boundary, and the root of trust.**
@@ -1019,6 +1019,11 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - A timed-out wait also reaches the task's human as the server's `task_blocked` (D-95).
   - **Tests:** `test/waits.integration.test.ts` (the real CLI: an answer arrives; a wait already over; a timeout and the human's `task_blocked`), and the tool and its text in `packages/daemon/test/tools.test.ts`.
   - *Source:* 0B item 4, D-95, S10. *Status:* Proposal.
+- **D-96 A land that fails leaves the task `done` in 0B (supersedes D-51's step 4 until Phase 1; D-93).**
+  - **D-51 said:** on red tests or a conflict, the task goes back to `in_progress` with the failure attached.
+  - **0B instead:** the task stays `done`. The failure is in the log (`land.failed`, with its reason), the task's leases keep renewing (D-97), and the human fixes the branch and lands again, or abandons the task. That's what D-93 built.
+  - **Why:** sending a task back to its agent needs the agent's session restarted with its context, which is Phase 1 resume (D-40).
+  - *Source:* D-93 as built; the approved parallel plan (S10). *Status:* Proposal; D-51's step 4 applies again once resume exists.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
