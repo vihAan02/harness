@@ -11,7 +11,7 @@ import { CommandError, type Actor, type Caller, type Handler } from './handler.t
 import { createAgent } from './agents.ts';
 import { reportSetup, reportStopGate, reportWorktree } from './reports.ts';
 import { reportSession } from './sessions.ts';
-import { abandonTask, assignTask, completeTask, createTask } from './tasks.ts';
+import { abandonTask, reopenTask, assignTask, completeTask, createTask } from './tasks.ts';
 import { ackMessage, sendMessage } from './messages.ts';
 import { observeClaims } from './claims.ts';
 import { addReadset } from './readsets.ts';
@@ -34,6 +34,7 @@ const HANDLERS: Record<string, Handler> = {
   'task.assign': assignTask,
   'task.complete': completeTask,
   'task.abandon': abandonTask,
+  'task.reopen': reopenTask,
   'message.send': sendMessage,
   'claim.observe': observeClaims,
   'message.ack': ackMessage,

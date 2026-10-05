@@ -99,6 +99,9 @@ export class ProjectView {
         this.patchTask(s('task_id'), { status: 'done', completedAt: e.at, ...(d.summary ? { summary: s('summary') } : {}) });
         this.claims.delete(s('task_id'));
         break;
+      case 'task.reopened': // back to its agent after it was done, with its human's message (D-107)
+        this.patchTask(s('task_id'), { status: 'in_progress', completedAt: undefined });
+        break;
       case 'task.abandoned':
         this.patchTask(s('task_id'), { status: 'abandoned', completedAt: e.at });
         this.claims.delete(s('task_id'));

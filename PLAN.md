@@ -1139,6 +1139,18 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 
     Each has a negative control: the old `done` rule, no sync before telling, an ungated `report_done`, and a `wait_for` that ignores an unmerged land. Also unit tests in server `waits.test.ts` and daemon `tools.test.ts`.
   - *Source:* the first real-model run (F-113); D-53, D-95, D-101. *Status:* Proposal.
+- **D-107 A human can send a done task back to its agent: `harness task reopen` (refines D-96; 0B). Found by the A/B rehearsal (B11), 2026-10-05. Needs an owner's decision.**
+  - **The problem:** under D-96 a failed land leaves the task `done`, and the human fixes the branch. But the A/B playbook (validation.md §9, D-121) has the coordinator ask the agent to fix a failed integration, never write code. In the baseline the agent's terminal is still open, so that works. In the harness arm the agent's session ended when it reported done, so the playbook couldn't be followed: a real SC-1 rehearsal's first land failed type-checking, and the run could only end there.
+  - **What it does:** `task.reopen { task_id, text }`, for humans, on a `done` task with no land in flight and its agent free:
+    - the task goes back to `in_progress`, and its scope is claimed again;
+    - harnessd starts a new session in the task's worktree, on its branch, which has the earlier work;
+    - the session's first message is the task plus the human's message;
+    - the agent reports done again, and the human lands again.
+
+    A reopen counts as a human intervention (M5), like the baseline coordinator's message to its agent.
+  - **What it isn't:** resume. The old conversation isn't restored (that's still Phase 1, D-40), so the message must say what to fix. D-51's "the task goes back to `in_progress` with the failure attached" happens only when a human asks for it, never automatically.
+  - **The alternative, if owners decline:** the protocol, not the product, changes. In both arms the coordinator fixes failed integrations by hand, which breaks §9's "never write code" rule in both arms.
+  - *Source:* the B11 rehearsal on SC-1 (2026-10-05), D-96, D-121, S12. *Status:* **Proposal, needs an owner's decision before the counted runs.**
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
