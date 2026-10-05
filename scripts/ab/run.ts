@@ -1,19 +1,30 @@
 #!/usr/bin/env node
-// The A/B runner, harness arm (B9a; docs/validation.md §3, §8). Each run starts from a fresh clone of the
-// benchmark repo at the scenario's tag (checked against the card's base_sha), assigns both of the scenario's
-// tasks at once from its cards, and ends when both tasks have landed, at the time cap, or when the
-// coordinator stops it (Ctrl-C). The scenario's setup and test commands are approved before the run, so the
-// coordinator normally approves nothing during it; if a manifest changes mid-run, the approval is asked for
-// and recorded (M5c).
+// The A/B runner, both arms (B9a, B9b; docs/validation.md §3, §8, §9). Each run starts from a fresh clone of
+// the benchmark repo at the scenario's tag (checked against the card's base_sha), assigns both of the
+// scenario's tasks at once from its cards, and ends when both tasks are integrated, at the time cap, or when
+// the coordinator stops it (Ctrl-C, or `stop` in the console).
+// - Harness arm: harnessd runs both agents; the coordinator lands each task with `harness land`. The setup
+//   and test commands are approved before the run, so the coordinator normally approves nothing during it; if
+//   a manifest changes mid-run, the approval is asked for and recorded (M5c).
+// - Baseline arm (baseline-arm.ts): two interactive Claude Code sessions with the same policy and none of the
+//   treatment, one per terminal; the coordinator relays by hand and integrates with the console's `merge`.
+// While a run goes, the console takes Enter (the M10 timer), `note <text>`, `stop`, and in the baseline
+// `merge <agent>` and `sync <agent>` (validation.md §9).
 //
-//   node scripts/ab/run.ts --scenario SC-1 --phrasing 2 --real --provider deepseek     one counted run
-//   node scripts/ab/run.ts --scenario SC-0 --dry --auto-land                          the pipeline check: free
+//   node scripts/ab/run.ts --arm harness --scenario SC-1 --phrasing 2 --real --provider openrouter     one counted run
+//   node scripts/ab/run.ts --arm baseline --scenario SC-1 --phrasing 2 --real --provider openrouter    its pair
+//   node scripts/ab/run.ts --arm baseline --scenario SC-0 --dry --auto-land                           the pipeline check: free
 //
+//   --arm a        harness (default) or baseline
+//   --launch l     baseline only: terminal (two Terminal.app windows; default), print (the two commands, to
+//                  start by hand), or headless (the runner's own pseudo-terminals: dry runs and rehearsals)
+
 //   --phrasing n   the cards' nth phrasing (1-3). Paired run n uses phrasing n in both arms, so --real needs it.
 //                  With --repeat k, run i uses phrasing n+i-1.
 //   --repeat k     k runs, one after another (default 1)
-//   --auto-land    the runner lands each task once it's done (dry runs and rehearsals). Otherwise the
-//                  coordinator lands with `harness land` (the HARNESS_HOME to use is printed); that counts as M5c
+//   --auto-land    the runner integrates each task once it's done (dry runs and rehearsals). Otherwise the
+//                  coordinator lands with `harness land` (the HARNESS_HOME to use is printed), or in the
+//                  baseline uses `merge`; either counts as M5c
 //   --dry          scripted stand-in agents that make a trivial change and report done: they check the
 //                  runner, not the task. Counted runs use --real
 //   --cap-min m    the time cap (default 60);  --budget-usd d  per session (default 2)
@@ -25,9 +36,10 @@
 //                                all the grader gets. Hand it over packed once, in shuffled order (B11), never
 //                                as the live directory, whose own times still tell when each run was saved.
 //   <out>/grade/<run-id>.json    { run_id, scenario }
-//   <out>/record/<run-id>/       meta.json (arm, scenario, phrasing, outcome), events.jsonl and the metrics
-//                                (rebuilt from the database after the stop), timeline.jsonl, run.log: the
-//                                coordinator's side, never the grader's
+//   <out>/record/<run-id>/       meta.json (arm, scenario, phrasing, outcome), summary.json (the measurements
+//                                both arms share, scripts/ab/summary.ts), diffs/, transcripts/, timeline.jsonl,
+//                                run.log; in the harness arm also events.jsonl and the metrics (rebuilt from
+//                                the database after the stop): the coordinator's side, never the grader's
 // Needs Postgres (README "Running locally") and network for the clone and the setup command.
 import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -46,19 +58,24 @@ import { createPool, DEFAULT_DATABASE_URL, migrate } from '../../packages/server
 import { readEvents } from '../../packages/server/src/events.ts';
 import { startServer } from '../../packages/server/src/server.ts';
 import { DUMMY_KEY, startMock } from '../../packages/adapters/test/mock-api.ts';
+import { agentConfigDir } from '../../packages/daemon/src/resources.ts';
+import { runBaseline } from './baseline-arm.ts';
+import { CoordinatorConsole } from './console.ts';
 import { Recorder } from './recorder.ts';
+import { copyTranscripts, harnessSummary, writeDiffs } from './summarize.ts';
+import type { RunSummary } from './summary.ts';
 
 export type CardTask = { key: string; agent: string; title: string; scope: string[]; phrasings: string[] };
 export type Card = { scenario: string; name: string; repo: string; tag: string; base_sha?: string; tasks: CardTask[] };
 
-const USAGE = 'usage: node scripts/ab/run.ts --scenario SC-n (--real --provider <name> --phrasing n | --dry) [--repeat k] [--auto-land] [--cap-min m] [--budget-usd d] [--out dir] [--bench path|url] [--providers file] [--keep]';
+const USAGE = 'usage: node scripts/ab/run.ts [--arm harness|baseline] [--launch terminal|print|headless] --scenario SC-n (--real --provider <name> --phrasing n | --dry) [--repeat k] [--auto-land] [--cap-min m] [--budget-usd d] [--out dir] [--bench path|url] [--providers file] [--keep]';
 const fail = (msg: string): never => { console.error(`${msg}\n${USAGE}`); process.exit(2); };
 let values: Record<string, string | boolean | undefined> = {};
 try {
   ({ values } = parseArgs({
     strict: true, allowPositionals: false,
     options: {
-      scenario: { type: 'string' }, phrasing: { type: 'string' }, repeat: { type: 'string' }, 'cap-min': { type: 'string' }, 'budget-usd': { type: 'string' },
+      arm: { type: 'string' }, launch: { type: 'string' }, scenario: { type: 'string' }, phrasing: { type: 'string' }, repeat: { type: 'string' }, 'cap-min': { type: 'string' }, 'budget-usd': { type: 'string' },
       out: { type: 'string' }, bench: { type: 'string' }, provider: { type: 'string' }, providers: { type: 'string' },
       dry: { type: 'boolean' }, real: { type: 'boolean' }, 'auto-land': { type: 'boolean' }, keep: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
@@ -92,6 +109,14 @@ if (![CAP_MIN, BUDGET].every((n) => Number.isFinite(n) && n > 0)) fail('--cap-mi
 const OUT = path.resolve(str('out') ?? path.join(import.meta.dirname, '../../runs'));
 const BENCH = str('bench') ?? CARD.repo;
 const PROVIDER = str('provider');
+const ARM = str('arm') ?? 'harness';
+if (ARM !== 'harness' && ARM !== 'baseline') fail(`--arm is harness or baseline, not ${ARM}`);
+// The scripted model has no terminal to type into: a dry baseline runs headless.
+const LAUNCH = str('launch') ?? (DRY ? 'headless' : 'terminal');
+if (!['terminal', 'print', 'headless'].includes(LAUNCH)) fail(`--launch is terminal, print or headless, not ${LAUNCH}`);
+if (str('launch') && ARM !== 'baseline') fail('--launch is for the baseline arm');
+if (ARM === 'baseline' && DRY && LAUNCH !== 'headless') fail('a dry baseline run is headless (the scripted model)');
+if (ARM === 'baseline' && LAUNCH === 'headless' && !AUTO_LAND) fail('a headless baseline run has no coordinator at the terminals: add --auto-land');
 const PROVIDERS_FILE = str('providers') ?? path.resolve(import.meta.dirname, '../../docs/examples/providers.toml');
 if (PROVIDER && !REAL) fail('--provider needs --real');
 
@@ -100,12 +125,15 @@ const PROJECT = 'prj_ab';
 const FIXED_TIME = new Date('2000-01-01T00:00:00Z');
 const step = (tool: string, input: unknown) => `#STEP ${tool} ${JSON.stringify(input)}`;
 
-/** A scripted stand-in for an agent: it writes one note in its worktree and reports done. It checks the runner, not the task. */
-function dryProgram(task: CardTask, worktree: string): string {
+/**
+ * A scripted stand-in for an agent: it writes one note in its worktree and says it's done (in the harness
+ * arm, with `report_done`; the baseline has no harness tools). It checks the runner, not the task.
+ */
+function dryProgram(task: CardTask, worktree: string, harnessTools = true): string {
   return [
     `${task.title}. (Dry run: a scripted stand-in that checks the A/B runner, not the task.)`,
     step('Write', { file_path: `${worktree}/dry-run/${task.key}.md`, content: `Dry run of ${CARD.scenario} ${task.key}.\n` }),
-    step('mcp__harness__report_done', { summary: 'dry run' }),
+    ...(harnessTools ? [step('mcp__harness__report_done', { summary: 'dry run' })] : []),
     '#STEP TEXT Done.',
   ].join('\n');
 }
@@ -151,6 +179,35 @@ async function logFromDatabase(pool: ReturnType<typeof createPool>): Promise<Eve
   }
 }
 
+/** The run's harness home and local config: harnessd's in the harness arm, the baseline launcher's in the other (the same provider and policy). */
+function writeHome(root: string, serverUrl: string, token: string, repo: string): { home: Home; config: ReturnType<typeof parseConfig> } {
+  const home = harnessHome(path.join(root, 'harness-home'));
+  fs.mkdirSync(home.root, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(home.token, token, { mode: 0o600 });
+  const agents: Record<string, unknown> = !REAL ? {} : PROVIDER ? {
+    agents: { provider: PROVIDER, max_budget_usd: BUDGET },
+    providers: { [PROVIDER]: ((parseToml(fs.readFileSync(PROVIDERS_FILE, 'utf8')) as { providers?: Record<string, unknown> }).providers ?? {})[PROVIDER]
+      ?? fail(`no [providers.${PROVIDER}] in ${PROVIDERS_FILE}`) },
+  } : { agents: { max_budget_usd: BUDGET } };
+  const rawConfig = { device_id: 'dev_ab', principal: 'human_coordinator', server_url: serverUrl, limits: { port_range: [3300, 3399] }, ...agents, projects: [{ id: PROJECT, repo }] };
+  fs.writeFileSync(home.config, toToml(rawConfig));
+  return { home, config: parseConfig(rawConfig, token) };
+}
+
+/**
+ * The grader's copy: main's tree and nothing else (no .git, no branch names, no authors), every file dated
+ * FIXED_TIME so the tree doesn't tell when the run ended (and with the schedule, which arm it was).
+ */
+function saveGradeTree(repo: string, mainSha: string, runId: string): void {
+  const gradeDir = path.join(OUT, 'grade', runId);
+  fs.mkdirSync(gradeDir, { recursive: true });
+  execFileSync('tar', ['-x', '-C', gradeDir], { input: execFileSync('git', ['-C', repo, 'archive', '--format=tar', '--mtime=2000-01-01 00:00:00 +0000', mainSha], { maxBuffer: 512 * 1024 * 1024 }) });
+  fixTimes(gradeDir);
+  const gradeMeta = path.join(OUT, 'grade', `${runId}.json`);
+  fs.writeFileSync(gradeMeta, `${JSON.stringify({ run_id: runId, scenario: CARD.scenario }, null, 2)}\n`);
+  fs.utimesSync(gradeMeta, FIXED_TIME, FIXED_TIME);
+}
+
 let stopRequested = false;
 process.on('SIGINT', () => {
   if (stopRequested) process.exit(130);
@@ -166,7 +223,7 @@ async function runOnce(n: number): Promise<string> {
   const cleanups: (() => Promise<void> | void)[] = [];
   const startedAt = new Date().toISOString();
   let outcome = 'error';
-  rec.log(`run ${runId} (${n} of ${REPEAT}): ${CARD.scenario} ${CARD.name}, phrasing ${phrasing}, harness arm${DRY ? ', dry' : ''}${AUTO_LAND ? ', auto-land' : ''}`);
+  rec.log(`run ${runId} (${n} of ${REPEAT}): ${CARD.scenario} ${CARD.name}, phrasing ${phrasing}, ${ARM} arm${DRY ? ', dry' : ''}${AUTO_LAND ? ', auto-land' : ''}`);
   try {
     // The scenario's base: a fresh clone at its tag, on a local main, with no remote to fetch from.
     const repo = path.join(root, 'repo');
@@ -177,6 +234,48 @@ async function runOnce(n: number): Promise<string> {
     const baseSha = git('rev-parse', 'HEAD');
     if (CARD.base_sha && baseSha !== CARD.base_sha) throw new Error(`${CARD.tag} is at ${baseSha}, but the card pins ${CARD.base_sha}: the scenario moved`);
     rec.mark('cloned', { tag: CARD.tag, base_sha: baseSha });
+    // The coordinator's console (validation.md §9): the M10 timer, notes and `stop` in both arms, at a terminal.
+    const con = process.stdin.isTTY ? new CoordinatorConsole(rec) : null;
+    cleanups.push(() => con?.close());
+
+    if (ARM === 'baseline') {
+      // No server and no harnessd: the baseline launcher reads the same local config (provider, policy, ports).
+      const { home, config } = writeHome(root, 'wss://example.invalid', randomBytes(32).toString('hex'), repo);
+      let provider: ResolvedProvider | null = null;
+      let mockUrl: string | null = null;
+      if (REAL) {
+        provider = resolveProvider(config, { ...process.env, HARNESS_PROVIDER: PROVIDER ?? '' });
+      } else {
+        const mock = await startMock();
+        cleanups.push(() => mock.close());
+        mockUrl = mock.url;
+      }
+      const model = provider ? `${provider.model?.id ?? 'vendor default'}${provider.name ? ` (${provider.name})` : ''}` : 'scripted';
+      con?.start();
+      const r = await runBaseline({
+        scenario: CARD.scenario, tasks: CARD.tasks, phrasing, capMs: CAP_MIN * 60_000, rec, root, repo, home, config, provider, mockUrl,
+        launch: LAUNCH as 'terminal' | 'print' | 'headless', autoIntegrate: AUTO_LAND,
+        prompt: (t, wt) => (DRY ? dryProgram(t, wt, false) : t.phrasings[phrasing - 1]!),
+        stopRequested: () => stopRequested, console: con, harnessRoot: path.resolve(import.meta.dirname, '../..'),
+      });
+      outcome = r.outcome;
+      await con?.close();
+      const mainSha = r.summary.main_sha;
+      rec.mark('ended', { outcome, main_sha: mainSha });
+      writeDiffs(rec.dir, repo, baseSha, mainSha, r.commits);
+      copyTranscripts(rec.dir, r.agents);
+      const endedAt = new Date().toISOString();
+      const summary: RunSummary = { ...r.summary, run_id: runId, phrasing, cap_ms: CAP_MIN * 60_000, started_at: startedAt, ended_at: endedAt, void: null };
+      rec.writeJson('summary.json', summary);
+      saveGradeTree(repo, mainSha, runId);
+      rec.writeJson('meta.json', {
+        run_id: runId, arm: 'baseline', scenario: CARD.scenario, phrasing, dry: DRY, auto_land: AUTO_LAND, launch: LAUNCH, model, cap_min: CAP_MIN,
+        bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: endedAt, outcome,
+        tasks: summary.tasks.map((t) => ({ ...t, title: CARD.tasks.find((c) => c.key === t.key)?.title })),
+      });
+      rec.log(`saved: grade/${runId}/ (for the grader) and record/${runId}/ (yours)`);
+      return outcome;
+    }
 
     const databaseUrl = process.env.HARNESS_DATABASE_URL ?? DEFAULT_DATABASE_URL;
     const schema = `ab_${randomBytes(6).toString('hex')}`;
@@ -194,17 +293,7 @@ async function runOnce(n: number): Promise<string> {
     const server = await startServer({ pool, databaseUrl, schema, localToken: token, port: 0 });
     cleanups.push(() => server.close());
 
-    const home = harnessHome(path.join(root, 'harness-home'));
-    fs.mkdirSync(home.root, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(home.token, token, { mode: 0o600 });
-    const agents: Record<string, unknown> = !REAL ? {} : PROVIDER ? {
-      agents: { provider: PROVIDER, max_budget_usd: BUDGET },
-      providers: { [PROVIDER]: ((parseToml(fs.readFileSync(PROVIDERS_FILE, 'utf8')) as { providers?: Record<string, unknown> }).providers ?? {})[PROVIDER]
-        ?? fail(`no [providers.${PROVIDER}] in ${PROVIDERS_FILE}`) },
-    } : { agents: { max_budget_usd: BUDGET } };
-    const rawConfig = { device_id: 'dev_ab', principal: 'human_coordinator', server_url: server.url, limits: { port_range: [3300, 3399] }, ...agents, projects: [{ id: PROJECT, repo }] };
-    fs.writeFileSync(home.config, toToml(rawConfig));
-    const config = parseConfig(rawConfig, token);
+    const { home, config } = writeHome(root, server.url, token, repo);
     let provider: ResolvedProvider | null = null;
     let mockUrl: string | null = null;
     if (REAL) {
@@ -245,6 +334,7 @@ async function runOnce(n: number): Promise<string> {
       rec.mark('assigned', { task: t.key, task_id: id, agent: `agent/${t.agent}` });
       rec.log(`assigned ${id} "${t.title}" to agent/${t.agent}`);
     }
+    con?.start();
     if (!AUTO_LAND) {
       rec.log(`coordinator: in another terminal, export HARNESS_HOME=${home.root}`);
       rec.log('  then `npx harness status`, and `npx harness land <task>` once a task is done. Ctrl-C here ends the run.');
@@ -259,7 +349,7 @@ async function runOnce(n: number): Promise<string> {
     for (;;) {
       const finished = [...ids.values()].map((id) => (has('land.completed', id) ? 'landed' : has('task.abandoned', id) ? 'abandoned' : null));
       if (finished.every((f) => f !== null)) { outcome = finished.every((f) => f === 'landed') ? 'integrated' : 'abandoned'; break; }
-      if (stopRequested) { outcome = 'stopped'; break; }
+      if (stopRequested || con?.stopRequested) { outcome = 'stopped'; break; }
       if (Date.now() > deadline) { outcome = 'capped'; break; }
       for (const r of approvals.pending()) {
         if (pendingSeen.has(r.id)) continue;
@@ -313,15 +403,17 @@ async function runOnce(n: number): Promise<string> {
     const metrics = computeMetrics(record);
     rec.writeJson('metrics.json', metrics);
     fs.writeFileSync(path.join(rec.dir, 'metrics.txt'), `${renderMetrics(metrics)}\n`);
-    // The grader's copy: main's tree and nothing else (no .git, no branch names, no authors), every file dated
-    // FIXED_TIME so the tree doesn't tell when the run ended (and with the schedule, which arm it was).
-    const gradeDir = path.join(OUT, 'grade', runId);
-    fs.mkdirSync(gradeDir, { recursive: true });
-    execFileSync('tar', ['-x', '-C', gradeDir], { input: execFileSync('git', ['-C', repo, 'archive', '--format=tar', '--mtime=2000-01-01 00:00:00 +0000', mainSha], { maxBuffer: 512 * 1024 * 1024 }) });
-    fixTimes(gradeDir);
-    const gradeMeta = path.join(OUT, 'grade', `${runId}.json`);
-    fs.writeFileSync(gradeMeta, `${JSON.stringify({ run_id: runId, scenario: CARD.scenario }, null, 2)}\n`);
-    fs.utimesSync(gradeMeta, FIXED_TIME, FIXED_TIME);
+    // The measurements both arms share (validation.md §9), and what the judge reads beside them.
+    await con?.close();
+    const summary = harnessSummary({
+      runId, scenario: CARD.scenario, phrasing, outcome: outcome as RunSummary['outcome'], capMs: CAP_MIN * 60_000, startedAt, endedAt: new Date().toISOString(),
+      view: record, metrics, ids, runnerCancels: cancelledAtEnd.length, m10Ms: con?.m10Ms() ?? 0, repo, baseSha, mainSha,
+      tasks: CARD.tasks.map((t) => ({ key: t.key, agent: t.agent })),
+    });
+    rec.writeJson('summary.json', summary);
+    writeDiffs(rec.dir, repo, baseSha, mainSha, CARD.tasks.map((t) => ({ key: t.key, commit: metrics.tasks.find((x) => x.id === ids.get(t.key))?.commit ?? null })));
+    copyTranscripts(rec.dir, [...record.agents.values()].map((a) => ({ name: a.name, configDir: agentConfigDir(home, a.id) })));
+    saveGradeTree(repo, mainSha, runId);
     rec.writeJson('meta.json', {
       run_id: runId, arm: 'harness', scenario: CARD.scenario, phrasing, dry: DRY, auto_land: AUTO_LAND, model, cap_min: CAP_MIN, budget_usd: BUDGET,
       bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: new Date().toISOString(), outcome,
