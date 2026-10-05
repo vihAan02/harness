@@ -338,7 +338,7 @@ Never because of a result. The void run stays in the record, and the results fil
 The relay rule doesn't apply: the harness delivers what changed.
 
 **The baseline's chat channel:**
-- **The agents' terminals are the channel.** Each message you send an agent after its card is one human→agent message (M5, M7), timestamped by the terminal recorder (B9b).
+- **The agents' terminals are the channel.** Each message you send an agent after its card is one human→agent message (M5, M7). The runner counts them from each agent's Claude Code transcript, which records every message submitted, with its time, and every interrupt (B9b).
 - **The runner's console** takes notes and the commands above. It never reaches an agent.
 
 ### Rubric (fixed before the first run)
