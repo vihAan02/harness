@@ -117,7 +117,13 @@ export function checkSummary(v: unknown, where = 'summary.json'): RunSummary {
   const m8 = s.m8 as Record<string, unknown>;
   if (!isObj(m8) || !['input', 'output', 'cache_read', 'cache_creation'].every((k) => count(m8[k])) || !nonNeg(m8.cost_usd)) bad('m8');
   if (s.surfaced !== null && (!isObj(s.surfaced) || !count(s.surfaced.planted) || !count(s.surfaced.surfaced) || (s.surfaced.surfaced as number) > (s.surfaced.planted as number))) bad('surfaced (whole numbers, surfaced ≤ planted)');
-  if (!Array.isArray(s.tasks)) bad('tasks');
+  if (!Array.isArray(s.tasks) || s.tasks.length < 1) bad('tasks');
+  (s.tasks as unknown[]).forEach((t, i) => {
+    const x = t as Record<string, unknown>;
+    if (!isObj(t) || typeof x.key !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(x.key)) bad(`tasks[${i}].key (a short name: letters, digits, _ or -)`);
+    if (typeof x.agent !== 'string' || typeof x.branch !== 'string') bad(`tasks[${i}].agent or .branch`);
+    if (x.integrated_at !== null && typeof x.integrated_at !== 'string') bad(`tasks[${i}].integrated_at`);
+  });
   return v as RunSummary;
 }
 
