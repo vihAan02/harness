@@ -3,8 +3,14 @@
 // side, grades.json, comes back separately and is joined by run id.
 //
 //   record/<run-id>/summary.json         RunSummary
-//   record/<run-id>/diffs/<task>.patch   `git diff -U0 <base> <task's final branch>`: M3's overlapping hunks
+//   record/<run-id>/diffs/<task>.patch   `git diff -U0 <base> <task's final commit>`: what the task did in the end (the judge)
+//   record/<run-id>/diffs/<task>.independent.patch
+//                                        the same, at its last commit before it first merged main in (a sync): what
+//                                        it changed before it could see the other task's work. M3's overlapping
+//                                        hunks compare these, so an edit made on top of the other's synced-in change
+//                                        isn't counted as a collision (validation.md §9)
 //   record/<run-id>/diffs/main.patch     `git diff <base> <main as the run ended>`: the judge's view of the result
+//   All patches: `git diff --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/`, task patches with -U0.
 //   record/<run-id>/transcripts/<agent>.jsonl   the agent's Claude Code transcript(s), concatenated: M6, M8
 //   record/<run-id>/judge.json           JudgeResult, written by scripts/ab/judge.ts
 
@@ -33,6 +39,8 @@ export type RunSummary = {
   m1_ms: number | null;
   /** M3, the integration half: textual conflicts when a task was integrated (lands, or the runner's `merge`). */
   m3_conflicts: number;
+  /** A diagnostic, not M3: conflicts when main was merged into a task's branch mid-run (harnessd's sync, the baseline's `sync`). */
+  sync_conflicts: number;
   /** M4: commits to main after the first integration, and the time from it until main is green with both tasks. */
   m4: { commits_after_first: number; ms_to_green: number | null };
   /** M5: human interventions (messages and actions to agents after their cards). */
@@ -87,6 +95,8 @@ export type Grades = { v: 1; runs: Record<string, Grade> };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const nonNeg = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+/** A count: a whole number, not negative. */
+const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
 
 /** Throws on a summary.json that isn't a RunSummary, naming the first bad field. */
 export function checkSummary(v: unknown, where = 'summary.json'): RunSummary {
@@ -96,20 +106,21 @@ export function checkSummary(v: unknown, where = 'summary.json'): RunSummary {
   for (const f of ['run_id', 'scenario', 'outcome', 'started_at', 'ended_at', 'base_sha', 'main_sha']) if (typeof s[f] !== 'string') bad(f);
   if (!ARMS.includes(s.arm as Arm)) bad('arm');
   if (!(SCENARIOS as readonly string[]).includes(s.scenario as string)) bad('scenario');
-  for (const f of ['phrasing', 'cap_ms', 'm3_conflicts', 'm5', 'm5c', 'm9a', 'm10_ms']) if (!nonNeg(s[f])) bad(f);
+  for (const f of ['cap_ms', 'm10_ms']) if (!nonNeg(s[f])) bad(f);
+  for (const f of ['phrasing', 'm3_conflicts', 'sync_conflicts', 'm5', 'm5c', 'm9a']) if (!count(s[f])) bad(f);
   if (s.m1_ms !== null && !nonNeg(s.m1_ms)) bad('m1_ms');
-  if (s.m5b !== null && !nonNeg(s.m5b)) bad('m5b');
-  if (s.void !== null && typeof s.void !== 'string') bad('void');
+  if (s.m5b !== null && !count(s.m5b)) bad('m5b');
+  if (s.void !== null && (typeof s.void !== 'string' || !s.void.trim())) bad('void (null, or the reason)');
   if (!Array.isArray(s.models) || !s.models.every((m) => typeof m === 'string')) bad('models');
-  if (!isObj(s.m4) || !nonNeg(s.m4.commits_after_first) || (s.m4.ms_to_green !== null && !nonNeg(s.m4.ms_to_green))) bad('m4');
-  if (!isObj(s.m7) || !Object.values(s.m7).every(nonNeg)) bad('m7');
-  if (!isObj(s.m8) || !['input', 'output', 'cache_read', 'cache_creation', 'cost_usd'].every((k) => nonNeg((s.m8 as Record<string, unknown>)[k]))) bad('m8');
-  if (s.surfaced !== null && (!isObj(s.surfaced) || !nonNeg(s.surfaced.planted) || !nonNeg(s.surfaced.surfaced))) bad('surfaced');
+  if (!isObj(s.m4) || !count(s.m4.commits_after_first) || (s.m4.ms_to_green !== null && !nonNeg(s.m4.ms_to_green))) bad('m4');
+  if (!isObj(s.m7) || !Object.values(s.m7).every(count)) bad('m7');
+  const m8 = s.m8 as Record<string, unknown>;
+  if (!isObj(m8) || !['input', 'output', 'cache_read', 'cache_creation'].every((k) => count(m8[k])) || !nonNeg(m8.cost_usd)) bad('m8');
+  if (s.surfaced !== null && (!isObj(s.surfaced) || !count(s.surfaced.planted) || !count(s.surfaced.surfaced) || (s.surfaced.surfaced as number) > (s.surfaced.planted as number))) bad('surfaced (whole numbers, surfaced ≤ planted)');
   if (!Array.isArray(s.tasks)) bad('tasks');
   return v as RunSummary;
 }
 
-const count = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
 
 /** Throws on M2 and M6 answers that don't match JudgeResult's m2 and m6, naming the first bad field. */
 export function checkJudgeParts(v: unknown, where: string, parts: readonly ('m2' | 'm6')[] = ['m2', 'm6']): Pick<JudgeResult, 'm2' | 'm6'> {
