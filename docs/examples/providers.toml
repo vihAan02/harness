@@ -3,13 +3,55 @@
 # - Nothing here is a secret: `key_env` names the variable in harnessd's environment that holds the
 #   key. Export it in the shell that runs harnessd; never put a key in this file or in the repo.
 # - Pick one with `[agents] provider = "<name>"` in config.toml, or `HARNESS_PROVIDER=<name>`.
-# - The demos read this file: `npm run demo -- --real --provider deepseek`.
-# - Prices are USD per million tokens, used for metric M8 and the session budget. Checked 2026-10-03
-#   (F-73, F-75, F-76, F-77); they change, so re-check them.
+# - The demos read this file: `npm run demo:0b -- --real --provider openrouter`. Check a key first with
+#   `node scripts/provider-check.ts --provider openrouter` (about $0.02).
+# - Prices are USD per million tokens, used for metric M8 and the session budget. Checked 2026-10-04
+#   (F-73, F-75, F-76, F-77, F-111); they change, so re-check them.
 # - An A/B run uses one provider and model for both arms, never a router that picks models (D-87).
 
-# DeepSeek V4.1-Flash: the cheap default for development and benchmarks (F-72, F-73). Prepaid: top up
-# at https://platform.deepseek.com/top_up. Key: https://platform.deepseek.com/api_keys
+# OpenRouter, pinned to DeepSeek V4.1-Flash served by Parasail at fp8: the default for development,
+# smoke tests and real-model runs (D-104, F-111, F-112, F-113). `provider.only` keeps every request on one
+# provider: 30 serve this model on OpenRouter, at different precisions (F-111). DeepSeek's own endpoint is
+# left out because an account that refuses providers training on paid inputs (OpenRouter's privacy
+# setting) can't reach it (F-113). OpenRouter only guarantees Claude Code on Anthropic models (F-112);
+# `scripts/provider-check.ts` checks tools and hooks first. Pay-as-you-go credits.
+# Key: https://openrouter.ai/settings/keys
+[providers.openrouter]
+base_url = "https://openrouter.ai/api"
+auth = "bearer"
+key_env = "OPENROUTER_API_KEY"
+model = "deepseek/deepseek-v4.1-flash"
+max_context_tokens = 1000000
+auto_compact_window = 200000
+max_output_tokens = 32000
+extra_body = { provider = { only = ["parasail/fp8"], allow_fallbacks = false } }
+
+[providers.openrouter.prices."deepseek/deepseek-v4.1-flash"]  # Parasail's rates on OpenRouter, the same as DeepSeek's own (F-111)
+input = 0.30
+output = 1.20
+cache_read = 0.006
+cache_write = 0.30
+
+# OpenRouter, pinned to Anthropic's Haiku 4.5 served by Anthropic: the one combination OpenRouter
+# guarantees for Claude Code (F-112), at about four times the price of the default above.
+[providers.openrouter-haiku]
+base_url = "https://openrouter.ai/api"
+auth = "bearer"
+key_env = "OPENROUTER_API_KEY"
+model = "anthropic/claude-haiku-4.5"
+max_context_tokens = 200000
+max_output_tokens = 32000
+extra_body = { provider = { only = ["anthropic"], allow_fallbacks = false } }
+
+[providers.openrouter-haiku.prices."anthropic/claude-haiku-4.5"]
+input = 1.00
+output = 5.00
+cache_read = 0.10
+cache_write = 1.25
+
+# DeepSeek V4.1-Flash on DeepSeek's own endpoint: the same model as the default, without OpenRouter (F-72,
+# F-73). Optional since D-104. Prepaid: top up at https://platform.deepseek.com/top_up.
+# Key: https://platform.deepseek.com/api_keys
 # Caution: DeepSeek maps any unknown model name to deepseek-flash, silently.
 [providers.deepseek]
 base_url = "https://api.deepseek.com/anthropic"
@@ -26,9 +68,8 @@ output = 1.20
 cache_read = 0.006
 cache_write = 0.30
 
-# OpenRouter, pinned to one free model with tool calls, for $0 smoke tests only (F-74, F-75). OpenRouter
-# says non-Anthropic models aren't supported in Claude Code, and the free tier allows 50 requests a day
-# under $10 of credits. Key: https://openrouter.ai/settings/keys
+# OpenRouter, pinned to one free model with tool calls, for $0 plumbing checks only (F-74, F-75). The free
+# tier allows 50 requests a day under $10 of credits, and Claude Code's background calls count too.
 [providers.openrouter-free]
 base_url = "https://openrouter.ai/api"
 auth = "bearer"

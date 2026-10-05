@@ -99,9 +99,20 @@ test('the example providers in docs/examples/providers.toml are valid config (RE
   const fs = await import('node:fs');
   const raw = parse(fs.readFileSync(new URL('../../../docs/examples/providers.toml', import.meta.url), 'utf8')) as Record<string, unknown>;
   const c = parseConfig({ ...base, ...raw }, TOKEN);
-  assert.deepEqual(Object.keys(c.providers).sort(), ['deepseek', 'haiku', 'kimi', 'openrouter-free']);
+  assert.deepEqual(Object.keys(c.providers).sort(), ['deepseek', 'haiku', 'kimi', 'openrouter', 'openrouter-free', 'openrouter-haiku']);
   for (const p of Object.values(c.providers)) {
     assert.ok(p.baseUrl === null || p.baseUrl.startsWith('https://'), p.name);
     if (p.baseUrl) assert.ok(p.prices[p.model], `${p.name} prices its model, so M8 and budgets aren't the vendor's guess`);
+    // A router id picks a different model per request, and provider fallback can swap the serving provider:
+    // neither belongs in a run that has to name its model (D-87, D-104).
+    assert.ok(!/^openrouter\/|^~/.test(p.model), `${p.name} names one model, not a router`);
+    if (p.baseUrl?.startsWith('https://openrouter.ai/')) assert.equal((p.extraBody?.provider as { allow_fallbacks?: boolean })?.allow_fallbacks, false, `${p.name} turns provider fallback off`);
   }
+  // The default (D-104): one model on one provider, the key from OPENROUTER_API_KEY as a bearer token.
+  const or = resolveProvider(c, { HARNESS_PROVIDER: 'openrouter', OPENROUTER_API_KEY: 'sk-or-v1-0123456789' });
+  assert.deepEqual(or.auth, { mode: 'api-key', apiKey: 'sk-or-v1-0123456789', scheme: 'bearer', baseUrl: 'https://openrouter.ai/api' });
+  assert.equal(or.model!.id, 'deepseek/deepseek-v4.1-flash');
+  assert.equal(or.model!.background, 'deepseek/deepseek-v4.1-flash', 'background calls run on the same model');
+  assert.equal(or.model!.stripExperimental, true);
+  assert.deepEqual(or.model!.extraBody, { provider: { only: ['parasail/fp8'], allow_fallbacks: false } });
 });

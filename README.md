@@ -8,13 +8,13 @@ The first wedge: **several humans, each running their own AI coding agents on th
 
 **Phase 0A is built; Phase 0B is approved and under way (D-86).**
 - 0A: the coordination server, harnessd, the Claude adapter, soft claims, typed messages, the CLI, metrics and the benchmark app. Every 0A exit criterion is met with a scripted model (`npm run demo`, D-84).
-- Agents can run on any Anthropic-compatible model endpoint by configuration; DeepSeek `deepseek-flash` is the cheap default for development (D-87). See [Choosing a model provider](#choosing-a-model-provider).
+- Agents can run on any Anthropic-compatible model endpoint by configuration (D-87). Real-model runs use OpenRouter, pinned to DeepSeek V4.1-Flash served by DeepSeek (D-104). See [Choosing a model provider](#choosing-a-model-provider).
 - 0B's first stretch is built: read capture, stale-context notices with sync at turn end, and the local land step (`harness land`). The S3 example ("Dependency changed: src/types.ts has changed since you read it.", with a diff) passes end to end with the scripted model (PLAN.md §12).
 - The code lives in `packages/`. See [Running locally](#running-locally). The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a); the hand-over notes are in [HANDOFF.md](HANDOFF.md).
 
 ## Running locally
 
-**The quickest look:** with Postgres running (steps 1–3 below), `npm run demo` brings up the whole stack. Two Claude Code agents work on the benchmark app, and the demo checks every 0A exit criterion. By default a scripted model stands in for the real one, so it's free and takes about 15 seconds. With a provider key exported, `npm run demo -- --real --provider deepseek` uses real agents (see [Choosing a model provider](#choosing-a-model-provider); capped at $2 per session).
+**The quickest look:** with Postgres running (steps 1–3 below), `npm run demo` brings up the whole stack. Two Claude Code agents work on the benchmark app, and the demo checks every 0A exit criterion. By default a scripted model stands in for the real one, so it's free and takes about 15 seconds. With `OPENROUTER_API_KEY` exported, `npm run demo -- --real --provider openrouter` uses real agents (see [Choosing a model provider](#choosing-a-model-provider); capped at $2 per session).
 
 You need Node 24 or later and PostgreSQL 18.
 1. **Install dependencies:** `npm install`.
@@ -51,24 +51,29 @@ harnessd runs agents through Claude Code, which speaks the Anthropic Messages AP
 
 ```toml
 [agents]
-provider = "deepseek"     # or HARNESS_PROVIDER=deepseek in harnessd's environment
+provider = "openrouter"   # or HARNESS_PROVIDER=openrouter in harnessd's environment
 max_budget_usd = 2        # per session, against configured prices
 # read_allow = ["~/.cache/ms-playwright"]   # agents can't read your home directory (D-98). Toolchains on PATH,
 #                                           # the corepack cache and Git work; add anything else they need here
 
-[providers.deepseek]      # copied from docs/examples/providers.toml
-base_url = "https://api.deepseek.com/anthropic"
-auth = "x-api-key"
-key_env = "DEEPSEEK_API_KEY"   # the NAME of the variable holding the key, never the key
-model = "deepseek-flash"
+[providers.openrouter]    # copied from docs/examples/providers.toml, with its prices table
+base_url = "https://openrouter.ai/api"
+auth = "bearer"
+key_env = "OPENROUTER_API_KEY"   # the NAME of the variable holding the key, never the key
+model = "deepseek/deepseek-v4.1-flash"
+extra_body = { provider = { only = ["parasail/fp8"], allow_fallbacks = false } }   # one provider, every request (F-113)
 ```
+
+**Check a key before any real run:** `node scripts/provider-check.ts --provider openrouter` calls the endpoint directly, then runs one hardened Claude Code session on it, then checks the model acts on harness notices delivered through the hooks, for about $0.02 (D-104). It never prints the key.
 
 **The key never goes in a file in this repo.** Export it in the shell that runs harnessd or the demo, for example from a `chmod 600` file your `~/.zshrc` sources.
 
 | Provider (example name) | Use it for | Key variable | Get a key |
 |---|---|---|---|
-| `deepseek` (`deepseek-flash`) | Development and benchmarks: the cheapest that drives the agent loop. About $0.30 in / $1.20 out per million tokens at peak; prepaid | `DEEPSEEK_API_KEY` | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) (top up at [/top_up](https://platform.deepseek.com/top_up)) |
-| `openrouter-free` (one pinned `:free` model) | $0 smoke tests only. OpenRouter says non-Anthropic models aren't supported in Claude Code; 50 requests a day under $10 of credits | `OPENROUTER_API_KEY` | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| `openrouter` (`deepseek/deepseek-v4.1-flash` on Parasail, fp8) | **The default** for development, smoke tests and real-model runs (D-104). $0.30 in / $1.20 out / $0.006 cached per million tokens; pay-as-you-go credits | `OPENROUTER_API_KEY` | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| `openrouter-haiku` (`anthropic/claude-haiku-4.5` on Anthropic) | The fallback if the default misbehaves in Claude Code: the one combination OpenRouter guarantees (F-112). About four times the price | `OPENROUTER_API_KEY` | the same key |
+| `deepseek` (`deepseek-flash`) | The same model on DeepSeek's own endpoint, without OpenRouter. Optional; prepaid | `DEEPSEEK_API_KEY` | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) (top up at [/top_up](https://platform.deepseek.com/top_up)) |
+| `openrouter-free` (one pinned `:free` model) | $0 plumbing checks only: 50 requests a day under $10 of credits | `OPENROUTER_API_KEY` | the same key |
 | `kimi` (`kimi-k2.6`) | A third option. Needs about $10 of top-up for a usable rate limit | `MOONSHOT_API_KEY` | [platform.kimi.ai/console/api-keys](https://platform.kimi.ai/console/api-keys) |
 | `haiku` (`claude-haiku-4-5`) | The later comparison and baseline | `ANTHROPIC_API_KEY` | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) |
 
@@ -76,7 +81,8 @@ model = "deepseek-flash"
 - **Endpoints must be https.** A local plain-http gateway isn't accepted: any agent allowed to bind local ports could listen on its port first and take the key.
 - **On a third-party endpoint** harnessd pins every model alias Claude Code uses (main, background, subagent) to the configured model, drops request fields only Anthropic's API accepts, and prices tokens from the table's `prices` (Claude Code's own cost figure is a guess for models it doesn't know, F-27). `harness metrics` shows the models used and where the cost figure came from.
 - **Bearer-token endpoints** (`auth = "bearer"`, OpenRouter and Kimi) get the key in both of Claude Code's auth variables, so the check that rules out subscription logins still holds (C-21).
-- **For an A/B run,** both arms use the same provider table and model; never a router that picks models (D-87). Metrics warn if sessions ran on different models.
+- **On OpenRouter, pin the provider as well as the model** (`extra_body.provider.only`): many providers serve one model id, some quantized, and default routing can switch between them per request (F-111).
+- **For an A/B run,** both arms use the same provider table and model; never a router that picks models (`openrouter/auto` and the like; D-87). Metrics warn if sessions ran on different models.
 - **Real-model checks** in the spike take the same settings: `SPIKE_BASE_URL`, `SPIKE_KEY_ENV`, `SPIKE_MODEL`, `SPIKE_AUTH_SCHEME` (see `spikes/0a-adapter/lib/session.ts`).
 
 ## The idea in one screen

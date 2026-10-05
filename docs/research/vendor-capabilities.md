@@ -9,6 +9,7 @@
 > - **Empirical re-check:** the Claude facts the design leans on were re-tested against Claude Code 2.1.287 / Agent SDK 0.3.287 in the 0A spike ([spike-0a.md](spike-0a.md)). See the *Spike* lines under each F-ID, and C-14 to C-20.
 > - **What an F-ID is:** a researched claim with a source and a confidence mark. Trust the mark: `?` and `◐` items are **not** verified facts. They're kept here so the evidence for them stays in one place.
 > - **Added 2026-10-03:** F-24 to F-29 (Claude Code behind third-party endpoints), F-58 (`srt` loopback binding) and F-72 to F-77 (model providers), from one research pass over official docs, the pinned 2.1.287 binary and the srt 0.0.78 source, for D-87. Single-pass facts are ✔ at most; mock probes upgrade them where noted.
+> - **Added 2026-10-04 and 2026-10-05:** F-111 to F-113 (OpenRouter as the real-model provider, D-104), from OpenRouter's live model API and docs, then with the project's key.
 > - **Re-verify before writing code that depends on any of this.** Both agent vendors changed these surfaces several times in 2026.
 >
 > **Checker results:** Claude checker, 26 load-bearing claims: 18 confirmed, 8 corrected (details, none reversing a design conclusion), 0 refuted. Codex/infra/terms checker, 53 claims: 40 confirmed, 8 corrected, 2 "refuted" (both were claims the researcher had already marked contradicted, so the contradiction is confirmed), 3 uncertain (Anthropic's 2026 enforcement history and the OpenAI ToU clauses, secondary sources only).
@@ -514,6 +515,8 @@ Sources: [pricing](https://api-docs.deepseek.com/quick_start/pricing), [error co
 
 Sources: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration.md), [messages API](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message.md), [model fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks.md), [provider selection](https://openrouter.ai/docs/guides/routing/provider-selection.md).
 
+*Re-checked 2026-10-04: F-111 (the model list, pinning a provider, both auth headers documented) and F-112 (the Claude Code guarantee is unchanged).*
+
 **F-75 ◐ OpenRouter free models** (volatile; from the live model list, 2026-10-03).
 - 17 `:free` models; none is a DeepSeek, Kimi, GLM or Qwen-Coder model. Tool-capable ones with at least 64K context include `qwen/qwen3.8-27b:free`, `nvidia/nemotron-3-super-120b-a12b:free`, `cohere/north-mini-code:free` and `google/gemma-4-31b-it:free`, each served by one provider.
 - **Free limits:** 20 requests a minute; 50 a day with under $10 of credits ever bought, 1,000 a day above that. Claude Code's background calls count too.
@@ -672,6 +675,35 @@ Source for F-101 to F-105: the A3 adversarial review's probes against the pinned
 **F-108 ✔ An interrupt while the PostToolBatch hooks run ends the session's turn with a crash** (2.1.287, checked 2026-10-03). The CLI checks for an abort right after those hooks and before the next request, and an abort that lands during them escapes as `AbortError` (`error_during_execution: [session_crash] error_name=AbortError`). The same interrupt during PostToolUse ends the turn cleanly (`aborted_tools`). A graceful stop then still ends the session as `stopped`; the only effect is one extra error line. Every session registers PostToolBatch (D-99), so this window exists on every tool batch.
 
 Source for F-106 to F-108: probes against the pinned CLI and the scripted mock (in-process SDK callbacks), the 10,000-character boundary tested at 10,000, 10,001 and 12,000, and the A5a review's probes, re-run by its skeptics (the block reason's two copies, the interrupt). F-106 is pinned by `packages/adapters/test/notices.test.ts`, including the exact boundary. *Impact: D-99; the Stop gate (A5b).*
+**F-111 ✔ OpenRouter serves DeepSeek V4.1-Flash from 30 providers at different precisions, and one request field pins one** (checked 2026-10-04 from OpenRouter's live API; volatile).
+- **The model:** `deepseek/deepseek-v4.1-flash` (released 2026-09-10): 1,048,576 tokens of context, tools, `tool_choice` and reasoning. The listing's price is DeepSeek's own: $0.30 in, $1.20 out and $0.006 for cached input per million tokens (as F-73).
+- **Who serves it:** 30 endpoints, from $0.003 to $0.45 per million input tokens. Several are quantized (`fp8`, `fp4`) and others don't say. Default routing chooses among them per request, so the weights behind one model id can change between requests.
+- **Pinning:** the Messages API reference (`POST /api/v1/messages`) takes OpenRouter's `provider` object in the body (`only`, `order`, `allow_fallbacks`, `require_parameters`, `quantizations` and more) and up to three `models` fallbacks. `provider = { only = ["<tag>"], allow_fallbacks = false }` keeps every request on one endpoint (DeepSeek's own is tag `deepseek`, 99.99% uptime over 30 minutes when checked). Probed with a live key in F-113.
+- **Auth:** the reference lists both `Authorization: Bearer` and `x-api-key`. F-113 confirms the pair the harness sends.
+- **Haiku 4.5 on OpenRouter:** `anthropic/claude-haiku-4.5`, 200K context, $1 in, $5 out, $0.10 cached input and $1.25 cache writes per million tokens; served by Anthropic, Amazon Bedrock and Google Vertex.
+
+Sources: `GET https://openrouter.ai/api/v1/models?supported_parameters=tools`, `GET https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints` and `…/anthropic/claude-haiku-4.5/endpoints` (public, no key), [messages API](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message.md). *Impact: D-104's default and its pin.*
+
+**F-112 ✔ OpenRouter still guarantees Claude Code only on Anthropic's own provider** (checked 2026-10-04; re-checks F-74).
+- **The guide:** Claude Code with OpenRouter is "only guaranteed to work with the Anthropic first-party provider". It also warns that Claude Code is tuned for Anthropic models and may not work correctly with others, and recommends putting Anthropic first in provider order.
+- **Its settings:** `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN` set to the OpenRouter key, and `ANTHROPIC_API_KEY` explicitly empty; `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` is optional.
+- **The harness differs on one point:** it sets both variables to the key (D-90, C-21), so the check that rules out a subscription login still holds. The CLI then sends the key in both headers. OpenRouter accepts that pair (F-113).
+
+Source: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration.md). *Impact: D-104's fallback, `openrouter-haiku`.*
+**F-113 ✔ OpenRouter with a live key: what reaches the model, and one account setting that blocks a provider** (checked 2026-10-05, with the project's key; pinned CLI 2.1.287).
+- **A privacy setting can refuse a provider:** with the account's OpenRouter privacy setting excluding providers that may train on paid inputs, a request pinned to DeepSeek's own endpoint got 404, "0 endpoints out of 1 requested are available matching your guardrail restrictions and data policy". The listed reason was paid model training (account settings), configurable at [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy). The endpoints API doesn't show which providers train on inputs.
+- **Six other providers answered:** Together, Parasail (fp8), BaseTen (fp8), Fireworks, DeepInfra (fp8) and Novita (fp8) each served `deepseek/deepseek-v4.1-flash` through `provider.only`, with a correct tool call.
+- **Auth:** the pair the harness sends, `x-api-key` and `Authorization: Bearer` both carrying the OpenRouter key, is accepted. This settles F-112's question.
+- **Through the pinned CLI, with harnessd's policy and experimental betas stripped (on Parasail):**
+  - every request was accepted, including the mid-conversation system messages that carry hook context (F-106) and Stop-hook context (F-107);
+  - the model used Read and a harness MCP tool, and acted on a notice riding a tool result (PostToolBatch) and on one delivered at the Stop gate.
+- **Caching:** about 17,000 to 18,000 cache-read tokens per probe session. Usage arrives in Anthropic's shape, with `cache_read_input_tokens` set and `cache_creation_input_tokens` null (no cache-write charge).
+- **One harmless log line:** the CLI logs `[claude-code:unrecognized_model]` for the model id.
+- **The first `demo:0b --real`:**
+  - two sessions, $0.028 in total at the configured prices, 128 s;
+  - 3 of the S3 example's 4 criteria were met. The fourth exposed a gap in how a waiting or finishing agent gets a landed change (D-106).
+
+Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider openrouter` run, 2026-10-05. *Impact: D-104's provider pin; D-106.*
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
