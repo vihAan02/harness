@@ -1218,6 +1218,23 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Hidden checks:** a private repo that only the grader reads (D-94). A self-test proves that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
   - *Why:* every coupling comes from a natural feature request on Shelf, so the agents meet it while doing ordinary work, and the checks test behaviour on real API data rather than the exact code.
   - *Source:* 0B item 9, Q-02, D-58, S10. *Status:* Proposal (frozen with the `ab-v1` tag).
+- **D-121 The protocol and parameters for the counted A/B runs (B10; validation.md §9). Written by stream A, which took B10 over for the night of 2026-10-05 (S12).**
+  - **Parameters, the same in both arms:**
+    - the model is D-104's: `deepseek/deepseek-v4.1-flash` on `parasail/fp8`;
+    - a 30-minute time cap, raised to 45 before the freeze if a dry run needs more than 20;
+    - a $2 per-session budget in the harness arm, as a runaway stop that voids the run;
+    - one machine; Daniyal coordinates and Vihaan grades (D-94);
+    - the judge for M2 and M6 is `anthropic/claude-sonnet-5.5` through OpenRouter, at temperature 0, with a spot check of at least 20% of runs.
+  - **Run order:** rounds by pair, scenarios in a fixed order. Within a pair the two runs are back to back, and the harness arm goes first when the scenario number plus the pair number is even. Void runs are rerun only for machinery failures, never for a result.
+  - **The coordinator's playbook:**
+    - the same triggers for stepping in, in both arms;
+    - integration in finishing order, through `harness land` or the runner's `merge`, which runs the same test command;
+    - a fixed relay rule for the baseline: relay contract changes named in a finishing agent's summary, never by reading code;
+    - the M10 timer in the runner's console, the same in both arms.
+  - **The rubric** for M2, M6, M1, M4, M5, M7 and M8, and P1's "surfaced". M3 and M9 are now measured the same way in both arms. Sync conflicts aren't M3, because the baseline has no sync. M9 is split into M9a (first-integration test failures) and M9b (hidden checks failing on the final main).
+  - **Blinding:** the grader gets only the arm-blinded trees, packed and shuffled. Transcripts reveal the arm, so M6's "caught" can't be judged blind.
+  - *Why:* B10 is the last input to the scorer (A9) and to the counted runs (A10). Everything here is fixed before any counted run (§6).
+  - *Source:* 0B item 9, validation.md §3 to §6, D-57, D-94, D-104, S12. *Status:* **Proposal until both owners sign** (validation.md §9).
 - **D-122 D-107 is approved: a human can send a done task back to its agent with `harness task reopen` (0B). Decided by an owner, 2026-10-06.**
   - **What's approved:** D-107 as proposed by stream A (branch `daniyal/task-reopen`): `task.reopen { task_id, text }`, for humans, on a `done` task with no land in flight. The task goes back to `in_progress`, and harnessd starts a new session on its branch, opening with the task plus the human's message. A reopen counts as M5.
   - **What doesn't change:** D-96 still holds. A failed land leaves the task `done`, and nothing reopens a task unless a human asks. Resume, which restores the old conversation, is still Phase 1 (D-40).
