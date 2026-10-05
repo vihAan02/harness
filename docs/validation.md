@@ -350,12 +350,12 @@ The relay rule doesn't apply: the harness delivers what changed.
   - **Caught:** corrected by the agent's own later edits before its task finished.
   - **Reached integration:** still in its work at integration. The grader's hidden checks decide "reached" (D-120). The judge decides "caught" from the agent's edits (its transcript's tool calls) against the run's timeline.
   - **The count:** at most one incident per planted coupling per agent per run.
-- **P1's "surfaced before its task finished"** (harness arm): before the affected agent's task was done, the agent got a notice, a sync or a message naming a file of the planted change. A9 computes it from the event log. The planted changes:
-  - SC-1: the login response type and route;
-  - SC-2: the availability type;
-  - SC-3: the loans migration;
-  - SC-4: the ISBN helper;
-  - SC-0: none.
+- **P1's "surfaced before its task finished"** (harness arm): before the affected agent's task was done, the agent got a notice, a sync or a message naming a file of the planted change. The runner computes it from the event log. The planted changes, each made by task 1 and affecting task 2:
+  - SC-1: the login response: `src/shared/types.ts`, `src/server/routes.ts`, `src/server/auth.ts`;
+  - SC-2: the availability numbers: `src/shared/types.ts`, `src/server/routes.ts`, `src/server/repos/books.ts`;
+  - SC-3: the loan status migration: `src/server/migrations/`, `src/server/repos/loans.ts`, `src/shared/types.ts`.
+
+  SC-4's trap is duplicate work, which P2 measures, and SC-0 has no coupling, so neither has a planted dependency change. P1's first half sums over SC-1 to SC-3.
 - **M1:** from the assignment until both tasks are integrated with tests green. Harness arm: the last `land.completed`. Baseline: the runner's last green `merge`.
 - **M4:** commits to main after the first integration, and the minutes from the first integration until main is green with both tasks.
 - **M5:** harness arm: human actions to agents, as `harness metrics` counts them. Baseline: messages sent to agents after their cards. Integration actions are M5c in both arms, counted separately.
@@ -367,7 +367,7 @@ The relay rule doesn't apply: the harness delivers what changed.
 - **M2 in P2** is the count of extra copies. The lines removed in integration are reported beside it, never added to it, because a count and a line total don't add up.
 - **M3 in P2** is conflicts at integration plus overlapping hunks. A hunk of one task's final diff whose base lines intersect a hunk of the other's counts once per such pair.
 - **P1's halves:**
-  - first half, harness arm, coupled runs: surfaced ÷ planted ≥ 70%, summed over the runs;
+  - first half, harness arm, SC-1 to SC-3: surfaced ÷ planted ≥ 70%, summed over the runs;
   - second half: the total of M6 reached plus M9b, harness against baseline, as §5 states it.
 - **M8 for G2** is total tokens per run: input, output, cache reads and cache writes. Cost is reported beside it.
 - **M1:** a run that never integrated counts as the cap.
