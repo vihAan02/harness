@@ -346,6 +346,10 @@ async function runOnce(n: number): Promise<string> {
       view.events.some((e) => e.kind === kind && (e.data as { task_id?: string }).task_id === task && pred(e.data as Record<string, unknown>));
     const pendingSeen = new Set<string>();
     const approvals = new Approvals(home);
+    /** Auto-land: the commit each task was last landed at, the failed lands already handled, and reopens per task. */
+    const landedAt = new Map<string, string>();
+    const handledLands = new Set<string>();
+    const reopens = new Map<string, number>();
     for (;;) {
       const finished = [...ids.values()].map((id) => (has('land.completed', id) ? 'landed' : has('task.abandoned', id) ? 'abandoned' : null));
       if (finished.every((f) => f !== null)) { outcome = finished.every((f) => f === 'landed') ? 'integrated' : 'abandoned'; break; }
@@ -359,17 +363,31 @@ async function runOnce(n: number): Promise<string> {
         if (DRY) approvals.approve(r.id);
       }
       if (AUTO_LAND) {
-        // The runner lands each task once; a land the fencing check rejects, or that fails, would wait for a
-        // human, so an auto-landed run ends there.
-        const ended = [...ids.values()].find((id) => has('land.rejected', id) || has('land.failed', id, (d) => d.reason !== 'cancelled'));
-        if (ended) {
-          outcome = has('land.rejected', ended) ? 'land_rejected' : 'land_failed';
-          rec.log(`the land of ${ended} ${outcome === 'land_rejected' ? 'was rejected' : 'failed'}`);
-          break;
+        // The runner lands each task once its agent is done, as the coordinator would. A land that fails (tests,
+        // a conflict) sends the task back to its agent with what failed, up to three times, as the baseline's
+        // runner asks its agent to fix a failed merge (D-107; validation.md §9). A fencing rejection, or a
+        // fourth failure, would wait for a human, so an auto-landed run ends there.
+        const rejected = [...ids.values()].find((id) => has('land.rejected', id));
+        if (rejected) { outcome = 'land_rejected'; rec.log(`the land of ${rejected} was rejected`); break; }
+        let gaveUp: string | null = null;
+        for (const id of ids.values()) {
+          const last = [...view.lands.values()].filter((l) => l.taskId === id).at(-1);
+          if (last?.status !== 'failed' || last.reason === 'cancelled' || handledLands.has(last.id)) continue;
+          handledLands.add(last.id);
+          if ((reopens.get(id) ?? 0) >= 3) { gaveUp = id; break; }
+          reopens.set(id, (reopens.get(id) ?? 0) + 1);
+          const what = `${last.reason}${last.detail ? `: ${last.detail.replace(/\s+/g, ' ').slice(-1500)}` : ''}`;
+          rec.mark('reopen', { task_id: id, land_id: last.id, reason: last.reason });
+          rec.log(`the land of ${id} failed (${last.reason}); reopening it: ${(await cliOutput('task', 'reopen', id, '--text',
+            `Landing your work failed (${what}). Fix your work so it lands with the tests green, then report done.`)).split('\n')[0]}`);
         }
+        if (gaveUp) { outcome = 'land_failed'; rec.log(`the land of ${gaveUp} failed a fourth time`); break; }
         const inFlight = [...view.lands.values()].some((l) => l.status === 'requested' || l.status === 'accepted');
         for (const id of ids.values()) {
-          if (inFlight || !has('worktree.committed', id) || has('land.requested', id)) continue;
+          // Ready: done, with a commit no land has been asked for yet.
+          const commit = view.events.findLast((e) => e.kind === 'worktree.committed' && (e.data as { task_id?: string }).task_id === id)?.data as { commit?: string } | undefined;
+          if (inFlight || view.tasks.get(id)?.status !== 'done' || !commit?.commit || landedAt.get(id) === commit.commit) continue;
+          landedAt.set(id, commit.commit);
           rec.mark('land_requested', { task_id: id });
           // --no-wait: the loop keeps watching the cap and Ctrl-C while the land runs.
           rec.log(`landing ${id}: ${(await cliOutput('land', id, '--no-wait')).split('\n')[0]}`);
