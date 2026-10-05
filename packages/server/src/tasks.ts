@@ -2,6 +2,7 @@
 // assignee agent or a human marks one done. open → in_progress (assigned) → done → landed (0B), or abandoned.
 import { claimScope, clearTaskClaims } from './claims.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
+import { lockLeases, releaseAbandoned } from './leases.ts';
 
 export const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/; // T-1, T-2, … from task.create
 const MAX_TITLE = 200;
@@ -113,14 +114,15 @@ export async function completeTask(ctx: HandlerContext, args: Record<string, unk
   };
 }
 
-/** `task.abandon { task_id, reason }` → `task.abandoned`. Humans only. */
+/** `task.abandon { task_id, reason }` → `task.abandoned`, and its leases released (D-97). Humans only. */
 export async function abandonTask(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   requireHuman(ctx, 'abandon tasks');
+  await lockLeases(ctx); // before the task's row lock: one lock order for lease writers (D-97)
   const task = await lockTask(ctx, args.task_id);
   const reason = text(args.reason, 'reason', 500)!;
   if (task.status === 'landed' || task.status === 'abandoned') throw new CommandError('conflict', `${task.id} is already ${task.status}`);
   const landing = (await ctx.tx.query("SELECT id FROM lands WHERE task_id = $1 AND status IN ('requested', 'accepted')", [task.id])).rows[0];
   if (landing) throw new CommandError('conflict', `${task.id} is being landed; cancel the land first (harness land --cancel ${task.id})`);
   await ctx.tx.query("UPDATE tasks SET status = 'abandoned', completed_at = now() WHERE id = $1", [task.id]);
-  return { result: null, events: [{ kind: 'task.abandoned', data: { task_id: task.id, reason } }, ...await clearTaskClaims(ctx, task.id)] };
+  return { result: null, events: [{ kind: 'task.abandoned', data: { task_id: task.id, reason } }, ...await clearTaskClaims(ctx, task.id), ...await releaseAbandoned(ctx, task.id)] };
 }
