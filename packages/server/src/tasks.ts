@@ -114,6 +114,30 @@ export async function completeTask(ctx: HandlerContext, args: Record<string, unk
   };
 }
 
+/**
+ * `task.reopen { task_id, text }` → `task.reopened`: a human sends a done task that hasn't landed back to its
+ * agent, with a message (what a failed land said, say). harnessd starts a new session on the task's branch,
+ * which has its work; the old conversation isn't resumed (that's Phase 1, D-40), so the message must say what
+ * to fix (D-107). Not while a land of it is in flight, nor while its agent works on another task. Humans only.
+ */
+export async function reopenTask(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  requireHuman(ctx, 'reopen tasks');
+  const task = await lockTask(ctx, args.task_id);
+  const body = text(args.text, 'text', MAX_TEXT)!;
+  if (task.status !== 'done') throw new CommandError('conflict', `${task.id} is ${task.status}; only a done task that hasn't landed can be reopened`);
+  if (!task.assignee_agent_id) throw new CommandError('conflict', `${task.id} has no agent to reopen it to`);
+  const landing = (await ctx.tx.query("SELECT id FROM lands WHERE task_id = $1 AND status IN ('requested', 'accepted')", [task.id])).rows[0];
+  if (landing) throw new CommandError('conflict', `${task.id} is being landed; cancel the land first (harness land --cancel ${task.id})`);
+  await requireFree(ctx, task.assignee_agent_id);
+  await ctx.tx.query("UPDATE tasks SET status = 'in_progress', completed_at = NULL WHERE id = $1", [task.id]);
+  // Its prospective claims again, as at creation: they were cleared when it was done (coordination §1).
+  const claimed = await claimScope(ctx, task.id, task.scope);
+  return {
+    result: { overlaps: claimed.overlaps },
+    events: [{ kind: 'task.reopened', data: { task_id: task.id, assignee_agent_id: task.assignee_agent_id, text: body, by: ctx.caller.principal } }, ...claimed.events],
+  };
+}
+
 /** `task.abandon { task_id, reason }` → `task.abandoned`, and its leases released (D-97). Humans only. */
 export async function abandonTask(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   requireHuman(ctx, 'abandon tasks');

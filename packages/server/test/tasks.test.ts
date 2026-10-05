@@ -58,3 +58,31 @@ test('assign, complete and abandon follow the lifecycle (D-54)', async () => {
   await run('task.abandon', { task_id: other, reason: 'not needed' });
   assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [other])).rows[0].status, 'abandoned');
 });
+
+test('task.reopen sends a done task back to its agent with a message: only done and unlanded, no land in flight, its agent free, humans only (D-107)', async () => {
+  const agent = ((await run('agent.create', { name: 'agent/r', vendor: 'claude' })).result as { agent_id: string }).agent_id;
+  const id = ((await run('task.create', { title: 'API', text: 'Change the login response.', scope: ['src/api/'], assignee_agent_id: agent })).result as { task_id: string }).task_id;
+  await rejects(run('task.reopen', { task_id: id, text: 'x' }), 'conflict', /in_progress; only a done task/);
+  await run('task.complete', { task_id: id }, agent);
+  await rejects(run('task.reopen', { task_id: id, text: 'x' }, agent), 'forbidden');
+  await rejects(run('task.reopen', { task_id: id }), 'bad_request', /text/);
+  // A land in flight must be cancelled first.
+  await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_r', 'human_test', 'laptop') ON CONFLICT DO NOTHING");
+  await db.pool.query("INSERT INTO lands (id, project_id, task_id, device_id, requested_by, status, run_tests) VALUES ('land_r', $1, $2, 'dev_r', 'human_test', 'requested', true)", [project, id]);
+  await rejects(run('task.reopen', { task_id: id, text: 'x' }), 'conflict', /being landed/);
+  await db.pool.query("UPDATE lands SET status = 'failed', reason = 'tests' WHERE id = 'land_r'");
+  // Its agent is busy with another task meanwhile.
+  const busy = ((await run('task.create', { title: 'B', text: 'b', scope: [], assignee_agent_id: agent })).result as { task_id: string }).task_id;
+  await rejects(run('task.reopen', { task_id: id, text: 'x' }), 'conflict', /already working on/);
+  await run('task.abandon', { task_id: busy, reason: 'out of the way' });
+  const r = await run('task.reopen', { task_id: id, text: 'The land failed: tsc says src/client/api.ts reads .token.' });
+  const evs = await kinds(r.seqs);
+  assert.deepEqual(evs.map((e) => e.kind), ['task.reopened', 'claim.prospective'], 'its scope is claimed again');
+  assert.deepEqual(evs[0].data, { task_id: id, assignee_agent_id: agent, text: 'The land failed: tsc says src/client/api.ts reads .token.', by: 'human_test' });
+  assert.deepEqual((await db.pool.query('SELECT status, completed_at FROM tasks WHERE id = $1', [id])).rows[0], { status: 'in_progress', completed_at: null });
+  await rejects(run('task.reopen', { task_id: id, text: 'x' }), 'conflict', /in_progress/);
+  // Landed and abandoned tasks stay closed.
+  await run('task.complete', { task_id: id }, agent);
+  await db.pool.query("UPDATE tasks SET status = 'landed' WHERE id = $1", [id]);
+  await rejects(run('task.reopen', { task_id: id, text: 'x' }), 'conflict', /landed/);
+});
