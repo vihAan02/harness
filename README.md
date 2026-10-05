@@ -64,7 +64,7 @@ model = "deepseek/deepseek-v4.1-flash"
 extra_body = { provider = { only = ["deepseek"], allow_fallbacks = false } }   # one provider, every request
 ```
 
-**Check a key before any real run:** `node scripts/provider-check.ts --provider openrouter` calls the endpoint directly, then runs one hardened Claude Code session on it, for about $0.01 (D-104). It never prints the key.
+**Check a key before any real run:** `node scripts/provider-check.ts --provider openrouter` calls the endpoint directly, then runs one hardened Claude Code session on it, then checks the model acts on harness notices delivered through the hooks, for about $0.02 (D-104). It never prints the key.
 
 **The key never goes in a file in this repo.** Export it in the shell that runs harnessd or the demo, for example from a `chmod 600` file your `~/.zshrc` sources.
 

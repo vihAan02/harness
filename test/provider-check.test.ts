@@ -7,7 +7,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ResolvedProvider } from '../packages/daemon/src/index.ts';
 import { DUMMY_KEY, startMock, type Mock } from '../packages/adapters/test/mock-api.ts';
-import { checkDirect, checkSession, loadProvider, redactor } from '../scripts/provider-check.ts';
+import { checkDirect, checkNotices, checkSession, loadProvider, redactor } from '../scripts/provider-check.ts';
 
 const MODEL = 'deepseek/deepseek-v4.1-flash';
 const ROUTING = { provider: { only: ['deepseek'], allow_fallbacks: false } };
@@ -93,6 +93,44 @@ test('the session check: the pinned CLI on the provider settings, a Read, the ha
   assert.ok(lines.some((l) => /config prices/.test(l.text)), 'cost comes from the configured prices');
   const sent = mock.log.filter((e) => e.path.includes('/v1/messages') && !e.path.includes('count_tokens'));
   assert.ok(sent.length >= 2 && sent.every((e) => e.model === MODEL && e.bearerOk && !e.rejected && e.bodyKeys.includes('provider')), JSON.stringify(sent.map((e) => [e.model, e.rejected])));
+});
+
+test('the notices check: one notice rides a tool result, one comes after the last tool call; the agent reports both (D-99, D-100)', async () => {
+  const m = await startMock({ auth: 'bearer', strict: true, models: [MODEL] });
+  try {
+    // The scripted model can't read hook context (the CLI sends it as a mid-conversation system message,
+    // F-106), so it's handed the code words: this checks the plumbing, and a real model the reading.
+    let words: string[] = [];
+    const lines = await checkNotices(provider(m.url), {
+      notices: (w1, w2) => (words = [w1, w2], [
+        '#STEP Bash {"command":"sleep 2; echo built"}',
+        `#STEP mcp__harness__report_code {"code":"${w1}"}`,
+        '#STEP TEXT done',
+        `#STEP mcp__harness__report_code {"code":"${w2}"}`,
+        '#STEP TEXT done again',
+      ].join('\n')),
+    }, 60_000, 500);
+    assert.ok(lines.every((l) => l.ok), JSON.stringify(lines, null, 1));
+    assert.ok(lines.some((l) => /riding its tool result, delivered between tools/.test(l.text)), JSON.stringify(lines));
+    assert.ok(lines.some((l) => /after its last tool call, delivered (stop hook|new turn)/.test(l.text)), JSON.stringify(lines));
+    // Both notices reached the model's requests, whole and in their envelope.
+    const sent = JSON.stringify(m.log.filter((e) => e.kind === 'main').map((e) => e.summary));
+    for (const w of words) assert.match(sent, new RegExp(`\\[harness notice\\][^"]*This notice's code word is ${w}`), w);
+  } finally {
+    await m.close();
+  }
+});
+
+test('negative control: an agent that never reports the second notice fails the notices check', async () => {
+  const m = await startMock({ auth: 'bearer', models: [MODEL] });
+  try {
+    const lines = await checkNotices(provider(m.url), {
+      notices: (w1) => ['#STEP Bash {"command":"sleep 2; echo built"}', `#STEP mcp__harness__report_code {"code":"${w1}"}`, '#STEP TEXT done'].join('\n'),
+    }, 8_000, 500);
+    assert.ok(lines.some((l) => !l.ok && /second notice/.test(l.text)), JSON.stringify(lines));
+  } finally {
+    await m.close();
+  }
 });
 
 test('negative control: a model the endpoint doesn\'t serve fails the session check', async () => {
