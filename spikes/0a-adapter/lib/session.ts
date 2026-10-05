@@ -9,7 +9,7 @@ import { DUMMY_KEY } from './mock-api.ts';
  * Anthropic's Haiku 4.5. For OpenRouter, the default since D-104 (the same settings as its table in
  * docs/examples/providers.toml):
  *   SPIKE_BASE_URL=https://openrouter.ai/api SPIKE_KEY_ENV=OPENROUTER_API_KEY SPIKE_AUTH_SCHEME=bearer \
- *   SPIKE_MODEL=deepseek/deepseek-v4.1-flash SPIKE_EXTRA_BODY='{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
+ *   SPIKE_MODEL=deepseek/deepseek-v4.1-flash SPIKE_EXTRA_BODY='{"provider":{"only":["parasail/fp8"],"allow_fallbacks":false}}'
  * For DeepSeek's own endpoint:
  *   SPIKE_BASE_URL=https://api.deepseek.com/anthropic SPIKE_KEY_ENV=DEEPSEEK_API_KEY SPIKE_MODEL=deepseek-flash
  * SPIKE_AUTH_SCHEME=bearer for endpoints that take only a bearer token (OpenRouter, Kimi). SPIKE_EXTRA_BODY is

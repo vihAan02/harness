@@ -61,7 +61,7 @@ base_url = "https://openrouter.ai/api"
 auth = "bearer"
 key_env = "OPENROUTER_API_KEY"   # the NAME of the variable holding the key, never the key
 model = "deepseek/deepseek-v4.1-flash"
-extra_body = { provider = { only = ["deepseek"], allow_fallbacks = false } }   # one provider, every request
+extra_body = { provider = { only = ["parasail/fp8"], allow_fallbacks = false } }   # one provider, every request (F-113)
 ```
 
 **Check a key before any real run:** `node scripts/provider-check.ts --provider openrouter` calls the endpoint directly, then runs one hardened Claude Code session on it, then checks the model acts on harness notices delivered through the hooks, for about $0.02 (D-104). It never prints the key.
@@ -70,7 +70,7 @@ extra_body = { provider = { only = ["deepseek"], allow_fallbacks = false } }   #
 
 | Provider (example name) | Use it for | Key variable | Get a key |
 |---|---|---|---|
-| `openrouter` (`deepseek/deepseek-v4.1-flash` on DeepSeek) | **The default** for development, smoke tests and real-model runs (D-104). $0.30 in / $1.20 out / $0.006 cached per million tokens; pay-as-you-go credits | `OPENROUTER_API_KEY` | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| `openrouter` (`deepseek/deepseek-v4.1-flash` on Parasail, fp8) | **The default** for development, smoke tests and real-model runs (D-104). $0.30 in / $1.20 out / $0.006 cached per million tokens; pay-as-you-go credits | `OPENROUTER_API_KEY` | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
 | `openrouter-haiku` (`anthropic/claude-haiku-4.5` on Anthropic) | The fallback if the default misbehaves in Claude Code: the one combination OpenRouter guarantees (F-112). About four times the price | `OPENROUTER_API_KEY` | the same key |
 | `deepseek` (`deepseek-flash`) | The same model on DeepSeek's own endpoint, without OpenRouter. Optional; prepaid | `DEEPSEEK_API_KEY` | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) (top up at [/top_up](https://platform.deepseek.com/top_up)) |
 | `openrouter-free` (one pinned `:free` model) | $0 plumbing checks only: 50 requests a day under $10 of credits | `OPENROUTER_API_KEY` | the same key |

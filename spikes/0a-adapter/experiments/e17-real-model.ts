@@ -1,7 +1,7 @@
 // U-1 to U-3 (spike-0a.md §5, Q-18): what a REAL model does with harness-injected messages.
 //   node experiments/e17-real-model.ts          real model: needs ANTHROPIC_API_KEY (D-56); a few cents, capped per session
 //   SPIKE_BASE_URL=https://openrouter.ai/api SPIKE_KEY_ENV=OPENROUTER_API_KEY SPIKE_AUTH_SCHEME=bearer SPIKE_MODEL=deepseek/deepseek-v4.1-flash \
-//   SPIKE_EXTRA_BODY='{"provider":{"only":["deepseek"],"allow_fallbacks":false}}' E17_BUDGET_USD=3 node experiments/e17-real-model.ts
+//   SPIKE_EXTRA_BODY='{"provider":{"only":["parasail/fp8"],"allow_fallbacks":false}}' E17_BUDGET_USD=3 node experiments/e17-real-model.ts
 //                                               the same on OpenRouter, the default provider (D-104), or any other
 //                                               Anthropic-compatible endpoint (D-87; see lib/session.ts)
 //   node experiments/e17-real-model.ts --mock   scripted mock: checks the plumbing only (free; model verdicts are meaningless)

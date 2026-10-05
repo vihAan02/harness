@@ -194,10 +194,11 @@ export async function checkSession(p: ResolvedProvider, scripts: Scripts = {}, t
 /**
  * 3. Harness notices through the hooks (D-99, D-100), the part OpenRouter doesn't guarantee for other models
  * (F-112). The first notice rides the result of the agent's Bash call; the second is queued after its last tool
- * call, so it reaches the model at the Stop gate (or, if the turn has already ended, as a new turn). The
- * model shows it read each one by reporting the notice's code word. Where each landed is reported too.
+ * call, while the agent writes a longer final reply, so it reaches the model at the Stop gate (or, if the turn
+ * has already ended, as a new turn). The model shows it read each one by reporting the notice's code word.
+ * Where each landed is reported too.
  */
-export async function checkNotices(p: ResolvedProvider, scripts: Scripts = {}, timeoutMs = 240_000, secondAfterMs = 1500): Promise<Line[]> {
+export async function checkNotices(p: ResolvedProvider, scripts: Scripts = {}, timeoutMs = 240_000, secondAfterMs = 700): Promise<Line[]> {
   const [w1, w2] = [code(), code()];
   const notice = (id: string, path_: string, word: string) => ({
     id, origin: 'coordinator' as const,
@@ -206,7 +207,8 @@ export async function checkNotices(p: ResolvedProvider, scripts: Scripts = {}, t
   const landed: Record<string, string> = {};
   let queued = 0;
   const probe = await openProbe(p, {}, () =>
-    'Run the command `sleep 4; echo built` with the Bash tool, once. While you work, harness notices may arrive; if one gives you a code word, call report_code with that word. When you\'re done, reply with one short line.'
+    'Run the command `sleep 4; echo built` with the Bash tool, once. While you work, harness notices may arrive; if one gives you a code word, call report_code with that word. '
+      + 'When you\'re done, finish with a summary of about 150 words of what you did and what the notices said.'
       + (scripts.notices ? `\n${scripts.notices(w1, w2)}` : ''), {
     instructions: sessionInstructions({ agentName: 'agent/check', taskId: 'T-1', ports: null, repo: [] }),
     onObservation: (obs, pr) => {
