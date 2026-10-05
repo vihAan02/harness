@@ -85,6 +85,10 @@ test('waiting for a task to land, and for a lease to free up (released or expire
   assert.deepEqual((await events(['wait.resolved'])).find((e) => e.data.wait_id === w1.wait_id)!.data.result, { lease: 'released' });
   const l2 = await lease('-1 second');
   assert.deepEqual((await a.wait({ kind: 'lease', id: l2 })).result, { lease: 'expired' });
+  // A lease logged as expired stays expired, whatever its expiry says now (D-97).
+  const l3 = await lease('10 minutes');
+  await db.pool.query('UPDATE leases SET expired_logged_at = now() WHERE id = $1', [l3]);
+  assert.deepEqual((await a.wait({ kind: 'lease', id: l3 })).result, { lease: 'expired' });
 });
 
 test('a wait that times out ends as timed_out, once, and tells the task\'s owner with task_blocked', async () => {

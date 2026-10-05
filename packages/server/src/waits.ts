@@ -8,7 +8,7 @@
 // pushes the outcome to the waiter as a new turn (D-95).
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
-import { inTransaction, serverClock } from './db.ts';
+import { inTransaction } from './db.ts';
 import { appendEvents, notifyProject, type NewEvent } from './events.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { lockLeases } from './leases.ts';
@@ -25,9 +25,10 @@ type WaitRow = { id: string; project_id: string; task_id: string; agent_id: stri
 
 /**
  * What a wait is waiting for, if it has happened: the result to hand the waiter, else null. For a lease, the
- * caller holds the lease lock, so its expiry is judged as the lease commands judge it (D-97).
+ * caller holds the lease lock and passes its clock, `at`, so expiry is judged exactly as the lease commands
+ * judge it: at that clock, and a lease logged as expired stays expired (D-97).
  */
-async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id: string): Promise<Record<string, unknown> | null> {
+async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id: string, at: string | null): Promise<Record<string, unknown> | null> {
   if (kind === 'answer') {
     const a = (await tx.query<{ id: string }>(
       "SELECT id FROM messages WHERE project_id = $1 AND kind = 'answer' AND in_reply_to = $2 ORDER BY created_at LIMIT 1", [projectId, id])).rows[0];
@@ -38,15 +39,17 @@ async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id
     // Done isn't enough: a task's work reaches anyone else only when it lands (D-106).
     return t && ['landed', 'abandoned'].includes(t.status) ? { status: t.status } : null;
   }
+  if (at === null) throw new Error('a lease wait is judged under the lease lock, with its clock');
   const l = (await tx.query<{ released: boolean; expired: boolean }>(
-    'SELECT released_at IS NOT NULL AS released, expires_at <= $3::timestamptz AS expired FROM leases WHERE id = $1 AND project_id = $2',
-    [id, projectId, await serverClock(tx)])).rows[0];
+    `SELECT released_at IS NOT NULL AS released, (expired_logged_at IS NOT NULL OR expires_at <= $3::timestamptz) AS expired
+     FROM leases WHERE id = $1 AND project_id = $2`,
+    [id, projectId, at])).rows[0];
   if (!l) return null;
   return l.released ? { lease: 'released' } : l.expired ? { lease: 'expired' } : null;
 }
 
-/** Settles one open wait if it can be settled now. Returns its events (none if it's still waiting). */
-async function settle(tx: pg.ClientBase, w: WaitRow): Promise<NewEvent[]> {
+/** Settles one open wait if it can be settled now. Returns its events (none if it's still waiting). `at`: see happened(). */
+async function settle(tx: pg.ClientBase, w: WaitRow, at: string | null): Promise<NewEvent[]> {
   const on = { kind: w.on_kind, id: w.on_id };
   const base = { wait_id: w.id, task_id: w.task_id, agent_id: w.agent_id, on };
   const finish = (outcome: string, result: Record<string, unknown> | null) =>
@@ -55,7 +58,7 @@ async function settle(tx: pg.ClientBase, w: WaitRow): Promise<NewEvent[]> {
     await finish('cancelled', null);
     return [{ kind: 'wait.cancelled', actor: 'harness', data: { ...base, reason: `task_${w.task_status}` } }];
   }
-  const result = await happened(tx, w.project_id, w.on_kind, w.on_id);
+  const result = await happened(tx, w.project_id, w.on_kind, w.on_id, at);
   if (result) {
     await finish('resolved', result);
     return [{ kind: 'wait.resolved', actor: 'harness', data: { ...base, result } }];
@@ -87,7 +90,7 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   if (typeof on?.kind !== 'string' || !(WAIT_KINDS as readonly string[]).includes(on.kind)) throw new CommandError('bad_request', `on.kind must be one of ${WAIT_KINDS.join(', ')}`);
   if (typeof on.id !== 'string' || !ID.test(on.id)) throw new CommandError('bad_request', 'on.id is missing or malformed');
   const kind = on.kind as WaitKind;
-  if (kind === 'lease') await lockLeases(ctx); // before any row lock (D-97); see happened()
+  const at = kind === 'lease' ? await lockLeases(ctx) : null; // before any row lock (D-97); see happened()
   const timeout = args.timeout_s === undefined ? TIMEOUT.default : args.timeout_s;
   if (!Number.isInteger(timeout) || (timeout as number) < TIMEOUT.min || (timeout as number) > TIMEOUT.max) {
     throw new CommandError('bad_request', `timeout_s must be a whole number of seconds from ${TIMEOUT.min} to ${TIMEOUT.max}`);
@@ -126,7 +129,7 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   }];
   // Already happened: resolved at once, in the same transaction.
   const row = (await ctx.tx.query<WaitRow>(`${OPEN_WAITS} AND w.id = $1`, [id])).rows[0]!;
-  const settled = await settle(ctx.tx, row);
+  const settled = await settle(ctx.tx, row, at);
   events.push(...settled.map((e) => ({ kind: e.kind, data: e.data })));
   const done = (await ctx.tx.query<{ outcome: string | null; result: unknown }>('SELECT outcome, result FROM waits WHERE id = $1', [id])).rows[0]!;
   return { result: { wait_id: id, outcome: done.outcome ?? 'waiting', ...(done.result ? { result: done.result } : {}) }, events };
@@ -142,10 +145,10 @@ export async function sweepWaits(pool: pg.Pool): Promise<number> {
   let settled = 0;
   for (const w of open) {
     await inTransaction(pool, async (tx) => {
-      if (w.on_kind === 'lease') await lockLeases({ tx, projectId: w.project_id } as HandlerContext);
+      const at = w.on_kind === 'lease' ? await lockLeases({ tx, projectId: w.project_id } as HandlerContext) : null;
       const row = (await tx.query<WaitRow>(`${OPEN_WAITS} AND w.id = $1 FOR UPDATE OF w SKIP LOCKED`, [w.id])).rows[0];
       if (!row) return; // settled meanwhile, or another sweep has it
-      const events = await settle(tx, row);
+      const events = await settle(tx, row, at);
       if (!events.length) return;
       await appendEvents(tx, w.project_id, events);
       await notifyProject(tx, w.project_id);

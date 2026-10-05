@@ -10,7 +10,6 @@
 // back the record of it (commands.ts).
 import { randomUUID } from 'node:crypto';
 import { normalizeFilePath, overlaps } from './claims.ts';
-import { serverClock } from './db.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { lockInvalidation, noticeLanded } from './invalidation.ts';
 import { lockLeases } from './leases.ts';
@@ -83,11 +82,13 @@ export type FencingProblem = { path: string; reason: 'leased_by_other' | 'stale_
  * it, its best token must be the highest ever issued for that path, or another task has taken the path
  * since (`stale_token`, T-2). The task's own lease that it released, or that expired while nobody else took
  * the path, doesn't block it (D-103). Tokens the device presents must be this task's. "Current" is judged at
- * `at`, the server's clock read under the lease lock, as the lease commands judge it (D-97).
+ * `at`, the server's clock read under the lease lock, exactly as the lease commands judge it: a lease already
+ * logged as expired is never current again (D-97).
  */
 export async function fencingCheck(ctx: HandlerContext, taskId: string, changed: string[], presented: { lease_id: string; token: number }[], at: string): Promise<FencingProblem[]> {
   const leases = (await ctx.tx.query<{ id: string; task_id: string; path: string; token: string; current: boolean }>(
-    `SELECT id, task_id, path, token, (released_at IS NULL AND expires_at > $2::timestamptz) AS current FROM leases WHERE project_id = $1 ORDER BY token`,
+    `SELECT id, task_id, path, token, (released_at IS NULL AND expired_logged_at IS NULL AND expires_at > $2::timestamptz) AS current
+     FROM leases WHERE project_id = $1 ORDER BY token`,
     [ctx.projectId, at])).rows.map((l) => ({ ...l, token: Number(l.token) }));
   const problems: FencingProblem[] = [];
   for (const p of presented) {
@@ -108,8 +109,9 @@ export async function fencingCheck(ctx: HandlerContext, taskId: string, changed:
 
 /** `land { land_id, base_branch, base_sha, merge_base_sha, head_sha, changed_paths[], lease_tokens[] }` → `land.accepted` | `land.rejected`. */
 export async function startLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
-  await lockLeases(ctx); // first: no lease is granted between the fencing check and the land's acceptance (D-97)
-  const at = await serverClock(ctx.tx); // under the lock, not the transaction's start: a lease seen expired stays so
+  // First: no lease is granted between the fencing check and the land's acceptance. Its clock, read under the
+  // lock, not at the transaction's start: a lease another command saw expire stays expired (D-97).
+  const at = await lockLeases(ctx);
   const land = await deviceLand(ctx, args.land_id, ['requested']);
   const task = await lockTask(ctx, land.task_id);
   if (task.status !== 'done') {
@@ -152,7 +154,7 @@ export async function reportLand(ctx: HandlerContext, args: Record<string, unkno
  */
 export async function completeLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   await lockInvalidation(ctx); // first: see lockInvalidation
-  await lockLeases(ctx); // then the lease lock: this releases the task's leases (D-97)
+  const at = await lockLeases(ctx); // then the lease lock: this releases the task's leases (D-97)
   const land = await deviceLand(ctx, args.land_id, ['accepted', 'cancelled']);
   const oldBase = sha(args.old_base_sha, 'old_base_sha');
   const newBase = sha(args.new_base_sha, 'new_base_sha');
@@ -168,8 +170,11 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
   await ctx.tx.query("UPDATE lands SET status = 'completed', new_base_sha = $2, changed_blobs = $3, finished_at = now() WHERE id = $1",
     [land.id, newBase, JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])))]);
   await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
+  // Only its current leases are released. One that ran out is expired, not released: the next lease command
+  // logs it as `lease.expired`, once, as it would any other (D-97).
   const released = (await ctx.tx.query<{ id: string }>(
-    "UPDATE leases SET released_at = now(), release_reason = 'landed' WHERE task_id = $1 AND released_at IS NULL RETURNING id", [task.id])).rows.map((r) => r.id);
+    `UPDATE leases SET released_at = now(), release_reason = 'landed'
+     WHERE task_id = $1 AND released_at IS NULL AND expired_logged_at IS NULL AND expires_at > $2::timestamptz RETURNING id`, [task.id, at])).rows.map((r) => r.id).sort();
   const events: HandlerOutput['events'] = [
     { kind: 'land.completed', data: { land_id: land.id, task_id: task.id, old_base_sha: oldBase, new_base_sha: newBase, changed_paths: changed.map((c) => c.path) } },
     ...released.map((id) => ({ kind: 'lease.released', data: { lease_id: id, task_id: task.id, reason: 'landed' } })),
