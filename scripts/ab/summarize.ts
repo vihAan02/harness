@@ -31,14 +31,34 @@ export function commitsAfterFirst(repo: string, baseSha: string, mainSha: string
 }
 
 /**
- * Writes diffs/<task>.patch (`-U0`, for M3's overlapping hunks) for each task's final commit, and
- * diffs/main.patch for main as the run ended. A task with no commit gets an empty patch.
+ * A task's last commit before it first merged main in (harnessd's sync, the baseline's `sync`): what it had
+ * done before it could see the other task's work. Its branch's own commits are on the first-parent line;
+ * a sync is a merge commit there, so this is the first such merge's first parent, or the final commit.
+ */
+export function independentTip(repo: string, baseSha: string, commit: string): string {
+  for (const line of gitOut(repo, 'rev-list', '--first-parent', '--reverse', '--parents', `${baseSha}..${commit}`).split('\n')) {
+    const [, first, second] = line.trim().split(' ');
+    if (second) return first!;
+  }
+  return commit;
+}
+
+const DIFF = ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+
+/**
+ * The patches the judge and the scorer read (scripts/ab/summary.ts): for each task, diffs/<task>.patch from the
+ * base to its final commit and diffs/<task>.independent.patch to its last commit before a sync (both -U0; M3's
+ * overlapping hunks compare the latter), and diffs/main.patch for main as the run ended. A task with no commit
+ * gets empty patches.
  */
 export function writeDiffs(dir: string, repo: string, baseSha: string, mainSha: string, tasks: { key: string; commit: string | null }[]): void {
   const out = path.join(dir, 'diffs');
   fs.mkdirSync(out, { recursive: true });
-  for (const t of tasks) fs.writeFileSync(path.join(out, `${t.key}.patch`), t.commit ? gitOut(repo, 'diff', '-U0', '--no-color', '--no-ext-diff', baseSha, t.commit) : '');
-  fs.writeFileSync(path.join(out, 'main.patch'), gitOut(repo, 'diff', '--no-color', '--no-ext-diff', baseSha, mainSha));
+  for (const t of tasks) {
+    fs.writeFileSync(path.join(out, `${t.key}.patch`), t.commit ? gitOut(repo, ...DIFF, '-U0', baseSha, t.commit) : '');
+    fs.writeFileSync(path.join(out, `${t.key}.independent.patch`), t.commit ? gitOut(repo, ...DIFF, '-U0', baseSha, independentTip(repo, baseSha, t.commit)) : '');
+  }
+  fs.writeFileSync(path.join(out, 'main.patch'), gitOut(repo, ...DIFF, baseSha, mainSha));
 }
 
 /** Copies each agent's transcripts, concatenated oldest first, to transcripts/<agent>.jsonl. */
@@ -102,6 +122,7 @@ export function harnessSummary(o: {
     models: t.configured, cap_ms: o.capMs, started_at: o.startedAt, ended_at: o.endedAt,
     m1_ms: all ? times.at(-1)! - start : null,
     m3_conflicts: [...o.view.lands.values()].filter((l) => taskIds.includes(l.taskId) && l.status === 'failed' && l.reason === 'conflict').length,
+    sync_conflicts: o.metrics.lands.syncConflicts,
     m4: { commits_after_first: commitsAfterFirst(o.repo, o.baseSha, o.mainSha, landedAt.size), ms_to_green: all && times.length ? times.at(-1)! - times[0]! : null },
     m5: o.metrics.interventions.total,
     m5b: o.metrics.deniedToolCalls,

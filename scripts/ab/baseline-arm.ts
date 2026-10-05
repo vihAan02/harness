@@ -285,6 +285,7 @@ export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSumma
       v: 1, arm: 'baseline', scenario: b.scenario, outcome, models: [model],
       m1_ms: allIn ? merged.at(-1)! - clockStart : null,
       m3_conflicts: integrations.filter((m) => m.detail?.outcome === 'conflict').length,
+      sync_conflicts: marks.filter((m) => m.what === 'sync' && m.detail?.outcome === 'conflict').length,
       m4: { commits_after_first: commitsAfterFirst(repo, baseSha, mainSha, merged.length), ms_to_green: allIn ? merged.at(-1)! - merged[0]! : null },
       // The runner's own fix requests in a rehearsal are typed into the terminal, so the transcripts count them like a human's.
       m5: messagesAfterCards + interrupts,

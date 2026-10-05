@@ -16,7 +16,7 @@ import { runBaseline } from '../scripts/ab/baseline-arm.ts';
 import { CoordinatorConsole } from '../scripts/ab/console.ts';
 import { Recorder } from '../scripts/ab/recorder.ts';
 import { checkSummary } from '../scripts/ab/summary.ts';
-import { commitsAfterFirst, surfaced } from '../scripts/ab/summarize.ts';
+import { commitsAfterFirst, independentTip, surfaced, writeDiffs } from '../scripts/ab/summarize.ts';
 import { readTranscript, transcriptUsage } from '../scripts/ab/transcripts.ts';
 
 const t = tempDir('ab-baseline');
@@ -100,6 +100,28 @@ test('M4\'s commits after the first integration discount the other task\'s own i
   assert.equal(commitsAfterFirst(repo, sha, two, 2), 0);
   assert.equal(commitsAfterFirst(repo, sha, commit('fix'), 2), 1, 'a fix on main after both');
   assert.equal(commitsAfterFirst(repo, sha, sha, 0), 0);
+});
+
+test('a task\'s independent diff stops at its first sync: what it did before it could see the other task\'s work (M3)', () => {
+  const { repo, sha } = makeRepo(path.join(t.dir, 'indep'), { 'types.ts': 'a\nb\nc\n' });
+  const write = (f: string, c: string, msg: string) => { fs.writeFileSync(path.join(repo, f), c); gitIn(repo, 'commit', '-q', '-am', msg); return gitIn(repo, 'rev-parse', 'HEAD'); };
+  gitIn(repo, 'checkout', '-q', '-b', 't2');
+  const before = write('types.ts', 'a\nb\nc\nd\n', 't2: d');
+  gitIn(repo, 'checkout', '-q', 'main');
+  write('types.ts', 'A\nb\nc\n', 't1 landed: A');
+  gitIn(repo, 'checkout', '-q', 't2');
+  gitIn(repo, 'merge', '-q', '--no-ff', '--no-edit', 'main'); // the sync
+  const final = write('types.ts', 'A2\nb\nc\nd\n', 't2 builds on t1\'s line');
+  assert.equal(independentTip(repo, sha, final), before);
+  assert.equal(independentTip(repo, sha, before), before, 'never synced: its final commit');
+  const dir = path.join(t.dir, 'indep-rec');
+  writeDiffs(dir, repo, sha, gitIn(repo, 'rev-parse', 'main'), [{ key: 'T2', commit: final }, { key: 'T3', commit: null }]);
+  const indep = fs.readFileSync(path.join(dir, 'diffs/T2.independent.patch'), 'utf8');
+  assert.match(indep, /^\+d$/m);
+  assert.doesNotMatch(indep, /A2|^\+A$/m, 'not the line it changed after seeing t1\'s');
+  assert.match(fs.readFileSync(path.join(dir, 'diffs/T2.patch'), 'utf8'), /^\+A2$/m, 'the final patch has everything');
+  assert.match(indep, /^--- a\/types\.ts$/m, 'fixed prefixes, whatever the user\'s git config');
+  assert.equal(fs.readFileSync(path.join(dir, 'diffs/T3.independent.patch'), 'utf8'), '');
 });
 
 /** Runs the baseline arm on a two-task repo whose test command is `testCommand`. */
