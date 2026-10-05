@@ -3,10 +3,13 @@
 // read confinement, sandbox and settings, env, the port block, and the repo's instruction files appended the
 // same way. None of the treatment: no harness tools, standing instructions, notices, claims or sync.
 //
-//   node scripts/ab/baseline-launch.ts --worktree <dir> --repo <main checkout> --agent <name> [--ports <base>:<count>] [--print]
+//   node scripts/ab/baseline-launch.ts --worktree <dir> --repo <main checkout> --agent <name> [--ports <base>:<count>]
+//          [--prompt-file <file>] [--session-id <uuid>] [--print]
 //
-// The human creates each worktree and branch, and runs one launcher per agent in its own terminal. --print
-// shows the command and the environment's names instead of starting it.
+// One launcher per agent, each in its own terminal; the A/B runner (B9b) prepares the worktrees and prints or
+// opens these commands. --prompt-file is the agent's first message (its task card), sent as the CLI's
+// initial prompt; --session-id names the session, so the runner can find its transcript and stop it at the
+// end. --print shows the command and the environment's names instead of starting it.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -62,11 +65,20 @@ function parsePorts(v: string | undefined): { base: number; count: number } | nu
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
-    options: { worktree: { type: 'string' }, repo: { type: 'string' }, agent: { type: 'string' }, ports: { type: 'string' }, print: { type: 'boolean' } },
+    options: {
+      worktree: { type: 'string' }, repo: { type: 'string' }, agent: { type: 'string' }, ports: { type: 'string' },
+      'prompt-file': { type: 'string' }, 'session-id': { type: 'string' }, print: { type: 'boolean' },
+    },
   });
-  if (!values.worktree || !values.repo || !values.agent) throw new Error('usage: baseline-launch --worktree <dir> --repo <main checkout> --agent <name> [--ports <base>:<count>] [--print]');
+  if (!values.worktree || !values.repo || !values.agent) throw new Error('usage: baseline-launch --worktree <dir> --repo <main checkout> --agent <name> [--ports <base>:<count>] [--prompt-file <file>] [--session-id <uuid>] [--print]');
+  const sessionId = values['session-id'];
+  if (sessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(sessionId)) throw new Error('--session-id must be a UUID');
   const spec = await baselineSpec({ worktree: values.worktree, repo: values.repo, agent: values.agent, ports: parsePorts(values.ports), log: (m) => process.stderr.write(`${m}\n`) });
-  const launch = new ClaudeAdapter().interactiveLaunch(spec);
+  const launch = new ClaudeAdapter().interactiveLaunch(sessionId ? { ...spec, sessionId } : spec);
+  // The first message goes last, as the CLI's initial prompt; it's text, never parsed as a flag.
+  const prompt = values['prompt-file'] ? fs.readFileSync(values['prompt-file'], 'utf8').trim() : '';
+  if (prompt.startsWith('-')) throw new Error('the prompt must not start with "-"');
+  if (prompt) launch.args.push(prompt);
   if (values.print) {
     // The key is in the environment, never in the arguments (D-64); only the names are shown.
     process.stdout.write(`${JSON.stringify({ cwd: launch.cwd, command: launch.command, args: launch.args, env: Object.keys(launch.env).sort() }, null, 2)}\n`);
