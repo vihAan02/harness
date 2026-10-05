@@ -8,7 +8,7 @@
 //   server_url = "ws://127.0.0.1:7400"
 //   [limits]  max_concurrent_agents = 2, ports_per_agent = 10, port_range = [3100, 3999]
 //   [setup]   allowed_domains = ["registry.npmjs.org"], timeout_seconds = 900
-//   [agents]  provider = "deepseek", max_budget_usd = 2   (both optional; see [providers.<name>] below)
+//   [agents]  provider = "openrouter", max_budget_usd = 2   (both optional; see [providers.<name>] below)
 //             model = "claude-haiku-4-5"                  (only without a provider: the vendor's default endpoint)
 //             read_allow = ["~/.cache/ms-playwright"]     (extra paths agents may read inside the home directory, D-98)
 //   [providers.<name>]  a model endpoint (D-87; README "Choosing a model provider"). Nothing here is a

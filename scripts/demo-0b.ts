@@ -6,7 +6,7 @@
 // with a diff, then finishes; the human lands it too.
 //
 //   npm run demo:0b                         scripted model: free, deterministic; everything else is real
-//   npm run demo:0b -- --real --provider deepseek
+//   npm run demo:0b -- --real --provider openrouter
 //                                           real agents on a configured provider (D-87), from
 //                                           docs/examples/providers.toml; needs that provider's key variable
 //   options: --bench <path|url>  the Shelf repo (default: github.com/vihAan02/harness-bench)
