@@ -139,6 +139,8 @@ export class Daemon {
       log: (msg) => this.log(msg),
       ...(o.leaseRenewMs ? { renewMs: o.leaseRenewMs } : {}),
       ...(o.faults?.leases ? { faults: o.faults.leases } : {}),
+      deviceId: this.config.deviceId,
+      projects: () => this.config.projects.map((p) => p.id),
     });
   }
 

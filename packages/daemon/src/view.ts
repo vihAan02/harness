@@ -34,6 +34,8 @@ export type MessageInfo = {
 /** A hard claim (D-97). `expiresAt` is as last granted or renewed; the server's clock is authoritative (F-84). */
 export type LeaseInfo = {
   id: string; taskId: string; path: string; token: number; expiresAt: string; grantedAt: string; by: string; force: boolean;
+  /** Its TTL in seconds, as granted (absent on grants logged before it was carried; D-97 default 120). */
+  ttlS?: number;
   releasedAt?: string; releaseReason?: string; expiredAt?: string;
 };
 /** An agent waiting for one thing, with a timeout (D-95). Exactly one outcome ends it. */
@@ -223,13 +225,14 @@ export class ProjectView {
       case 'lease.granted':
         this.leases.set(s('lease_id'), {
           id: s('lease_id'), taskId: s('task_id'), path: s('path'), token: Number(d.token), expiresAt: s('expires_at'), grantedAt: e.at,
-          by: s('by'), force: d.force === true,
+          by: s('by'), force: d.force === true, ...(Number.isInteger(d.ttl_s) ? { ttlS: d.ttl_s as number } : {}),
         });
         break;
       case 'lease.renewed':
-        for (const r of Array.isArray(d.leases) ? d.leases as { lease_id?: unknown; expires_at?: unknown }[] : []) {
+        for (const r of Array.isArray(d.leases) ? d.leases as { lease_id?: unknown; expires_at?: unknown; ttl_s?: unknown }[] : []) {
           const l = typeof r?.lease_id === 'string' ? this.leases.get(r.lease_id) : undefined;
           if (l && typeof r.expires_at === 'string') l.expiresAt = r.expires_at;
+          if (l && Number.isInteger(r.ttl_s)) l.ttlS = r.ttl_s as number; // a re-claim can change it (D-97)
         }
         break;
       case 'lease.expired': {
