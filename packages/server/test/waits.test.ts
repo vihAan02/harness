@@ -52,6 +52,12 @@ test('waiting for an answer: resolved by the sweep once it arrives, or at once i
   const again = await a.wait({ kind: 'answer', id: q });
   assert.deepEqual([again.outcome, again.result], ['resolved', { answer_id: ans }]);
   assert.deepEqual(await ofWait(again.wait_id), ['wait.started', 'wait.resolved']);
+  // A contract request is answered, and waited for, the same way (D-105).
+  const c = res(await a.as('message.send', { kind: 'contract_request', to: 'agent/wb1', text: 'Define { token }.' })).message_id as string;
+  const wc = await a.wait({ kind: 'answer', id: c }, 120);
+  const ca = res(await b.as('message.send', { kind: 'answer', in_reply_to: c, text: 'token: string' })).message_id as string;
+  assert.equal(await sweepWaits(db.pool), 1);
+  assert.deepEqual((await events(['wait.resolved'])).find((e) => e.data.wait_id === wc.wait_id)!.data.result, { answer_id: ca });
 });
 
 test('waiting for a task to finish, and for a lease to free up (released or expired)', async () => {

@@ -23,13 +23,13 @@ export function waitTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
   return [
     {
       name: 'wait_for',
-      description: 'Wait until something you need has happened: the answer to a question you asked (kind "answer", the question_id), '
+      description: 'Wait until something you need has happened: the answer to a question or contract request you sent (kind "answer", its ID), '
         + 'another task finishing (kind "task", its ID, e.g. T-3), or a lease freeing up (kind "lease", its lease_id). '
         + 'Returns at once. If it hasn\'t happened yet, end your turn: the harness starts your next turn when it does, '
         + `or when the timeout passes (default ${WAIT_TIMEOUT.default} seconds). One wait at a time.`,
       params: {
         kind: { type: 'string', description: 'answer, task or lease', maxLength: 10 },
-        id: { type: 'string', description: 'The question_id, task ID or lease_id', maxLength: 100 },
+        id: { type: 'string', description: 'The question_id or request_id, task ID or lease_id', maxLength: 100 },
         timeout_s: { type: 'number', description: `Seconds to wait at most (${WAIT_TIMEOUT.min} to ${WAIT_TIMEOUT.max})`, optional: true, min: WAIT_TIMEOUT.min, max: WAIT_TIMEOUT.max },
       },
       run: async (a) => {

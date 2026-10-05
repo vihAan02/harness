@@ -53,6 +53,40 @@ test('only typed kinds, capped text, and real recipients (D-24, Q-05)', async ()
   await rejects(run('message.send', { kind: 'answer', in_reply_to: 'msg_nope', text: 'hi' }, agentA), 'not_found');
 });
 
+test('a contract request goes to an agent and is answered like a question, once (D-105)', async () => {
+  const c = await run('message.send', { kind: 'contract_request', to: 'agent/b', text: 'Define the response of POST /login.', about_paths: ['src/types.ts'] }, agentA);
+  const cid = id(c, 'message_id');
+  const row = (await db.pool.query('SELECT kind, from_principal, to_principal, from_task_id, to_task_id, priority FROM messages WHERE id = $1', [cid])).rows[0];
+  assert.deepEqual(row, { kind: 'contract_request', from_principal: agentA, to_principal: agentB, from_task_id: taskA, to_task_id: taskB, priority: 'normal' });
+  await rejects(run('message.send', { kind: 'contract_request', to: 'agent/a', text: 'me' }, agentA), 'bad_request');
+  await rejects(run('message.send', { kind: 'answer', in_reply_to: cid, text: 'no' }, agentA), 'forbidden');
+  const a = await run('message.send', { kind: 'answer', in_reply_to: cid, text: '{ token: string }' }, agentB);
+  assert.equal((await db.pool.query('SELECT to_principal FROM messages WHERE id = $1', [id(a, 'message_id')])).rows[0].to_principal, agentA);
+  await rejects(run('message.send', { kind: 'answer', in_reply_to: cid, text: 'again' }, agentB), 'conflict');
+});
+
+test('task_blocked from an agent goes to its task\'s owner, says what blocks it, and counts only as sent (D-105)', async () => {
+  const sentBefore = (await db.pool.query('SELECT messages_sent, messages_received FROM budgets WHERE task_id = $1', [taskB])).rows[0] ?? { messages_sent: 0, messages_received: 0 };
+  const r = await run('message.send', { kind: 'task_blocked', text: 'I need the token format decided.', blocked_on: { kind: 'agent', id: 'agent/a' } }, agentB);
+  const ev = (await db.pool.query('SELECT data FROM events WHERE project_id = $1 AND seq = $2', [project, r.seqs[0]])).rows[0].data;
+  assert.deepEqual(ev, {
+    message_id: id(r, 'message_id'), kind: 'task_blocked', from: agentB, to: 'human_test', text: 'I need the token format decided.',
+    reason: 'agent_report', blocked_on: { kind: 'agent', id: agentA }, priority: 'normal', from_task_id: taskB, to_task_id: taskB,
+  });
+  const after = (await db.pool.query('SELECT messages_sent, messages_received FROM budgets WHERE task_id = $1', [taskB])).rows[0];
+  assert.deepEqual(after, { messages_sent: sentBefore.messages_sent + 1, messages_received: sentBefore.messages_received }, 'the task it is about is the sender\'s own');
+  // On a task, or a question or contract request; checked against the project.
+  const q = id(await run('message.send', { kind: 'question', to: 'agent/a', text: 'Token format?' }, agentB), 'message_id');
+  await run('message.send', { kind: 'task_blocked', text: 'Waiting for the answer.', blocked_on: { kind: 'question', id: q } }, agentB);
+  await run('message.send', { kind: 'task_blocked', text: 'Waiting for A.', blocked_on: { kind: 'task', id: taskA } }, agentB);
+  await rejects(run('message.send', { kind: 'task_blocked', text: 'x', blocked_on: { kind: 'task', id: 'T-999' } }, agentB), 'not_found');
+  await rejects(run('message.send', { kind: 'task_blocked', text: 'x', blocked_on: { kind: 'file', id: 'x' } }, agentB), 'bad_request');
+  await rejects(run('message.send', { kind: 'task_blocked', text: 'x', blocked_on: { kind: 'agent', id: 'agent/nobody' } }, agentB), 'not_found');
+  // The server picks the recipient, and only an agent working on a task reports it blocked.
+  await rejects(run('message.send', { kind: 'task_blocked', to: 'agent/a', text: 'x' }, agentB), 'bad_request');
+  await rejects(run('message.send', { kind: 'task_blocked', text: 'x' }), 'bad_request');
+});
+
 test('budgets: the 11th peer message from a task is held and reported, never counted (Q-05)', async () => {
   const c = id(await run('agent.create', { name: 'agent/c', vendor: 'claude' }), 'agent_id');
   const d = id(await run('agent.create', { name: 'agent/d', vendor: 'claude' }), 'agent_id');
