@@ -14,6 +14,10 @@ export type ToolContext = {
   send: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   /** How long a tool waits for the server before telling the agent the command is queued. */
   timeoutMs?: number;
+  /** Landed changes this task's branch doesn't have yet: `report_done` waits for them (D-106). harnessd supplies it. */
+  landedNotMerged?: () => string[];
+  /** Does this branch have task `taskId`'s land? If not, harnessd merges it at the turn end and then says so (D-106). */
+  mergeLand?: (taskId: string) => Promise<boolean>;
 };
 
 /** Sends one command for the agent; `ok` renders its result. Errors and timeouts become error results, never throws. */
