@@ -48,7 +48,10 @@ test('an agent waits for an answer: when it comes, harnessd pushes the outcome t
   const results = s.toolResults(`TASK: ${tWeb}`);
   assert.match(results[1]!, /^Waiting \(wait_id wait_[0-9a-f]+\)\. End your turn now\./, 'the wait started before the answer came');
   // A new turn if the agent had ended its turn by then; at Stop if the answer came first (D-100). Never between tools: there were none left.
-  const delivery = s.observed.find((x) => x.o.kind === 'delivery' && x.o.messageId === `wait:${dataOf(started).wait_id}`)!.o as { landed: string };
+  // The adapter records the delivery as it hands the notice over, which can be just after the model has it.
+  const isDelivery = (x: (typeof s.observed)[number]) => x.o.kind === 'delivery' && x.o.messageId === `wait:${dataOf(started).wait_id}`;
+  await s.until(() => s.observed.some(isDelivery), 10_000, 'the delivery to be recorded');
+  const delivery = s.observed.find(isDelivery)!.o as { landed: string };
   assert.ok(['new_turn', 'stop_hook'].includes(delivery.landed), delivery.landed);
 });
 
