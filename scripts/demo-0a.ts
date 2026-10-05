@@ -4,9 +4,9 @@
 //
 //   npm run demo                 scripted model: free, deterministic; everything else is real
 //   npm run demo -- --real       real agents: needs ANTHROPIC_API_KEY (D-56); costs a little
-//   npm run demo -- --real --provider deepseek
-//                                real agents on a configured provider (D-87), from docs/examples/providers.toml;
-//                                needs that provider's key variable (DEEPSEEK_API_KEY for deepseek)
+//   npm run demo -- --real --provider openrouter
+//                                real agents on a configured provider (D-87, D-104), from docs/examples/providers.toml;
+//                                needs that provider's key variable (OPENROUTER_API_KEY for openrouter)
 //   options: --bench <path|url>  the Shelf repo (default: github.com/vihAan02/harness-bench)
 //            --model <id>        with --real and no provider, the model for both agents
 //            --providers <file>  where --provider looks (default docs/examples/providers.toml)

@@ -190,3 +190,4 @@
 - **Also with the key (2026-10-03):** `npm run demo -- --real` runs the same round trip through the built product, with two real agents on the benchmark app (D-84).
 - **Blocks:** U-1 must close before 0A item 8's exit (the `question` → `answer` round trip). U-2 feeds T-1 in 0B.
 - **Deferred → D-86 (2026-10-03, S9):** 0B starts without U-1. When a key exists, the checks run per configured model (D-87): a DeepSeek key answers U-1 to U-3 for DeepSeek, and an Anthropic verdict still needs an Anthropic key. Which key to get, and where it goes, is in README "Choosing a model provider".
+- **OpenRouter (D-104, 2026-10-04, S11):** the key comes as `OPENROUTER_API_KEY`, and U-1 to U-3 run first on the pinned default (`deepseek/deepseek-v4.1-flash` on DeepSeek). Check the key with `node scripts/provider-check.ts --provider openrouter` first.
