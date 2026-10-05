@@ -54,8 +54,16 @@ function coreTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
       name: 'report_done',
       description: 'Tell the harness your task is finished. The harness then commits your work and ends this session, so call it once, at the very end.',
       params: { summary: { type: 'string', description: 'One line on what you did', optional: true, maxLength: 500 } },
-      run: (a) => call('task.complete', { task_id: ctx.taskId, ...(a.summary ? { summary: a.summary } : {}) },
-        () => `Recorded: ${ctx.taskId} is done. The harness will commit your work and end this session.`),
+      run: (a) => {
+        // Finishing on a branch that hasn't got a landed change would hand in work built on what's gone (D-106).
+        const behind = ctx.landedNotMerged?.() ?? [];
+        if (behind.length) {
+          return Promise.resolve({ isError: true, text: `Not done yet: work has landed that your branch doesn't have (${behind.join(', ')}). `
+            + 'End your turn now: the harness merges it into your branch and tells you what changed. Then check your work still holds, and call report_done again.' });
+        }
+        return call('task.complete', { task_id: ctx.taskId, ...(a.summary ? { summary: a.summary } : {}) },
+          () => `Recorded: ${ctx.taskId} is done. The harness will commit your work and end this session.`);
+      },
     },
   ];
 }

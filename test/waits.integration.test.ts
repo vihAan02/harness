@@ -75,6 +75,6 @@ test('a wait already over is answered by the tool itself; one that times out is 
   assert.equal(already, 'It has already happened: the task is abandoned. Carry on.');
   assert.match(waiting!, /^Waiting \(wait_id wait_[0-9a-f]+\)\. End your turn now\. .* after 10 seconds/);
   const seen = seenBy(`TASK: ${t}`);
-  assert.match(seen, new RegExp(`Your wait for task ${never} to finish timed out after 10 seconds without it happening, and your human has been told\\.`));
+  assert.match(seen, new RegExp(`Your wait for task ${never} to land timed out after 10 seconds without it happening, and your human has been told\\.`));
   assert.equal(seen.split('KIND: wait_outcome').length - 1, 1, 'one outcome notice: none for the wait the tool already answered');
 });

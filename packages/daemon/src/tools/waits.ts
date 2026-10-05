@@ -24,7 +24,7 @@ export function waitTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
     {
       name: 'wait_for',
       description: 'Wait until something you need has happened: the answer to a question or contract request you sent (kind "answer", its ID), '
-        + 'another task finishing (kind "task", its ID, e.g. T-3), or a lease freeing up (kind "lease", its lease_id). '
+        + 'another task landing, so its changes are in the base and then in your branch (kind "task", its ID, e.g. T-3), or a lease freeing up (kind "lease", its lease_id). '
         + 'Returns at once. If it hasn\'t happened yet, end your turn: the harness starts your next turn when it does, '
         + `or when the timeout passes (default ${WAIT_TIMEOUT.default} seconds). One wait at a time.`,
       params: {
@@ -37,12 +37,18 @@ export function waitTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
         if (!WAITABLE.includes(kind)) return { text: `kind must be one of: ${WAITABLE.join(', ')}`, isError: true };
         if (!ctx.sessionId) return { text: 'harness error: this session can\'t wait', isError: true };
         const timeout = typeof a.timeout_s === 'number' ? a.timeout_s : WAIT_TIMEOUT.default;
-        return call('wait.start', { session_id: ctx.sessionId, on: { kind, id: a.id }, ...(typeof a.timeout_s === 'number' ? { timeout_s: a.timeout_s } : {}) }, (r) => {
-          const w = r as { wait_id: string; outcome: string; result?: Record<string, unknown> };
-          return w.outcome === 'resolved'
-            ? `It has already happened: ${describeResult(kind, w.result)}. Carry on.`
-            : `Waiting (wait_id ${w.wait_id}). End your turn now. The harness starts your next turn when it happens, or after ${timeout} seconds if it doesn't.`;
+        let w: { wait_id: string; outcome: string; result?: Record<string, unknown> } | undefined;
+        const res = await call('wait.start', { session_id: ctx.sessionId, on: { kind, id: a.id }, ...(typeof a.timeout_s === 'number' ? { timeout_s: a.timeout_s } : {}) }, (r) => {
+          w = r as typeof w;
+          return '';
         });
+        if (res.isError || !w) return res;
+        if (w.outcome !== 'resolved') return { text: `Waiting (wait_id ${w.wait_id}). End your turn now. The harness starts your next turn when it happens, or after ${timeout} seconds if it doesn't.` };
+        // Already landed, but maybe not in this branch yet: harnessd merges it first (D-106).
+        if (kind === 'task' && w.result?.status === 'landed' && ctx.mergeLand && !(await ctx.mergeLand(String(a.id)))) {
+          return { text: `It has already happened: task ${String(a.id)} has landed, but your branch doesn't have it yet. End your turn now: the harness merges it into your branch, then starts your next turn.` };
+        }
+        return { text: `It has already happened: ${describeResult(kind, w.result)}. Carry on.` };
       },
     },
   ];
@@ -51,7 +57,7 @@ export function waitTools(ctx: ToolContext, call: CommandCall): HarnessTool[] {
 /** What a wait was for, in words. */
 function waitedFor(on: { kind: string; id: string }): string {
   if (on.kind === 'answer') return `the answer to ${on.id}`;
-  if (on.kind === 'task') return `task ${on.id} to finish`;
+  if (on.kind === 'task') return `task ${on.id} to land`;
   if (on.kind === 'lease') return `lease ${on.id} to free up`;
   return on.id;
 }
