@@ -285,7 +285,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
       M4: 'semantic rework after integration: post-integration log (0B)',
       M6: 'stale-context incidents reaching integration: hidden checks plus diff review (0B A/B setup)',
       M10: 'human coordination time: the coordinator\'s timer, same method in both arms',
-      ...(landForm ? {} : { M3: 'conflicting edits: from the land step, once the run lands tasks', M9: 'failed tests at first integration: from the land step, once the run lands tasks' }),
+      ...(landForm ? {} : { M3: 'conflicts at integration: from the land step, once the run lands tasks', M9a: 'failed tests at first integration: from the land step, once the run lands tasks' }),
     },
   };
 }
