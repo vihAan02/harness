@@ -363,6 +363,20 @@ The relay rule doesn't apply: the harness delivers what changed.
 - **M8:** harness arm: usage reports priced from the provider table. Baseline: the CLI transcripts' usage, priced from the same table (B9b).
 - **The judge's output** is JSON (A9 defines the schema). The judge never sees the hidden checks. Its results and the spot checks go in the results file.
 
+**Scoring rules (A9 implements them; they apply §5, and change nothing in it):**
+- **M2 in P2** is the count of extra copies. The lines removed in integration are reported beside it, never added to it, because a count and a line total don't add up.
+- **M3 in P2** is conflicts at integration plus overlapping hunks. A hunk of one task's final diff whose base lines intersect a hunk of the other's counts once per such pair.
+- **P1's halves:**
+  - first half, harness arm, coupled runs: surfaced ÷ planted ≥ 70%, summed over the runs;
+  - second half: the total of M6 reached plus M9b, harness against baseline, as §5 states it.
+- **M8 for G2** is total tokens per run: input, output, cache reads and cache writes. Cost is reported beside it.
+- **M1:** a run that never integrated counts as the cap.
+- **Medians:** per scenario, then the median across scenarios. With an even count, that's the mean of the middle two.
+- **G3 compares on SC-0:** M1, M2, M3, M4 (commits), M5, M6, M8, M9 (a + b) and M10. Count metrics use totals with the zero-baseline rule; time and token metrics use medians. M7 is left out: it counts the treatment's own channel, so the harness arm has messages the baseline can't have by construction.
+- **G4** takes the security tests' latest results (T-1, T-1b, T-2) as an input. Any one failing fails G4.
+- **"Inconclusive"** is never computed alone. If the primary rule isn't met but every primary metric moved in the harness's favour, the scorer says so, and the owners decide (§5).
+- **Void runs** are listed with their reasons, and never scored.
+
 ### Blinding and grading (B11)
 - **The hidden checks** live in the private repo `vihAan02/harness-hidden-checks`. Only the grader reads it; the coordinator and the coordinator's agents never do (D-94).
 - **What the runner writes per run:**
