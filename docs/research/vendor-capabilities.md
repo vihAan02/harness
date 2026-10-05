@@ -9,6 +9,7 @@
 > - **Empirical re-check:** the Claude facts the design leans on were re-tested against Claude Code 2.1.287 / Agent SDK 0.3.287 in the 0A spike ([spike-0a.md](spike-0a.md)). See the *Spike* lines under each F-ID, and C-14 to C-20.
 > - **What an F-ID is:** a researched claim with a source and a confidence mark. Trust the mark: `?` and `◐` items are **not** verified facts. They're kept here so the evidence for them stays in one place.
 > - **Added 2026-10-03:** F-24 to F-29 (Claude Code behind third-party endpoints), F-58 (`srt` loopback binding) and F-72 to F-77 (model providers), from one research pass over official docs, the pinned 2.1.287 binary and the srt 0.0.78 source, for D-87. Single-pass facts are ✔ at most; mock probes upgrade them where noted.
+> - **Added 2026-10-04:** F-111 and F-112 (OpenRouter as the real-model provider, D-104), from OpenRouter's live model API and docs.
 > - **Re-verify before writing code that depends on any of this.** Both agent vendors changed these surfaces several times in 2026.
 >
 > **Checker results:** Claude checker, 26 load-bearing claims: 18 confirmed, 8 corrected (details, none reversing a design conclusion), 0 refuted. Codex/infra/terms checker, 53 claims: 40 confirmed, 8 corrected, 2 "refuted" (both were claims the researcher had already marked contradicted, so the contradiction is confirmed), 3 uncertain (Anthropic's 2026 enforcement history and the OpenAI ToU clauses, secondary sources only).
@@ -514,6 +515,8 @@ Sources: [pricing](https://api-docs.deepseek.com/quick_start/pricing), [error co
 
 Sources: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration.md), [messages API](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message.md), [model fallbacks](https://openrouter.ai/docs/guides/routing/model-fallbacks.md), [provider selection](https://openrouter.ai/docs/guides/routing/provider-selection.md).
 
+*Re-checked 2026-10-04: F-111 (the model list, pinning a provider, both auth headers documented) and F-112 (the Claude Code guarantee is unchanged).*
+
 **F-75 ◐ OpenRouter free models** (volatile; from the live model list, 2026-10-03).
 - 17 `:free` models; none is a DeepSeek, Kimi, GLM or Qwen-Coder model. Tool-capable ones with at least 64K context include `qwen/qwen3.8-27b:free`, `nvidia/nemotron-3-super-120b-a12b:free`, `cohere/north-mini-code:free` and `google/gemma-4-31b-it:free`, each served by one provider.
 - **Free limits:** 20 requests a minute; 50 a day with under $10 of credits ever bought, 1,000 a day above that. Claude Code's background calls count too.
@@ -677,6 +680,22 @@ Source for F-106 to F-108: probes against the pinned CLI and the scripted mock (
 **F-110 ✔ The CLI warns that a `Write(path)` allow rule isn't matched by file permission checks: only `Edit(path)` rules are, and they cover every file-editing tool** (2.1.287, checked 2026-10-04). Printed at startup for the harness's own allow list. *Impact: the path-scoped `Edit(//<worktree>/**)` rule is what allows writes in the worktree (D-60); the `Write` rule beside it is redundant, and harmless.*
 
 Source for F-109 and F-110: the pinned CLI in a pseudo-terminal against the scripted mock; F-109 is pinned by `test/baseline.integration.test.ts`.
+
+**F-111 ✔ OpenRouter serves DeepSeek V4.1-Flash from 30 providers at different precisions, and one request field pins one** (checked 2026-10-04 from OpenRouter's live API; volatile).
+- **The model:** `deepseek/deepseek-v4.1-flash` (released 2026-09-10): 1,048,576 tokens of context, tools, `tool_choice` and reasoning. The listing's price is DeepSeek's own: $0.30 in, $1.20 out and $0.006 for cached input per million tokens (as F-73).
+- **Who serves it:** 30 endpoints, from $0.003 to $0.45 per million input tokens. Several are quantized (`fp8`, `fp4`) and others don't say. Default routing chooses among them per request, so the weights behind one model id can change between requests.
+- **Pinning:** the Messages API reference (`POST /api/v1/messages`) takes OpenRouter's `provider` object in the body (`only`, `order`, `allow_fallbacks`, `require_parameters`, `quantizations` and more) and up to three `models` fallbacks. `provider = { only = ["deepseek"], allow_fallbacks = false }` keeps every request on DeepSeek's own endpoint (provider tag `deepseek`; 99.99% uptime over 30 minutes when checked). ◐: from the reference, not yet probed with a live key.
+- **Auth:** the reference lists both `Authorization: Bearer` and `x-api-key` (◐; F-74 had it as ?).
+- **Haiku 4.5 on OpenRouter:** `anthropic/claude-haiku-4.5`, 200K context, $1 in, $5 out, $0.10 cached input and $1.25 cache writes per million tokens; served by Anthropic, Amazon Bedrock and Google Vertex.
+
+Sources: `GET https://openrouter.ai/api/v1/models?supported_parameters=tools`, `GET https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints` and `…/anthropic/claude-haiku-4.5/endpoints` (public, no key), [messages API](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message.md). *Impact: D-104's default and its pin.*
+
+**F-112 ✔ OpenRouter still guarantees Claude Code only on Anthropic's own provider** (checked 2026-10-04; re-checks F-74).
+- **The guide:** Claude Code with OpenRouter is "only guaranteed to work with the Anthropic first-party provider". It also warns that Claude Code is tuned for Anthropic models and may not work correctly with others, and recommends putting Anthropic first in provider order.
+- **Its settings:** `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN` set to the OpenRouter key, and `ANTHROPIC_API_KEY` explicitly empty; `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` is optional.
+- **The harness differs on one point:** it sets both variables to the key (D-90, C-21), so the check that rules out a subscription login still holds. The CLI then sends the key in both headers. Whether OpenRouter accepts that pair is ? until `scripts/provider-check.ts` runs with a key (its session stage sends exactly that).
+
+Source: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration.md). *Impact: D-104's fallback, `openrouter-haiku`.*
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
