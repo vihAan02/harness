@@ -1,6 +1,6 @@
 # Validation: the A/B test and the security tests
 
-> **Status:** design spec. The **pass bar in §5 is version 1, approved by the owner on 2026-10-01** (D-57). It's versioned and can't be weakened after results are seen. The A/B test runs on a **purpose-built benchmark repo**, then a real project is tested separately (D-58). [PLAN.md](../PLAN.md) wins on any conflict.
+> **Status:** design spec. The **pass bar in §5 is version 1, approved by the owner on 2026-10-01** (D-57). It's versioned and can't be weakened after results are seen. The protocol and parameters for the counted runs are in §9 (B10, D-121): a Proposal until both owners sign it. The A/B test runs on a **purpose-built benchmark repo**, then a real project is tested separately (D-58). [PLAN.md](../PLAN.md) wins on any conflict.
 
 ## 1. Why this exists (D-05, H-01, R-9)
 
@@ -130,13 +130,13 @@ These are the ten metrics S3 requires, each with a concrete definition.
 |---|---|---|---|---|
 | M1 | Total completion time | Wall clock from start until both tasks are integrated into main with tests green (or the cap is hit) | Event log | Recorder timestamps |
 | M2 | Duplicated work | Count of functionality implemented more than once, plus LOC removed during integration because of duplication | Post-run diff review against a rubric | Same |
-| M3 | Conflicting edits | Textual merge conflicts at integration, plus overlapping hunks on the same lines | Land step and Git | Git |
+| M3 | Conflicting edits | Textual merge conflicts when a task is integrated into main, plus **overlapping hunks**: lines of the scenario base that both tasks' final branches changed. Conflicts during a mid-run sync aren't M3: the baseline has no sync, so they're a harness diagnostic | Land step (conflicts at a land) and Git (overlap) | The runner's `merge` (§9) and Git (overlap) |
 | M4 | Semantic rework after integration | Commits and minutes needed after the first merge to restore green tests and correct behavior | Post-integration log | Same |
 | M5 | Human interventions | Human messages or actions to agents beyond the initial task assignment | Event log (human-originated events) | Chat-channel log plus terminal inputs |
 | M6 | Stale-context incidents | Times an agent acted on outdated information about a planted coupling, split into **caught before the task finished** and **reached integration** | Event log plus diff review | Diff review plus transcripts |
 | M7 | Messages exchanged | Agent↔agent and human↔agent messages, counted by kind | Event log | Chat log |
 | M8 | Tokens consumed | Input and output tokens (and cost) for all agents over the whole run | Adapter usage reports | Session transcripts / usage reports |
-| M9 | Failed tests / integration issues | Test failures at the first integration attempt; broken contracts reaching main | Test runner | Same |
+| M9 | Failed tests / integration issues | **M9a:** each task's first integration attempt whose tests fail (0 to 2 per run). **M9b:** hidden checks that fail on main as the run ended: broken contracts reaching main | M9a: the land step's tests. M9b: the grader (§9) | M9a: the runner's `merge` runs the same test command. M9b: the same |
 | M10 | Human coordination time | Minutes the human spends reading, relaying or deciding | Self-timer or screen log, same method in both arms | Same |
 
 **Harness-arm capture (0A, D-82):** `harness metrics [--json]` computes M1, M5, M5b, M7 and M8 from the event log, plus the diagnostics below that the log holds. M2, M3, M4, M6, M9 and M10 are scored as described in the table.
@@ -245,3 +245,119 @@ One results file per gate run, `docs/results/<date>-ab-gate.md` (created when th
 - links to the raw event logs.
 
 The owner records the go or no-go decision as a new D-ID in PLAN.md.
+
+## 9. The counted runs: protocol and parameters for `ab-v1` (B10, D-121)
+
+> **Status: Proposal until both owners sign it (the table at the end); frozen with the `ab-v1` tag.** Stream A wrote it, taking B10 over for the night of 2026-10-05 (S12). It changes nothing in the pass bar (§5). It fills in what §3 and §4 leave open: the parameters, the run order, the coordinator's rules, the rubric and the grading.
+
+### Parameters (the same in both arms)
+
+| Parameter | Value | Why |
+|---|---|---|
+| Model | `deepseek/deepseek-v4.1-flash` through OpenRouter, served by `parasail/fp8`, provider fallback off: the `openrouter` table in `docs/examples/providers.toml` (D-104) | The model the real-model checks and the MVP ran on (F-113). One model and one serving provider in both arms (§3) |
+| How that's checked | Each harness session records its model and provider, and `harness metrics` warns when they differ. The baseline launcher reads the same table (D-102). A run with any session on another model or provider is void | |
+| Time cap | **30 minutes** per run, wall clock from the assignment of both tasks. At the cap the run ends, main as it is then is graded, and M1 counts as 30 minutes | The S3-sized real runs took 1–2 minutes; the scenario tasks are bigger. The dry runs check it: if any needs more than 20 minutes, the cap becomes 45 before the freeze, never after |
+| Budget | Harness arm: `max_budget_usd = 2` per session, as a runaway stop only. Reaching it voids the run | The baseline CLI has no budget flag (D-102), so a budget stop could only ever hit one arm. $2 is far above any real run so far (about $0.02–$0.05) |
+| Permissions, allow list, sandbox, setting sources, auto memory, ports, Git | As §3, from harnessd's own config in both arms (D-102) | |
+| Benchmark | harness-bench tags `SC-0` to `SC-4` at `ae3198e`, checked against each card's `base_sha`; the cards as tagged in `ab-v1` (D-120) | |
+| Machine | One Mac, the coordinator's, for every run; one run at a time, nothing else heavy running | |
+| Coordinator | **Daniyal Mughal**, every run in both arms (D-94). Vihaan wrote the hidden checks, so he never coordinates | |
+| Grader | **Vihaan**, with the hidden checks, on arm-blinded trees (below) | |
+| Judge (M2, M6) | `anthropic/claude-sonnet-5.5` through OpenRouter, provider `anthropic` only, temperature 0, with the fixed prompts in `scripts/ab/rubric/` (A9) | A different model family from the agents', so no model grades its own kind |
+| Spot check | Vihaan re-judges at least 20% of the counted runs (6 of 30), drawn with a fixed seed before grading starts. The owners settle a disagreement, and it's logged | §4 |
+
+### Schedule and run order
+- **30 counted runs:** 5 scenarios × 3 pairs × 2 arms. Pair *p* of a scenario uses phrasing *p* in both arms.
+- **Order:** all the pair-1 runs, then pair 2, then pair 3. Within each round the scenarios go SC-0, SC-3, SC-1, SC-4, SC-2 (fixed here, before any run).
+- **Within a pair:** the two runs are back to back. **The harness arm goes first when the scenario number plus the pair number is even**, otherwise the baseline. In every scenario the first arm alternates from pair to pair, and over the 15 pairs the baseline goes first 8 times and the harness 7.
+- Breaks happen only between pairs. A sitting is at most 4 hours.
+- **Before the first counted run:** dry runs of both arms (B11): SC-0 with `--dry`, then one pair on SC-1 with a real model. They never count, and are used only to fix the machinery.
+
+### Void runs
+A run is void, and is run again with the same scenario, phrasing and arm order, only when:
+- the machinery failed, whatever the agents did: harnessd, the runner or the server crashed; Postgres or the network went down; the provider returned errors for more than 2 minutes;
+- a session ran on another model or provider;
+- the harness arm's budget stop was reached;
+- the coordinator broke the playbook (the note says how).
+
+Never because of a result. The void run stays in the record, and the results file lists it with its reason. A harness fix in the middle of the study follows the freeze rule: both owners approve it, and the affected runs are redone (D-94).
+
+### The coordinator's playbook
+**Both arms:**
+1. **Start** with the runner: `node scripts/ab/run.ts --arm harness|baseline --scenario SC-k --phrasing p --real --provider openrouter`. It clones the scenario, assigns both cards at once and starts M1's clock. In the baseline it prints the two launch commands, one per terminal.
+2. **The M10 timer:** press Enter in the runner's console when you start reading, relaying, deciding, approving or integrating, and again when you stop to wait. The runner logs each press; an interval still open at the end closes there.
+3. **Never write or edit code, and never tell an agent how to do its task.** You may:
+   - pass on facts (what the other task changed, a test's output);
+   - answer questions;
+   - approve;
+   - integrate;
+   - ask an agent to fix a failed integration.
+4. **When to step in.** These are the only triggers:
+   - an agent asks you something, or reports it's blocked;
+   - an agent finishes: integrate its task (step 5);
+   - an integration fails (step 6);
+   - an agent has sat idle for 5 minutes with its task unfinished: ask it for its status, once.
+
+   In the baseline, the relay rule below adds more.
+5. **Integrate each task as soon as its agent finishes**, in finishing order:
+   - harness arm: `harness land T-n`;
+   - baseline: `merge <agent>` in the runner's console. It commits the agent's worktree, merges its branch into main, and runs the scenario's test command (the one the land step runs). These are the commands you'd type yourself, run and recorded the same way in both arms (M3, M9a, M5c). A conflict or red tests leave main as it was, as a failed land does.
+6. **A failed integration** (a conflict or red tests): tell the agent whose integration failed what failed, pasting the conflict or the failing output, and ask it to fix its work. Then integrate again. In the baseline, first run `sync <agent>` in the console, which merges main into the agent's branch so it has what's already integrated, as harnessd's sync gives the harness arm's agents.
+7. **The run ends** when both tasks are integrated with tests green, at the cap, or when you stop it with Ctrl-C because nothing can progress. Add a note saying why.
+
+**Baseline only: the relay rule.** The baseline's human coordinates by relaying (§3), at fixed moments, so it isn't improvised differently each run:
+- **When an agent finishes:** read its final summary. Send the other agent, if it's still working, every change the summary names to a shared contract, type, schema, endpoint or helper, as facts and in one message. For example: "The backend task changed `POST /login` to return …".
+- **When an agent asks about the other task:** answer from what the other agent's terminal shows.
+- **Don't diff branches or read code** to find couplings the agents didn't mention. A human relaying between two terminals doesn't, and doing the harness's job by hand would hide the difference being measured.
+
+**Harness only:**
+- watch `harness status`;
+- land done tasks;
+- answer what's addressed to you, including `task_blocked` reports and capped Stop gates (B8).
+
+The relay rule doesn't apply: the harness delivers what changed.
+
+**The baseline's chat channel:**
+- **The agents' terminals are the channel.** Each message you send an agent after its card is one human→agent message (M5, M7), timestamped by the terminal recorder (B9b).
+- **The runner's console** takes notes and the commands above. It never reaches an agent.
+
+### Rubric (fixed before the first run)
+- **M2, duplicated work.** One unit is one piece of functionality implemented more than once: a helper, a validation rule, an endpoint, a query or a view function. It counts if it's on main as the run ended, or was written twice and one copy removed during integration. M2 is the number of extra copies, plus the lines removed during integration because of duplication.
+  - **The judge gets:** the scenario base, each task's final diff from it, main's final diff, and the two cards' titles. It lists each unit with both locations.
+  - **SC-4:** the grader's hidden check decides the planted helper; the judge adds any others.
+- **M6, stale-context incidents.**
+  - **What counts:** an agent wrote code or tests against the planted dependency as it was before the other task changed it, after the other task had changed it in its worktree. That means the old response shape, field or column, or for SC-4, a second ISBN helper written after the first existed.
+  - **Caught:** corrected by the agent's own later edits before its task finished.
+  - **Reached integration:** still in its work at integration. The grader's hidden checks decide "reached" (D-120). The judge decides "caught" from the agent's edits (its transcript's tool calls) against the run's timeline.
+  - **The count:** at most one incident per planted coupling per agent per run.
+- **P1's "surfaced before its task finished"** (harness arm): before the affected agent's task was done, the agent got a notice, a sync or a message naming a file of the planted change. A9 computes it from the event log. The planted changes:
+  - SC-1: the login response type and route;
+  - SC-2: the availability type;
+  - SC-3: the loans migration;
+  - SC-4: the ISBN helper;
+  - SC-0: none.
+- **M1:** from the assignment until both tasks are integrated with tests green. Harness arm: the last `land.completed`. Baseline: the runner's last green `merge`.
+- **M4:** commits to main after the first integration, and the minutes from the first integration until main is green with both tasks.
+- **M5:** harness arm: human actions to agents, as `harness metrics` counts them. Baseline: messages sent to agents after their cards. Integration actions are M5c in both arms, counted separately.
+- **M7:** harness arm: `message.sent` by kind. Baseline: human→agent messages; agent↔agent is 0 by construction.
+- **M8:** harness arm: usage reports priced from the provider table. Baseline: the CLI transcripts' usage, priced from the same table (B9b).
+- **The judge's output** is JSON (A9 defines the schema). The judge never sees the hidden checks. Its results and the spot checks go in the results file.
+
+### Blinding and grading (B11)
+- **The hidden checks** live in the private repo `vihAan02/harness-hidden-checks`. Only the grader reads it; the coordinator and the coordinator's agents never do (D-94).
+- **What the runner writes per run:**
+  - `runs/grade/<run-id>/`: main's tree as the run ended, without `.git`, every file dated 2000-01-01;
+  - `runs/grade/<run-id>.json`: `{ run_id, scenario }`, with no arm.
+
+  Everything that names the arm stays in `runs/record/`, with the coordinator.
+- **After each sitting,** the coordinator packs `runs/grade/` into one archive, in shuffled order, and hands it to the grader privately, never through this repo or an issue.
+- **The grader returns `grades.json`:** per run id, each check's result and the M2, M6 and M9 items the checks decide. The scorer (A9) joins grades and records by run id. The grader never sees `runs/record/`.
+- **Known limit:** M6's "caught" needs transcripts, and transcripts show the harness tools, so they reveal the arm. For M6 the judge and the spot-checker can't be blind to the arm. M2, M9 and the hidden checks are.
+
+### Sign-off
+Both owners sign before the first counted run, by approving the pull request that adds this section; the D-121 status records it. After the first counted run, a change follows §5's version rules: tightening at any time, loosening only for later runs, with a reason and both owners' sign-off.
+
+| Owner | Signed |
+|---|---|
+| Daniyal Mughal (`DaniyalMughal1`) | not yet |
+| Vihaan (`vihAan02`) | not yet |
