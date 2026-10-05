@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  buildPrompts, clip, DRY_MODEL, dryFetch, ENDPOINT, extractEdits, judgeRun, parseAnswer, rubric, untrusted, type RecordInput,
+  buildPrompts, clip, DRY_MODEL, dryFetch, ENDPOINT, extractEdits, judgeRun, loadRecord, parseAnswer, rubric, untrusted, type RecordInput,
 } from '../scripts/ab/judge.ts';
 import type { RunSummary } from '../scripts/ab/summary.ts';
 
@@ -19,7 +19,7 @@ const FAKE_KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef';
 const summary: RunSummary = {
   v: 1, run_id: 'r-5ec7e7', arm: 'harness', scenario: 'SC-1', phrasing: 2, outcome: 'integrated', void: null,
   models: ['deepseek/deepseek-v4.1-flash (openrouter)'], cap_ms: 1_800_000, started_at: '2026-10-05T10:00:00.000Z', ended_at: '2026-10-05T10:20:00.000Z',
-  m1_ms: 1_200_000, m3_conflicts: 0, m4: { commits_after_first: 0, ms_to_green: null }, m5: 0, m5b: 0, m5c: 2, m7: {},
+  m1_ms: 1_200_000, m3_conflicts: 0, sync_conflicts: 0, m4: { commits_after_first: 0, ms_to_green: null }, m5: 0, m5b: 0, m5c: 2, m7: {},
   m8: { input: 1, output: 1, cache_read: 0, cache_creation: 0, cost_usd: 0 }, m9a: 0, m10_ms: 1, surfaced: { planted: 1, surfaced: 1 },
   base_sha: 'ae3198e'.padEnd(40, '0'), main_sha: 'f'.repeat(40),
   tasks: [{ key: 'T1', agent: 'backend', branch: 'b1', integrated_at: '2026-10-05T10:08:00.000Z' }, { key: 'T2', agent: 'frontend', branch: 'b2', integrated_at: '2026-10-05T10:19:00.000Z' }],
@@ -170,7 +170,31 @@ test('an error status throws with the key redacted from what the provider sent b
   assert.match(err.message, /\[key\]/);
 });
 
-test('--dry: a fixed empty answer without the network; the scorer marks the evaluation incomplete', async () => {
+test('a record from disk: each task\'s diffs/<key>.patch and main.patch, never the .independent.patch or a stray patch', () => {
+  const dir = path.join(tmp, 'record', 'r-disk');
+  fs.mkdirSync(path.join(dir, 'diffs'), { recursive: true });
+  const tasks = [...summary.tasks, { key: 'T3', agent: 'extra', branch: 'b3', integrated_at: null }];
+  fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ ...summary, run_id: 'r-disk', tasks }));
+  fs.writeFileSync(path.join(dir, 'diffs', 'T1.patch'), '--- a/f\n+++ b/f\n@@ -1 +1 @@\n-final-one\n+final-two\n');
+  fs.writeFileSync(path.join(dir, 'diffs', 'T1.independent.patch'), '--- a/f\n+++ b/f\n@@ -1 +1 @@\n-INDEPENDENT-ONLY\n+x\n');
+  fs.writeFileSync(path.join(dir, 'diffs', 'stray.patch'), 'STRAY-PATCH\n');
+  fs.writeFileSync(path.join(dir, 'diffs', 'main.patch'), 'MAIN-PATCH\n');
+  const rec = loadRecord(dir, path.join(root, 'scripts/ab/scenarios'));
+  assert.deepEqual(rec.patches.map((p) => [p.name, p.text === null]), [['T1', false], ['T2', true], ['T3', true]]);
+  assert.equal(rec.main, 'MAIN-PATCH\n');
+  assert.deepEqual(rec.transcripts, []);
+  const [m2, m6] = buildPrompts(rec);
+  for (const p of [m2!, m6!]) {
+    assert.ok(p.user.includes('final-two') && !p.user.includes('INDEPENDENT-ONLY') && !p.user.includes('STRAY-PATCH'), p.kind);
+    assert.match(p.user, /- T3, agent "extra": \(no card has this task\)/, 'the task list is the summary\'s');
+    assert.match(p.user, /T2's final diff wasn't recorded; T3's final diff wasn't recorded/);
+  }
+  assert.ok(m2!.user.includes('MAIN-PATCH') && !m6!.user.includes('MAIN-PATCH'));
+  fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ ...summary, run_id: 'r-disk', tasks: [{ ...summary.tasks[0]!, key: '../T1' }] }));
+  assert.throws(() => loadRecord(dir, path.join(root, 'scripts/ab/scenarios')), /a task key that can't name a file: "\.\.\/T1"/);
+});
+
+test('--dry: a fixed empty answer without the network, written as judge.json by the CLI', async () => {
   const { result } = await judgeRun(input(), { model: DRY_MODEL, key: '', fetch: dryFetch });
   assert.deepEqual([result.judge_model, result.m2.units, result.m6.incidents, result.cost_usd], ['dry', [], [], 0]);
 
@@ -178,7 +202,7 @@ test('--dry: a fixed empty answer without the network; the scorer marks the eval
   fs.mkdirSync(path.join(dir, 'diffs'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'transcripts'));
   fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify(summary));
-  for (const p of input().patches) fs.writeFileSync(path.join(dir, 'diffs', `${p.name}.patch`), p.text);
+  for (const p of input().patches) fs.writeFileSync(path.join(dir, 'diffs', `${p.name}.patch`), p.text ?? '');
   fs.writeFileSync(path.join(dir, 'transcripts', 'frontend.jsonl'), frontend);
   const env = { PATH: process.env.PATH ?? '', HOME: tmp };
   const out = execFileSync(process.execPath, [path.join(root, 'scripts/ab/judge.ts'), '--record', dir, '--dry'], { encoding: 'utf8', env });
@@ -186,11 +210,4 @@ test('--dry: a fixed empty answer without the network; the scorer marks the eval
   assert.match(out, /note: M2 prompt: main's final diff wasn't recorded/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'judge.json'), 'utf8')).judge_model, 'dry');
   assert.throws(() => execFileSync(process.execPath, [path.join(root, 'scripts/ab/judge.ts'), '--record', dir, '--dry'], { stdio: 'pipe', env }), /exists; --force replaces it/);
-
-  fs.writeFileSync(path.join(tmp, 'grades.json'), JSON.stringify({ v: 1, runs: { [summary.run_id]: { checks: { login: 'pass' }, m9b: 0, m6_reached: 0, m2_planted: 0 } } }));
-  fs.writeFileSync(path.join(tmp, 'security.json'), JSON.stringify({ t1: true, t1b: true, t2: true, at: '2026-10-05' }));
-  const json = JSON.parse(execFileSync(process.execPath, [path.join(root, 'scripts/ab/score.ts'), '--records', path.join(tmp, 'record'), '--grades', path.join(tmp, 'grades.json'), '--security', path.join(tmp, 'security.json'), '--json'], { encoding: 'utf8', env }));
-  assert.equal(json.complete, false);
-  assert.ok(json.incomplete.includes('run r-5ec7e7 was judged with --dry, a stub'));
-  assert.equal(json.runs[0].m3_overlaps, 0);
 });

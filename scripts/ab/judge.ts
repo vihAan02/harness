@@ -33,8 +33,9 @@ export type Limits = typeof LIMITS;
 
 export type Card = { scenario: string; name: string; tasks: { key: string; agent: string; title: string }[] };
 export type Edit = { agent: string; at: string | null; tool: string; file: string; snippet: string };
+/** One run as the judge reads it. `patches` follows summary.tasks, one per task: its diffs/<key>.patch, or null if it wasn't recorded. */
 export type RecordInput = {
-  summary: RunSummary; card: Card; patches: { name: string; text: string }[]; main: string | null; transcripts: { agent: string; text: string }[];
+  summary: RunSummary; card: Card; patches: { name: string; text: string | null }[]; main: string | null; transcripts: { agent: string; text: string }[];
 };
 export type Prompt = { kind: 'm2' | 'm6'; system: string; user: string; cut: string[] };
 
@@ -115,19 +116,22 @@ export function rubric(kind: 'm2' | 'm6', scenario: string, dir = RUBRIC_DIR): s
   return `${text.slice(0, at)}\n${own.trimEnd()}\n`;
 }
 
-/** One run's record as the judge reads it: summary, card, diffs, transcripts. */
+/**
+ * One run's record as the judge reads it: the summary, the card, each task's diffs/<key>.patch (the task as it
+ * ended) and diffs/main.patch, and the transcripts. Never the .independent.patch files, which are M3's (summary.ts).
+ */
 export function loadRecord(dir: string, cardsDir: string): RecordInput {
   const summary = checkSummary(JSON.parse(fs.readFileSync(path.join(dir, 'summary.json'), 'utf8')), path.join(dir, 'summary.json'));
   const card = JSON.parse(fs.readFileSync(path.join(cardsDir, `${summary.scenario}.json`), 'utf8')) as Card;
-  const read = (sub: string, ext: string) => {
-    const d = path.join(dir, sub);
-    return !fs.existsSync(d) ? [] : fs.readdirSync(d).sort().filter((f) => f.endsWith(ext)).map((f) => ({ name: f.slice(0, -ext.length), text: fs.readFileSync(path.join(d, f), 'utf8') }));
-  };
-  const diffs = read('diffs', '.patch');
-  return {
-    summary, card, patches: diffs.filter((p) => p.name !== 'main'), main: diffs.find((p) => p.name === 'main')?.text ?? null,
-    transcripts: read('transcripts', '.jsonl').map((t) => ({ agent: t.name, text: t.text })),
-  };
+  const maybe = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null);
+  const patches = summary.tasks.map((t) => {
+    if (typeof t?.key !== 'string' || !/^[A-Za-z0-9_-]+$/.test(t.key)) throw new Error(`summary.json: a task key that can't name a file: ${JSON.stringify(t?.key)}`);
+    return { name: t.key, text: maybe(path.join(dir, 'diffs', `${t.key}.patch`)) };
+  });
+  const td = path.join(dir, 'transcripts');
+  const transcripts = !fs.existsSync(td) ? [] : fs.readdirSync(td).sort().filter((f) => f.endsWith('.jsonl'))
+    .map((f) => ({ agent: f.slice(0, -'.jsonl'.length), text: fs.readFileSync(path.join(td, f), 'utf8') }));
+  return { summary, card, patches, main: maybe(path.join(dir, 'diffs', 'main.patch')), transcripts };
 }
 
 /** The M2 and M6 prompts for one run. Neither names the arm, the run id or the agents' model. */
@@ -135,8 +139,8 @@ export function buildPrompts(input: RecordInput, limits: Limits = LIMITS, rubric
   const { summary: s, card } = input;
   const header = [
     `Scenario ${s.scenario} ("${card.name}"), from base commit ${s.base_sha}.`,
-    'The two tasks, from their cards:',
-    ...card.tasks.map((t) => `- ${t.key}, agent "${t.agent}": "${t.title}"`),
+    'The tasks, with their titles from the cards:',
+    ...s.tasks.map((t) => `- ${t.key}, agent "${t.agent}": ${((c) => (c ? `"${c.title}"` : '(no card has this task)'))(card.tasks.find((c) => c.key === t.key))}`),
   ];
   const block = (cut: string[], name: string, text: string, max: number) => {
     const c = clip(text, max);
@@ -144,8 +148,8 @@ export function buildPrompts(input: RecordInput, limits: Limits = LIMITS, rubric
     return untrusted(name, c.text);
   };
   const patches = (cut: string[]) => {
-    if (!input.patches.length) cut.push('no task diffs were recorded');
-    return input.patches.map((p) => `${p.name}'s final diff from the base:\n${block(cut, `diffs/${p.name}.patch`, p.text, limits.patch)}`);
+    for (const p of input.patches) if (p.text === null) cut.push(`${p.name}'s final diff wasn't recorded`);
+    return input.patches.flatMap((p) => (p.text === null ? [] : [`${p.name}'s final diff from the base:\n${block(cut, `diffs/${p.name}.patch`, p.text, limits.patch)}`]));
   };
   const finish = (kind: Prompt['kind'], cut: string[], parts: string[]): Prompt => ({
     kind, cut, system: rubric(kind, s.scenario, rubricDir),
