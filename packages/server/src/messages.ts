@@ -5,8 +5,16 @@ import { randomUUID } from 'node:crypto';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { normalizeScopePath } from './tasks.ts';
 
-/** Kinds an agent or human may send in 0A. claim_conflict comes only from the harness itself; 0B adds contract_request and task_blocked. */
-export const SENDABLE_KINDS = ['question', 'answer'];
+/**
+ * Kinds an agent or human may send (D-24). claim_conflict and dependency_changed come only from the harness
+ * itself. 0B adds contract_request (agent to agent, answered like a question) and task_blocked (an agent
+ * reporting its own task blocked, to the task's owner) (D-105).
+ */
+export const SENDABLE_KINDS = ['question', 'answer', 'contract_request', 'task_blocked'];
+/** What `answer` may reply to: each gets at most one answer. */
+export const ANSWERABLE_KINDS = ['question', 'contract_request'];
+/** What a task_blocked report may say it's blocked on (coordination.md §3). */
+const BLOCKED_ON = ['agent', 'task', 'question'];
 /** The text cap (Q-05 proposal, the 0A default). */
 export const TEXT_CAP = 500;
 /** Peer messages per task, each way (Q-05 proposal, the 0A default). Harness notices don't count. */
@@ -32,7 +40,12 @@ async function resolveAgent(ctx: HandlerContext, ref: unknown): Promise<string> 
   return r.rows[0].id;
 }
 
-/** `message.send { kind: question | answer, to?, in_reply_to?, text, about_paths? }` → `message.sent`. */
+/**
+ * `message.send { kind, to?, in_reply_to?, blocked_on?, text, about_paths? }` → `message.sent`.
+ * - `question` and `contract_request`: `to` an agent, by name or id.
+ * - `answer`: `in_reply_to` a question or contract request asked of the sender.
+ * - `task_blocked`: from an agent about its own task; the server sends it to the task's owner (D-105).
+ */
 export async function sendMessage(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   const from = ctx.actor.principal;
   const kind = args.kind;
@@ -48,31 +61,43 @@ export async function sendMessage(ctx: HandlerContext, args: Record<string, unkn
 
   let to: string;
   let inReplyTo: string | null = null;
-  if (kind === 'question') {
+  const fromTask = await activeTaskOf(ctx, from);
+  let toTask: string | null;
+  let data: Record<string, unknown> = aboutPaths ? { about_paths: aboutPaths } : {};
+  if (kind === 'question' || kind === 'contract_request') {
     to = await resolveAgent(ctx, args.to);
-    if (to === from) throw new CommandError('bad_request', 'an agent cannot ask itself');
-  } else {
-    if (typeof args.in_reply_to !== 'string') throw new CommandError('bad_request', 'an answer needs in_reply_to: the question id');
+    if (to === from) throw new CommandError('bad_request', `an agent cannot send a ${kind} to itself`);
+    toTask = await activeTaskOf(ctx, to);
+  } else if (kind === 'answer') {
+    if (typeof args.in_reply_to !== 'string') throw new CommandError('bad_request', 'an answer needs in_reply_to: the question or contract request id');
     const q = (await ctx.tx.query<{ kind: string; from_principal: string; to_principal: string | null }>(
       'SELECT kind, from_principal, to_principal FROM messages WHERE id = $1 AND project_id = $2 FOR UPDATE', [args.in_reply_to, ctx.projectId])).rows[0];
-    if (!q || q.kind !== 'question') throw new CommandError('not_found', `no question ${args.in_reply_to}`);
-    if (q.to_principal !== from) throw new CommandError('forbidden', `question ${args.in_reply_to} wasn't asked of you`);
+    if (!q || !ANSWERABLE_KINDS.includes(q.kind)) throw new CommandError('not_found', `no question or contract request ${args.in_reply_to}`);
+    if (q.to_principal !== from) throw new CommandError('forbidden', `${q.kind === 'question' ? 'question' : 'contract request'} ${args.in_reply_to} wasn't sent to you`);
     const answered = await ctx.tx.query("SELECT 1 FROM messages WHERE in_reply_to = $1 AND kind = 'answer'", [args.in_reply_to]);
-    if (answered.rowCount) throw new CommandError('conflict', `question ${args.in_reply_to} already has an answer`);
+    if (answered.rowCount) throw new CommandError('conflict', `${args.in_reply_to} already has an answer`);
     to = q.from_principal;
     inReplyTo = args.in_reply_to;
+    toTask = await activeTaskOf(ctx, to);
+  } else {
+    // task_blocked: an agent says its own task can't go on. Its human decides what happens next, so the
+    // report goes to the task's owner, never to a peer (D-105; the harness's own task_blocked does the same).
+    if (!fromTask) throw new CommandError('bad_request', 'task_blocked comes from an agent about the task it is working on');
+    if (args.to !== undefined) throw new CommandError('bad_request', "task_blocked goes to the task's owner; leave `to` out");
+    to = (await ctx.tx.query<{ owner_human_id: string }>('SELECT owner_human_id FROM tasks WHERE id = $1', [fromTask])).rows[0]!.owner_human_id;
+    toTask = fromTask; // the task the report is about, as for the harness's own task_blocked
+    data = { ...data, reason: 'agent_report', ...(args.blocked_on !== undefined ? { blocked_on: await blockedOn(ctx, args.blocked_on) } : {}) };
   }
 
   const id = newMessageId();
-  const fromTask = await activeTaskOf(ctx, from);
-  const toTask = await activeTaskOf(ctx, to);
-  const data = aboutPaths ? { about_paths: aboutPaths } : {};
   const events: HandlerOutput['events'] = [];
-  // Budgets (D-24, Q-05): per task, sent by the sender's task and received by the recipient's.
-  const over = await overBudget(ctx, fromTask, toTask);
+  // Budgets (D-24, Q-05): per task, sent by the sender's task and received by the recipient's. A blocked
+  // report counts only as sent: the task it's about is the sender's own.
+  const receiver = kind === 'task_blocked' ? null : toTask;
+  const over = await overBudget(ctx, fromTask, receiver);
   for (const o of over) events.push({ kind: 'budget.exceeded', data: { task_id: o.task, direction: o.direction, limit: BUDGET[o.direction], message_id: id } });
   const held = over.length > 0;
-  if (!held) await countMessage(ctx, fromTask, toTask);
+  if (!held) await countMessage(ctx, fromTask, receiver);
   await ctx.tx.query(
     `INSERT INTO messages (id, project_id, kind, from_principal, to_principal, in_reply_to, text, data, priority, from_task_id, to_task_id, held)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'normal', $9, $10, $11)`,
@@ -85,6 +110,20 @@ export async function sendMessage(ctx: HandlerContext, args: Record<string, unkn
     },
   });
   return { result: { message_id: id, ...(held ? { held: true } : {}) }, events };
+}
+
+/** `blocked_on: { kind: agent | task | question, id }`, checked against this project; agents are stored by id. */
+async function blockedOn(ctx: HandlerContext, v: unknown): Promise<{ kind: string; id: string }> {
+  const o = v as { kind?: unknown; id?: unknown } | null;
+  if (!o || typeof o !== 'object' || typeof o.kind !== 'string' || !BLOCKED_ON.includes(o.kind) || typeof o.id !== 'string' || !o.id || o.id.length > 100) {
+    throw new CommandError('bad_request', `blocked_on must be { kind: ${BLOCKED_ON.join(' | ')}, id }`);
+  }
+  if (o.kind === 'agent') return { kind: 'agent', id: await resolveAgent(ctx, o.id) };
+  const found = o.kind === 'task'
+    ? await ctx.tx.query('SELECT 1 FROM tasks WHERE id = $1 AND project_id = $2', [o.id, ctx.projectId])
+    : await ctx.tx.query('SELECT 1 FROM messages WHERE id = $1 AND project_id = $2 AND kind = ANY($3)', [o.id, ctx.projectId, ANSWERABLE_KINDS]);
+  if (!found.rowCount) throw new CommandError('not_found', `no ${o.kind} ${o.id}`);
+  return { kind: o.kind, id: o.id };
 }
 
 async function overBudget(ctx: HandlerContext, fromTask: string | null, toTask: string | null): Promise<{ task: string; direction: 'sent' | 'received' }[]> {
