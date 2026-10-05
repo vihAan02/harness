@@ -464,3 +464,12 @@ test('(14) percentages show one decimal; pass and fail come from the exact numbe
   const third = ev((arm, sc, i) => (arm === 'harness' && ['SC-1', 'SC-2', 'SC-3'].includes(sc) && i === 0 ? { s: { surfaced: { planted: 1, surfaced: 0 } } } : {}));
   assert.match(renderReport(third), /\| 6 of 9 \(66\.7%\) \| \(harness arm only\) \| ≥ 70% \| ✖ not met \|/);
 });
+
+test('a judge result written with --dry is a stub: the evaluation is incomplete', () => {
+  const s = study();
+  const r = s.loaded.records.find((x) => x.dir === 'r-SC-4-harness-1')!;
+  r.judge = { ...r.judge!, judge_model: 'dry', cost_usd: 0 };
+  const dry = evaluate(s.loaded, s.grades, SECURE);
+  assert.equal(dry.outcome, 'incomplete');
+  assert.deepEqual(dry.incomplete, ['run r-SC-4-harness-1 (SC-4, harness) was judged with --dry, a stub']);
+});
