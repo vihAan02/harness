@@ -48,6 +48,22 @@ async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id
   return l.released ? { lease: 'released' } : l.expired ? { lease: 'expired' } : null;
 }
 
+/**
+ * The chain of open task waits from `from` that comes back to `to`, if there is one: waiting for `from` would
+ * close a cycle, and every task in it would wait until its timeout (D-108; the wait-for graph of D-27).
+ */
+async function waitCycle(ctx: HandlerContext, from: string, to: string): Promise<string[] | null> {
+  const chain = [from];
+  for (let at = from; chain.length <= 50;) {
+    const next = (await ctx.tx.query<{ on_id: string }>("SELECT on_id FROM waits WHERE project_id = $1 AND task_id = $2 AND on_kind = 'task' AND outcome IS NULL", [ctx.projectId, at])).rows[0]?.on_id;
+    if (!next || chain.includes(next)) return null;
+    chain.push(next);
+    if (next === to) return chain;
+    at = next;
+  }
+  return null;
+}
+
 /** Settles one open wait if it can be settled now. Returns its events (none if it's still waiting). `at`: see happened(). */
 async function settle(tx: pg.ClientBase, w: WaitRow, at: string | null): Promise<NewEvent[]> {
   const on = { kind: w.on_kind, id: w.on_id };
@@ -91,6 +107,8 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   if (typeof on.id !== 'string' || !ID.test(on.id)) throw new CommandError('bad_request', 'on.id is missing or malformed');
   const kind = on.kind as WaitKind;
   const at = kind === 'lease' ? await lockLeases(ctx) : null; // before any row lock (D-97); see happened()
+  // Task waits are checked for cycles (D-108): two of them starting at once mustn't both miss the other.
+  if (kind === 'task') await ctx.tx.query("SELECT pg_advisory_xact_lock(hashtext('harness.waits:' || $1))", [ctx.projectId]);
   const timeout = args.timeout_s === undefined ? TIMEOUT.default : args.timeout_s;
   if (!Number.isInteger(timeout) || (timeout as number) < TIMEOUT.min || (timeout as number) > TIMEOUT.max) {
     throw new CommandError('bad_request', `timeout_s must be a whole number of seconds from ${TIMEOUT.min} to ${TIMEOUT.max}`);
@@ -113,6 +131,10 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   } else if (kind === 'task') {
     if (on.id === sess.task_id) throw new CommandError('bad_request', 'a task cannot wait for itself');
     if (!(await ctx.tx.query('SELECT 1 FROM tasks WHERE id = $1 AND project_id = $2', [on.id, ctx.projectId])).rowCount) throw new CommandError('not_found', `no task ${on.id}`);
+    const cycle = await waitCycle(ctx, on.id, sess.task_id);
+    if (cycle) {
+      throw new CommandError('conflict', `${cycle.join(' waits for ')}: ${on.id} is already waiting for your task, so waiting for it would leave both waiting until the timeout. Don't wait: finish your part, report done, and say in your summary what ${on.id} needs from it (D-108)`);
+    }
   } else if (!(await ctx.tx.query('SELECT 1 FROM leases WHERE id = $1 AND project_id = $2', [on.id, ctx.projectId])).rowCount) {
     throw new CommandError('not_found', `no lease ${on.id}`);
   }

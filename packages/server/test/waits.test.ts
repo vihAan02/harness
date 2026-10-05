@@ -224,3 +224,34 @@ test('a lease that runs out while wait.start waits for the lease lock is expired
   const w = await starting;
   assert.deepEqual([w.outcome, w.result], ['resolved', { lease: 'expired' }]);
 });
+
+test('a task wait that would close a cycle is refused, directly or through a chain; concurrent ones can\'t both slip through (D-108)', async () => {
+  const a = await worker('agent/cy1');
+  const b = await worker('agent/cy2');
+  const c = await worker('agent/cy3');
+  assert.equal((await a.wait({ kind: 'task', id: b.task })).outcome, 'waiting');
+  await rejects(b.wait({ kind: 'task', id: a.task }), 'conflict', new RegExp(`^${a.task} waits for ${b.task}: ${a.task} is already waiting for your task`));
+  // Through a chain: a → b → c, then c → a closes it.
+  assert.equal((await b.wait({ kind: 'task', id: c.task })).outcome, 'waiting');
+  await rejects(c.wait({ kind: 'task', id: a.task }), 'conflict', new RegExp(`^${a.task} waits for ${b.task} waits for ${c.task}:`));
+  // Negative control: no cycle, no refusal (c may wait on another task, or for an answer).
+  const d = await worker('agent/cy4');
+  assert.equal((await c.wait({ kind: 'task', id: d.task })).outcome, 'waiting');
+  // Two that would close a cycle at once: e's wait.start holds the waits lock and has inserted its wait, not
+  // yet committed. f's waits for that lock, then sees e's wait and is refused; it never misses it.
+  const e = await worker('agent/cy5');
+  const f = await worker('agent/cy6');
+  const x = await db.pool.connect();
+  await x.query('BEGIN');
+  await x.query("SELECT pg_advisory_xact_lock(hashtext('harness.waits:' || $1))", [project]);
+  await x.query("INSERT INTO waits (id, project_id, task_id, session_id, agent_id, on_kind, on_id, timeout_at) VALUES ('wait_inflight', $1, $2, $3, $4, 'task', $5, now() + interval '10 minutes')",
+    [project, e.task, e.session, e.agent, f.task]);
+  let settled = false;
+  const second = f.wait({ kind: 'task', id: e.task }).finally(() => { settled = true; });
+  second.catch(() => {});
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(settled, false, 'it waits for the waits lock');
+  await x.query('COMMIT');
+  x.release();
+  await rejects(second, 'conflict', /is already waiting for your task/);
+});
