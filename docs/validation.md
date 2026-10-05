@@ -302,7 +302,9 @@ Never because of a result. The void run stays in the record, and the results fil
 5. **Integrate each task as soon as its agent finishes**, in finishing order:
    - harness arm: `harness land T-n`;
    - baseline: `merge <agent>` in the runner's console. It commits the agent's worktree, merges its branch into main, and runs the scenario's test command (the one the land step runs). These are the commands you'd type yourself, run and recorded the same way in both arms (M3, M9a, M5c). A conflict or red tests leave main as it was, as a failed land does.
-6. **A failed integration** (a conflict or red tests): tell the agent whose integration failed what failed, pasting the conflict or the failing output, and ask it to fix its work. Then integrate again. In the baseline, first run `sync <agent>` in the console, which merges main into the agent's branch so it has what's already integrated, as harnessd's sync gives the harness arm's agents.
+6. **A failed integration** (a conflict or red tests): tell the agent whose integration failed what failed, pasting the conflict or the failing output, and ask it to fix its work. Then integrate again.
+   - **Harness arm:** `harness task reopen T-n --text "<what failed>"` sends the done task back to its agent, in a new session on its branch (D-107). **This needs D-107, which an owner must approve before the counted runs.** Without it, a done task's agent can't be asked anything (D-96).
+   - **Baseline:** first run `sync <agent>` in the console, which merges main into the agent's branch so it has what's already integrated, as harnessd's sync does in the harness arm. Then type the request into its terminal.
 7. **The run ends** when both tasks are integrated with tests green, at the cap, or when you stop it with Ctrl-C because nothing can progress. Add a note saying why.
 
 **Baseline only: the relay rule.** The baseline's human coordinates by relaying (§3), at fixed moments, so it isn't improvised differently each run:
