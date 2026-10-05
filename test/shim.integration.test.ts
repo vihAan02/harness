@@ -37,7 +37,7 @@ test('an agent sees its peers, asks one a question and reports done, through the
   assert.match(status!, new RegExp(`agent/frontend: working on ${tWeb} "Login page" \\(in_progress\\); session idle`));
   assert.match(status!, /scope: src\/web\//);
   assert.match(asked!, new RegExp(`question_id: ${String(msg.message_id)}`));
-  assert.match(badAnswer!, /not_found: no question msg_nonexistent/);
+  assert.match(badAnswer!, /not_found: no question or contract request msg_nonexistent/);
   assert.match(done!, new RegExp(`${tApi} is done`));
 
   // The model saw exactly the base tools plus the pinned shim tools, none deferred (F-15, D-66, D-94).

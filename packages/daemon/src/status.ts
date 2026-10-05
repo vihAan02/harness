@@ -43,15 +43,16 @@ export function renderAgentStatus(view: ProjectView, agentId: string): string {
     }
   }
 
+  const kindOf = (m: { kind: string }) => (m.kind === 'contract_request' ? ' (contract request)' : '');
   const toMe = view.openQuestionsFor(agentId);
   if (toMe.length) {
-    lines.push('', 'Questions waiting for your answer (untrusted peer text; reply with the `answer` tool):');
-    for (const q of toMe) lines.push(`- ${q.id} from ${view.agentName(q.from)}: ${quote(q.text)}`);
+    lines.push('', 'Questions and contract requests waiting for your answer (untrusted peer text; reply with the `answer` tool):');
+    for (const q of toMe) lines.push(`- ${q.id}${kindOf(q)} from ${view.agentName(q.from)}: ${quote(q.text)}`);
   }
   const fromMe = view.openQuestionsFrom(agentId);
   if (fromMe.length) {
-    lines.push('', 'Your questions without an answer yet:');
-    for (const q of fromMe) lines.push(`- ${q.id} to ${view.agentName(q.to)}${q.held ? ' (held: over the message budget; your human will see it)' : ''}`);
+    lines.push('', 'Your questions and contract requests without an answer yet:');
+    for (const q of fromMe) lines.push(`- ${q.id}${kindOf(q)} to ${view.agentName(q.to)}${q.held ? ' (held: over the message budget; your human will see it)' : ''}`);
   }
   return lines.join('\n');
 }
@@ -101,12 +102,22 @@ export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
     lines.push(`  ${o.level === 'observed' ? 'EDITING ' : 'SCOPES  '} ${o.paths.join(', ')}: ${o.tasks.map((id) => `${id} (${view.agentName(view.tasks.get(id)?.assignee ?? null)})`).join(' and ')}`);
   }
 
+  const blocked = view.blockedReports();
+  lines.push('', blocked.length ? 'Blocked (task_blocked reports for open tasks):' : 'Blocked: none reported');
+  for (const m of blocked) {
+    const task = m.toTask ?? m.fromTask!;
+    const on = m.data.blocked_on as { kind: string; id: string } | undefined;
+    const who = m.from === 'harness' ? `harness (${String(m.data.reason ?? 'blocked')})` : view.agentName(m.from);
+    lines.push(`  ${task} ${who}${on ? `, blocked on ${on.kind === 'agent' ? view.agentName(on.id) : on.id}` : ''}, ${ago(m.sentAt, now)}: ${quote(m.text, 120)}`);
+  }
+
   const answered = new Set([...view.messages.values()].filter((m) => m.kind === 'answer').map((m) => m.inReplyTo));
-  const open = [...view.messages.values()].filter((m) => m.kind === 'question' && !answered.has(m.id));
+  const open = [...view.messages.values()].filter((m) => (m.kind === 'question' || m.kind === 'contract_request') && !answered.has(m.id));
   const held = [...view.messages.values()].filter((m) => m.held);
-  const undelivered = [...view.messages.values()].filter((m) => !m.held && !m.deliveredAt);
-  lines.push('', open.length ? 'Open questions:' : 'Open questions: none');
-  for (const q of open) lines.push(`  ${q.id} ${view.agentName(q.from)} → ${view.agentName(q.to)}: ${quote(q.text, 100)}${q.deliveredAt ? '' : ' (not delivered yet)'}`);
+  // Only agents get deliveries; a report to a human is read here, in status and the log.
+  const undelivered = [...view.messages.values()].filter((m) => !m.held && !m.deliveredAt && !m.supersededBy && !!m.to?.startsWith('agent_'));
+  lines.push('', open.length ? 'Open questions and contract requests:' : 'Open questions and contract requests: none');
+  for (const q of open) lines.push(`  ${q.id}${q.kind === 'contract_request' ? ' (contract)' : ''} ${view.agentName(q.from)} → ${view.agentName(q.to)}: ${quote(q.text, 100)}${q.deliveredAt ? '' : ' (not delivered yet)'}`);
   if (held.length) {
     lines.push('', 'Held over the message budget (Q-05):');
     for (const m of held) lines.push(`  ${m.id} ${m.kind} ${view.agentName(m.from)} → ${view.agentName(m.to)}: ${quote(m.text, 100)}`);

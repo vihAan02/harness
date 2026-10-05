@@ -25,6 +25,8 @@ export type LandInfo = {
   id: string; taskId: string; deviceId: string; status: 'requested' | 'accepted' | 'rejected' | 'completed' | 'failed';
   runTests: boolean; requestedAt: string; finishedAt?: string; reason?: string; detail?: string; changedPaths?: string[]; newBaseSha?: string;
 };
+/** Message kinds the `answer` tool replies to (D-105). */
+const ANSWERABLE = ['question', 'contract_request'];
 export type MessageInfo = {
   id: string; kind: string; from: string; to: string | null; inReplyTo?: string; text: string; data: Record<string, unknown>;
   fromTask: string | null; toTask: string | null; priority: string; sentAt: string; seq: number;
@@ -284,15 +286,25 @@ export class ProjectView {
     return [...this.leases.values()].filter((l) => l.taskId === taskId && !l.releasedAt && !l.expiredAt && Date.parse(l.expiresAt) > now);
   }
 
-  /** Questions to this principal that have no answer yet. */
+  /** Questions and contract requests to this principal that have no answer yet (D-105). */
   openQuestionsFor(principal: string): MessageInfo[] {
     const answered = new Set([...this.messages.values()].filter((m) => m.kind === 'answer' && m.inReplyTo).map((m) => m.inReplyTo!));
-    return [...this.messages.values()].filter((m) => m.kind === 'question' && m.to === principal && !answered.has(m.id));
+    return [...this.messages.values()].filter((m) => ANSWERABLE.includes(m.kind) && m.to === principal && !answered.has(m.id));
   }
 
-  /** Questions this principal asked that have no answer yet. */
+  /** Questions and contract requests this principal sent that have no answer yet. */
   openQuestionsFrom(principal: string): MessageInfo[] {
     const answered = new Set([...this.messages.values()].filter((m) => m.kind === 'answer' && m.inReplyTo).map((m) => m.inReplyTo!));
-    return [...this.messages.values()].filter((m) => m.kind === 'question' && m.from === principal && !answered.has(m.id));
+    return [...this.messages.values()].filter((m) => ANSWERABLE.includes(m.kind) && m.from === principal && !answered.has(m.id));
+  }
+
+  /** The latest task_blocked report for each task that is still open, from its agent or the harness (D-95, D-105). */
+  blockedReports(): MessageInfo[] {
+    const latest = new Map<string, MessageInfo>();
+    for (const m of this.messages.values()) {
+      const task = m.kind === 'task_blocked' ? m.toTask ?? m.fromTask : null;
+      if (task && ['in_progress', 'blocked'].includes(this.tasks.get(task)?.status ?? '') && (latest.get(task)?.seq ?? -1) < m.seq) latest.set(task, m);
+    }
+    return [...latest.values()].sort((a, b) => a.seq - b.seq);
   }
 }

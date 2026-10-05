@@ -56,3 +56,30 @@ test('a settled wait\'s outcome, in words', () => {
   assert.equal(waitOutcomeText({ ...w, on: { kind: 'task', id: 'T-3' }, outcome: 'timed_out' }),
     'Your wait for task T-3 to finish timed out after 120 seconds without it happening, and your human has been told. You can carry on without it, or wait again.');
 });
+
+test('request_contract and report_blocked send the 0B kinds; report_blocked goes to the owner and names what blocks it (D-105)', async () => {
+  const sent: [string, Record<string, unknown>][] = [];
+  const view = new ProjectView('prj');
+  view.apply({ v: 1, type: 'event', project_id: 'prj', seq: 1, at: new Date(0).toISOString(), actor: { principal: 'human_a', on_behalf_of: null, device_id: null },
+    kind: 'task.created', data: { task_id: 'T-1', title: 'A', text: 'x', scope: [], priority: 0, owner_human_id: 'human_a' } });
+  const send: ToolContext['send'] = async (name, args) => { sent.push([name, args]); return { message_id: 'msg_0123456789abcdef' }; };
+  const tools = messageTools({ ...ctx, view, send }, commandCall({ ...ctx, send }));
+  const tool = (name: string) => tools.find((t) => t.name === name)!;
+
+  const req = await tool('request_contract').run({ to: 'agent/backend', contract: 'The response of POST /login', about_paths: ['src/types.ts'] });
+  assert.deepEqual(sent.at(-1), ['message.send', { kind: 'contract_request', to: 'agent/backend', text: 'The response of POST /login', about_paths: ['src/types.ts'] }]);
+  assert.equal(req.text, 'Sent. request_id: msg_0123456789abcdef. The reply will arrive as a harness message.');
+
+  const blocked = await tool('report_blocked').run({ reason: 'I need the API shape first.', on: 'agent/backend' });
+  assert.deepEqual(sent.at(-1), ['message.send', { kind: 'task_blocked', text: 'I need the API shape first.', blocked_on: { kind: 'agent', id: 'agent/backend' } }]);
+  assert.equal(blocked.text, 'Reported to human/human_a: T-1 is blocked. It stays in progress.');
+  await tool('report_blocked').run({ reason: 'Waiting on T-3 to land.', on: 'T-3' });
+  assert.deepEqual(sent.at(-1)![1].blocked_on, { kind: 'task', id: 'T-3' });
+  await tool('report_blocked').run({ reason: 'No answer.', on: 'msg_0123456789abcdef' });
+  assert.deepEqual(sent.at(-1)![1].blocked_on, { kind: 'question', id: 'msg_0123456789abcdef' });
+  await tool('report_blocked').run({ reason: 'I need a decision on the schema.' });
+  assert.deepEqual(sent.at(-1), ['message.send', { kind: 'task_blocked', text: 'I need a decision on the schema.' }], 'on is optional');
+  const n = sent.length;
+  assert.equal((await tool('report_blocked').run({ reason: 'x', on: '../etc/passwd' })).isError, true);
+  assert.equal(sent.length, n, 'an unreadable `on` sends nothing');
+});
