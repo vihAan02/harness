@@ -1,6 +1,6 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with the real-model check U-1 deferred until an API key exists ([Q-18](docs/open-questions.md#q-18)). The model endpoint is configurable, with no provider hardcoded; DeepSeek `deepseek-flash` comes first for development and benchmarking (D-87). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
+> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with the real-model check U-1 deferred until an API key exists ([Q-18](docs/open-questions.md#q-18)). The model endpoint is configurable, with no provider hardcoded (D-87); real-model runs use OpenRouter, pinned to one model on one provider (D-104, superseding D-87's DeepSeek-first order). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
 >
 > **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. The rest of 0B is approved and built in two parallel workstreams (D-94; rules in [AGENTS.md](AGENTS.md)), toward the functional MVP and then the formal A/B gate; a real-model run needs an API key (README, "Choosing a model provider").
 >
@@ -38,6 +38,8 @@ These sources define this plan. Later sources win where they sharpen or override
 | **S7** | [Owner's choice of the benchmark repo](docs/source/2026-10-03-S7-owner-bench-repo.md) | The benchmark app lives in its own repo, github.com/vihAan02/harness-bench, built in TypeScript on Node 24 with Node's built-in SQLite (D-83). |
 | **S8** | [Owner records a co-owner](docs/source/2026-10-03-S8-owner-coowner.md) | Daniyal Mughal (GitHub `DaniyalMughal1`) is a co-owner. Either owner can approve an owner gate, and Daniyal continues from the handoff (D-85). |
 | **S9** | [Co-owner approves 0B and sets the provider direction](docs/source/2026-10-03-S9-coowner-0b-go-and-providers.md) | Approved Phase 0B with U-1 deferred, Postgres 18 beside 17 on port 5433, and a configurable model provider with DeepSeek first (D-86, D-87). Resolved Q-06 and Q-07 (D-88, D-89). Set this stretch's stop point: the S3 example with the scripted model. |
+| **S10** | [Owners split the rest of 0B into two parallel workstreams](docs/source/2026-10-03-S10-owners-parallel-development.md) | Daniyal leads stream A and integration, Vihaan stream B; file ownership, ID ranges, dependency-gated squash merges and the review rules (D-94). |
+| **S11** | [Co-owner makes OpenRouter the real-model provider](docs/source/2026-10-04-S11-coowner-openrouter-and-takeover.md) | OpenRouter replaces DeepSeek as the provider for development and real-model runs, with one fixed model, the provider system kept configurable (D-104). Stream A may take over stream B tasks that haven't started, on its own branches. |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -817,7 +819,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Extends D-64:** every auth variable the vendor reads is denied to the agent's shell, whichever one a session uses.
   - **The A/B test** uses one fixed model and provider configuration in both arms, never a router that picks models, and the model is recorded per session so the runs can prove it.
   - *Why:* the cheapest model that reliably drives the harness's agent and tool-calling paths keeps the experiments affordable. Configuration instead of code keeps vendor behaviour behind `AgentAdapter` (principle 10).
-  - *Source:* S9. *Status:* Locked. How it's built is recorded separately, as a Proposal.
+  - *Source:* S9. *Status:* Locked. How it's built is recorded separately, as a Proposal. *The priority list is superseded by D-104 (2026-10-04): OpenRouter first, one model on one provider.*
 - **D-88 Read-set coverage and shell reads.** Resolves [Q-06](docs/open-questions.md#q-06).
   - **0B measures coverage** (H-03).
   - **A notice is never suppressed** because coverage is low; its confidence is labelled instead.
@@ -1034,6 +1036,25 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Why it's safe:** fencing protects a current holder and catches a stale one (F-80). With no other holder and no newer token, there's nothing to protect. The check still runs under the lease lock, so no lease is granted between it and the land's acceptance (D-97).
   - **Found by:** the adversarial review of B5, which makes releases and real expiry reachable.
   - *Source:* the B5 review; an owner's choice in session. *Status:* Proposal.
+- **D-104 OpenRouter is the provider for development, smoke tests and real-model runs, pinned to one model on one provider (supersedes D-87's priority list; S11). Decided by an owner, 2026-10-04.**
+  - **The default:** `[providers.openrouter]` in [docs/examples/providers.toml](docs/examples/providers.toml): `https://openrouter.ai/api`, bearer auth, the key from `OPENROUTER_API_KEY`, model `deepseek/deepseek-v4.1-flash`, and `extra_body.provider = { only = ["deepseek"], allow_fallbacks = false }`. Priced at $0.30 in, $1.20 out and $0.006 for cached input per million tokens (F-111).
+  - **Why this model:**
+    - it's the cheapest strong agentic-coding model with tool calls that its own maker serves on OpenRouter;
+    - it's the model D-87 chose on DeepSeek's endpoint, so what's known about it carries over (F-72);
+    - cached input at 2% of the input price keeps Claude Code's long system prompt cheap across turns;
+    - 1M tokens of context.
+  - **Pinning the provider matters as much as the model:** 30 providers serve it on OpenRouter, some quantized to fp8 or fp4, and default routing can pick a different one per request (F-111). `only` keeps every request on DeepSeek's own endpoint.
+  - **The risk, and the fallback:** OpenRouter guarantees Claude Code only on Anthropic's own provider (F-112). If the first real runs show tool-call, hook or thinking problems through OpenRouter, switch to `openrouter-haiku` (`anthropic/claude-haiku-4.5` served by Anthropic, about four times the price): one line in `config.toml`.
+  - **Check before any real run:** `node scripts/provider-check.ts --provider <name>`.
+    - It calls the endpoint directly: the key, the model that answered, the routing fields, one tool call.
+    - Then it runs one hardened Claude Code session on it, as harnessd opens one: the pinned CLI, the read policy, a Read and a harness tool, cost from configured prices.
+    - About $0.01. It never prints the key, and redacts provider error bodies (some echo the key's tail, F-72).
+    - `test/provider-check.test.ts` runs it with no key, against a stand-in and the scripted mock, with negative controls.
+  - **What doesn't change:**
+    - no provider in product code (D-87, D-90);
+    - DeepSeek's own endpoint, Kimi, Haiku and the free OpenRouter model stay as optional tables;
+    - the A/B uses one fixed model and provider table in both arms. Which one is a B10 parameter both owners sign; until then, this default.
+  - *Source:* S11; F-111 and F-112. *Status:* Locked for the provider (an owner's instruction). The model is a Proposal, revisited after the first real runs.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
@@ -1162,6 +1183,7 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - **The rest of 0B** (D-94, two parallel workstreams; tasks and dependencies in the pinned "0B workboard" GitHub issue): hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
      - **Done by 2026-10-04:** read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), `wait_for` (D-95, D-101). The A/B baseline launch is built (D-102) and waits for a real-model run.
      - **In review or in progress:** leases and T-2 (B5, B6), T-1b, the message kinds, the A/B scenarios, runner and recorder.
+     - **Real-model runs (D-104):** OpenRouter, pinned; `node scripts/provider-check.ts --provider openrouter` first, then `npm run demo:0b -- --real --provider openrouter`.
 7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
 ## 13. Glossary
