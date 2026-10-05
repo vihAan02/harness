@@ -45,6 +45,8 @@ export type WaitInfo = {
   id: string; taskId: string; sessionId: string; agentId: string; on: { kind: string; id: string }; timeoutAt: string; startedAt: string;
   outcome: 'waiting' | 'resolved' | 'timed_out' | 'cancelled'; result?: Record<string, unknown>; reason?: string; finishedAt?: string;
 };
+/** A Stop gate that kept its agent going as often as the vendor allows, with notices still queued (D-100). */
+export type StopGateCap = { taskId: string; agentId: string; sessionId: string; pending: number; at: string };
 export type OverlapInfo = { id: string; level: 'prospective' | 'observed'; paths: string[]; tasks: [string, string]; at: string };
 
 const asStrings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
@@ -66,6 +68,7 @@ export class ProjectView {
   lands = new Map<string, LandInfo>();
   leases = new Map<string, LeaseInfo>(); // hard claims, by lease id (D-97)
   waits = new Map<string, WaitInfo>(); // wait_for, by wait id (D-95)
+  stopGateCaps: StopGateCap[] = []; // stop_gate.capped, in log order (D-100)
   events: EventMessage[] = [];
 
   constructor(projectId: string) {
@@ -224,6 +227,9 @@ export class ProjectView {
         }
         break;
       }
+      case 'stop_gate.capped':
+        this.stopGateCaps.push({ taskId: s('task_id'), agentId: s('agent_id'), sessionId: s('session_id'), pending: Number(d.pending ?? 0), at: e.at });
+        break;
       case 'lease.granted':
         this.leases.set(s('lease_id'), {
           id: s('lease_id'), taskId: s('task_id'), path: s('path'), token: Number(d.token), expiresAt: s('expires_at'), grantedAt: e.at,
@@ -282,6 +288,21 @@ export class ProjectView {
   /** The task's wait that hasn't ended yet, if any (one at a time, D-95). */
   openWait(taskId: string): WaitInfo | undefined {
     return [...this.waits.values()].find((w) => w.taskId === taskId && w.outcome === 'waiting');
+  }
+
+  /**
+   * The latest capped Stop gate of each task not yet landed or abandoned, with how often that session's gate capped;
+   * none once the agent has started another session on the task (D-100).
+   */
+  cappedGates(): (StopGateCap & { times: number })[] {
+    const latest = new Map<string, StopGateCap>();
+    for (const c of this.stopGateCaps) latest.set(c.taskId, c);
+    return [...latest.values()].filter((c) => {
+      const status = this.tasks.get(c.taskId)?.status;
+      if (!status || status === 'landed' || status === 'abandoned') return false;
+      const last = [...this.sessions.values()].filter((x) => x.agentId === c.agentId && x.taskId === c.taskId).at(-1);
+      return !last || last.id === c.sessionId;
+    }).map((c) => ({ ...c, times: this.stopGateCaps.filter((x) => x.sessionId === c.sessionId).length }));
   }
 
   /** The task's leases that are neither released nor past expiry, as far as this view knows (the server decides, D-97). */

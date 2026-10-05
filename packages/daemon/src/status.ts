@@ -77,14 +77,49 @@ export function renderAgentStatus(view: ProjectView, agentId: string, now = Date
 /** A latency for people: milliseconds under a second, else seconds. */
 export const duration = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
 
-const ago = (iso: string, now: number) => {
-  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
-  return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+/** A span of time for people: seconds under 90, then minutes, then hours. */
+const span = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`;
 };
+const ago = (iso: string, now: number) => `${span(now - Date.parse(iso))} ago`;
+
+/** Where a done task's land stands: its work reaches no one until it lands (D-93, D-96, D-106). */
+function landNote(view: ProjectView, taskId: string, now: number): string {
+  const l = [...view.lands.values()].filter((x) => x.taskId === taskId).at(-1);
+  if (!l) return `not landed yet: harness land ${taskId}`;
+  if (l.status === 'requested' || l.status === 'accepted') return `landing: ${l.id} ${l.status}, requested ${ago(l.requestedAt, now)}`;
+  return `not landed: ${l.id} ${l.status}${l.reason ? ` (${l.reason})` : ''} ${ago(l.finishedAt ?? l.requestedAt, now)}; harness land ${taskId} again`;
+}
+
+/** A task's status in words, with a done one's land; empty if this view doesn't know the task. */
+function taskState(view: ProjectView, taskId: string, now: number): string {
+  const status = view.tasks.get(taskId)?.status ?? '';
+  return status === 'done' ? `done, ${landNote(view, taskId, now)}` : status.replace('_', ' ');
+}
+
+/** What an open wait is for (D-95). A task wait ends only when that task lands or is abandoned (D-106). */
+function waitTarget(view: ProjectView, on: { kind: string; id: string }, now: number): string {
+  if (on.kind === 'answer') {
+    const q = view.messages.get(on.id);
+    return `${q?.to ? `${view.agentName(q.to)}'s answer` : 'the answer'} to ${on.id}`;
+  }
+  if (on.kind === 'task') {
+    const state = taskState(view, on.id, now);
+    return `${on.id} to land${state ? ` (${on.id} is ${state})` : ''}`;
+  }
+  if (on.kind === 'lease') {
+    const l = view.leases.get(on.id);
+    const state = l ? taskState(view, l.taskId, now) : '';
+    return `lease ${on.id}${l ? ` on ${l.path}` : ''} to free up${l ? ` (held by ${l.taskId}${state ? `, which is ${state}` : ''})` : ''}`;
+  }
+  return `${on.kind} ${on.id}`;
+}
 
 /**
  * `harness status` for the human (coordination.md §8): who's alive, who owns what, what each agent is
- * changing, overlaps, and pending or held messages. Built from the project's event log.
+ * changing, overlaps, blocked reports, open waits, capped Stop gates, and pending or held messages. Built
+ * from the project's event log.
  */
 export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
   const lines: string[] = [];
@@ -111,6 +146,7 @@ export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
     if (t.status === 'in_progress') lines.push(`      changing: ${list(c?.observed ?? [])}`);
     const held = leaseList(view, t.id, now, true);
     if (held) lines.push(`      hard claims: ${held}`);
+    if (t.status === 'done') lines.push(`      ${landNote(view, t.id, now)}`);
     if (t.status === 'done' && t.summary) lines.push(`      summary: ${quote(t.summary, 120)}`);
   }
 
@@ -128,6 +164,22 @@ export function renderHumanStatus(view: ProjectView, now = Date.now()): string {
     const on = m.data.blocked_on as { kind: string; id: string } | undefined;
     const who = m.from === 'harness' ? `harness (${String(m.data.reason ?? 'blocked')})` : view.agentName(m.from);
     lines.push(`  ${task} ${who}${on ? `, blocked on ${on.kind === 'agent' ? view.agentName(on.id) : on.id}` : ''}, ${ago(m.sentAt, now)}: ${quote(m.text, 120)}`);
+  }
+
+  const waits = [...view.waits.values()].filter((w) => w.outcome === 'waiting');
+  lines.push('', waits.length ? 'Waiting (open wait_for calls; D-95):' : 'Waiting: none');
+  for (const w of waits) {
+    const left = Date.parse(w.timeoutAt) - now;
+    lines.push(`  ${view.agentName(w.agentId)} (${w.taskId}) waits for ${waitTarget(view, w.on, now)}, since ${ago(w.startedAt, now)}, ${left > 0 ? `times out in ${span(left)}` : 'timing out'}`);
+  }
+
+  // Shown until the task lands or its agent starts a new session; the notices themselves open its next turn (D-99).
+  const capped = view.cappedGates();
+  if (capped.length) {
+    lines.push('', 'Stop gate capped (D-100; the notices still waiting open the agent\'s next turn):');
+    for (const c of capped) {
+      lines.push(`  ${view.agentName(c.agentId)} (${c.taskId}): ${c.pending} notice(s) waiting, ${c.at.slice(11, 16)} UTC (${ago(c.at, now)})${c.times > 1 ? `, ${c.times} times this session` : ''}`);
+    }
   }
 
   const answered = new Set([...view.messages.values()].filter((m) => m.kind === 'answer').map((m) => m.inReplyTo));
