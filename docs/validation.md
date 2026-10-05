@@ -116,6 +116,17 @@ Run on the purpose-built benchmark repo ([above](#benchmark-repo-d-58)).
   - whether the planted failure reached integration (M6). For SC-4 that means the duplicate helper (M2).
 
   Its self-test proves, from fresh clones at the tags, that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
+- **The runner, harness arm (B9a):** `node scripts/ab/run.ts --scenario SC-n --phrasing n --real --provider <name>`.
+  - **Each run:**
+    - a fresh clone at the tag, checked against the card's `base_sha`;
+    - the setup and test commands approved beforehand (an approval still needed mid-run is recorded, M5c);
+    - both tasks assigned at once;
+    - an end when both have landed, at the time cap, or when the coordinator stops it. A land still in flight at the end is cancelled and awaited.
+  - **Phrasings:** `--repeat k` runs use phrasings n to n+k-1.
+  - **What it saves:**
+    - `runs/grade/<run-id>/`: main's tree as the run ended, without `.git`, with every file dated 2000-01-01, so nothing in it tells when the run ended. It's all the grader gets, handed over once in a pack, in shuffled order (B11), never as the live directory;
+    - `runs/record/<run-id>/`: the coordinator's side (meta, event log, metrics, timeline). It's rebuilt from the database after the stop, so it includes what committed while harnessd was stopping.
+  - **Dry runs:** `--dry --auto-land` runs scripted stand-ins that check the pipeline, not the tasks.
 
 **Runs:**
 - At least **3 paired runs per scenario per arm**: 5 scenarios × 3 runs × 2 arms = **30 runs minimum**.
