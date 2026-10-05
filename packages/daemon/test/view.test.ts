@@ -1,4 +1,4 @@
-// The project view folds the event log, and harness_status renders it for one agent.
+// The project view folds the event log; harness_status renders it for one agent, and `harness status` for the human.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { EventMessage } from '@harness/protocol';
@@ -111,4 +111,87 @@ test('waits fold from wait.* events; a task has at most one open wait (D-95)', (
   assert.deepEqual([v.waits.get('wait_3')!.outcome, v.waits.get('wait_3')!.reason], ['cancelled', 'task_abandoned']);
   assert.equal(v.openWait('T-3'), undefined);
   assert.equal(v.waits.size, 3);
+});
+
+test('`harness status` lists open waits; a task wait on a done task says it is not landed, and how to land it (D-95, D-106)', () => {
+  const v = sample(); // event n happens at n seconds
+  const at = (s: number) => new Date(s * 1000).toISOString();
+  const now = 100_000;
+  for (const e of [
+    ev('agent.created', { agent_id: 'agent_d', name: 'agent/docs', vendor: 'claude', accountable_human_id: 'human_a' }),
+    ev('agent.created', { agent_id: 'agent_o', name: 'agent/ops', vendor: 'claude', accountable_human_id: 'human_a' }),
+    ev('task.created', { task_id: 'T-3', title: 'Docs', text: 'x', scope: ['docs/'], priority: 0, owner_human_id: 'human_a' }),
+    ev('task.assigned', { task_id: 'T-3', assignee_agent_id: 'agent_d' }),
+    ev('task.created', { task_id: 'T-4', title: 'Deploy', text: 'x', scope: ['deploy/'], priority: 0, owner_human_id: 'human_a' }),
+    ev('task.assigned', { task_id: 'T-4', assignee_agent_id: 'agent_o' }),
+    ev('lease.granted', { lease_id: 'ls_1', task_id: 'T-1', path: 'src/types.ts', token: 3, expires_at: at(900), by: 'agent_b', force: false }),
+    ev('message.sent', { message_id: 'msg_q2', kind: 'question', from: 'agent_d', to: 'agent_b', text: 'ISO dates?', from_task_id: 'T-3', to_task_id: 'T-1', priority: 'normal' }, 'agent_d'),
+    ev('wait.started', { wait_id: 'wait_t', task_id: 'T-2', session_id: 's1', agent_id: 'agent_f', on: { kind: 'task', id: 'T-1' }, timeout_at: at(620) }), // at 20 s
+    ev('wait.started', { wait_id: 'wait_a', task_id: 'T-3', session_id: 's3', agent_id: 'agent_d', on: { kind: 'answer', id: 'msg_q2' }, timeout_at: at(80) }),
+    ev('wait.started', { wait_id: 'wait_l', task_id: 'T-4', session_id: 's4', agent_id: 'agent_o', on: { kind: 'lease', id: 'ls_1' }, timeout_at: at(3620) }),
+  ]) v.apply(e);
+  let human = renderHumanStatus(v, now);
+  assert.match(human, /\nWaiting \(open wait_for calls; D-95\):\n  agent\/frontend \(T-2\) waits for T-1 to land \(T-1 is in progress\), since 80s ago, times out in 9m\n/);
+  assert.match(human, /\n  agent\/docs \(T-3\) waits for agent\/backend's answer to msg_q2, since 79s ago, timing out\n/, 'past its timeout, not yet settled');
+  assert.match(human, /\n  agent\/ops \(T-4\) waits for lease ls_1 on src\/types\.ts to free up \(held by T-1, which is in progress\), since 78s ago, times out in 59m\n/);
+  assert.doesNotMatch(human, /not landed|harness land/, 'a task still in progress is not waiting to land');
+
+  // T-1 is done: the waits on it now hang on its land, which is the human's to do.
+  v.apply(ev('task.completed', { task_id: 'T-1', by: 'agent_b' }));
+  human = renderHumanStatus(v, now);
+  assert.match(human, /\n  agent\/frontend \(T-2\) waits for T-1 to land \(T-1 is done, not landed yet: harness land T-1\), since 80s ago, times out in 9m\n/);
+  assert.match(human, /waits for lease ls_1 on src\/types\.ts to free up \(held by T-1, which is done, not landed yet: harness land T-1\)/);
+  assert.match(human, /T-1 "Login API" \[done\][^\n]*\n      scope: [^\n]*\n      hard claims: src\/types\.ts [^\n]*\n      not landed yet: harness land T-1\n/);
+  v.apply(ev('land.requested', { land_id: 'land_1', task_id: 'T-1', device_id: 'dev', run_tests: true }));
+  assert.match(renderHumanStatus(v, now), /waits for T-1 to land \(T-1 is done, landing: land_1 requested, requested 76s ago\)/);
+  v.apply(ev('land.failed', { land_id: 'land_1', task_id: 'T-1', reason: 'tests' }));
+  human = renderHumanStatus(v, now);
+  assert.match(human, /waits for T-1 to land \(T-1 is done, not landed: land_1 failed \(tests\) 75s ago; harness land T-1 again\)/);
+  assert.match(human, /\n      not landed: land_1 failed \(tests\) 75s ago; harness land T-1 again\n/);
+
+  // Settled waits are gone: the answer arrives, then T-1 lands and frees its lease.
+  v.apply(ev('message.sent', { message_id: 'msg_a2', kind: 'answer', from: 'agent_b', to: 'agent_d', in_reply_to: 'msg_q2', text: 'Yes.' }, 'agent_b'));
+  v.apply(ev('wait.resolved', { wait_id: 'wait_a', task_id: 'T-3', agent_id: 'agent_d', on: { kind: 'answer', id: 'msg_q2' }, result: { answer_id: 'msg_a2' } }));
+  assert.doesNotMatch(renderHumanStatus(v, now), /agent\/docs \(T-3\) waits/);
+  v.apply(ev('land.requested', { land_id: 'land_2', task_id: 'T-1', device_id: 'dev', run_tests: true }));
+  v.apply(ev('land.accepted', { land_id: 'land_2', task_id: 'T-1', changed_paths: ['src/types.ts'] }));
+  assert.match(renderHumanStatus(v, now), /\(T-1 is done, landing: land_2 accepted, requested 72s ago\)/);
+  v.apply(ev('land.completed', { land_id: 'land_2', task_id: 'T-1', new_base_sha: 'abc', changed_paths: ['src/types.ts'] }));
+  assert.match(renderHumanStatus(v, now), /waits for T-1 to land \(T-1 is landed\)/, 'the sweep settles it next');
+  v.apply(ev('wait.resolved', { wait_id: 'wait_t', task_id: 'T-2', agent_id: 'agent_f', on: { kind: 'task', id: 'T-1' }, result: { status: 'landed' } }));
+  v.apply(ev('lease.released', { lease_id: 'ls_1', task_id: 'T-1', reason: 'landed' }));
+  v.apply(ev('wait.resolved', { wait_id: 'wait_l', task_id: 'T-4', agent_id: 'agent_o', on: { kind: 'lease', id: 'ls_1' }, result: { lease: 'released' } }));
+  human = renderHumanStatus(v, now);
+  assert.match(human, /\nWaiting: none\n/);
+  assert.doesNotMatch(human, /not landed|harness land/, 'a landed task needs no land');
+});
+
+test('`harness status` shows a capped Stop gate until its task lands or its agent starts another session on it (D-100)', () => {
+  const empty = renderHumanStatus(new ProjectView('prj'), 0);
+  assert.match(empty, /\nWaiting: none\n/);
+  assert.doesNotMatch(empty, /Stop gate/);
+  const v = sample(); // event n happens at n seconds
+  const now = 100_000;
+  assert.doesNotMatch(renderHumanStatus(v, now), /Stop gate/);
+  v.apply(ev('stop_gate.capped', { task_id: 'T-2', agent_id: 'agent_f', session_id: 's1', pending: 2 }, 'agent_f'));
+  assert.deepEqual(v.stopGateCaps, [{ taskId: 'T-2', agentId: 'agent_f', sessionId: 's1', pending: 2, at: new Date(12_000).toISOString() }]);
+  assert.match(renderHumanStatus(v, now), /\nStop gate capped \(D-100; [^\n]*\):\n  agent\/frontend \(T-2\): 2 notice\(s\) waiting, 00:00 UTC \(88s ago\)\n/);
+  v.apply(ev('stop_gate.capped', { task_id: 'T-2', agent_id: 'agent_f', session_id: 's1', pending: 1 }, 'agent_f'));
+  assert.match(renderHumanStatus(v, now), /\n  agent\/frontend \(T-2\): 1 notice\(s\) waiting, 00:00 UTC \(87s ago\), 2 times this session\n/, 'the latest, and how often');
+  v.apply(ev('session.ended', { session_id: 's1', reason: 'stopped' }));
+  assert.match(renderHumanStatus(v, now), /agent\/frontend \(T-2\): 1 notice\(s\) waiting/, 'its session ended, but none has replaced it');
+  v.apply(ev('session.started', { session_id: 's2', agent_id: 'agent_f', task_id: 'T-2', device_id: 'dev', worktree: '/w', status: 'starting' }));
+  assert.deepEqual(v.cappedGates(), [], 'a new session: the cap was about the old one');
+  assert.doesNotMatch(renderHumanStatus(v, now), /Stop gate/);
+  v.apply(ev('stop_gate.capped', { task_id: 'T-2', agent_id: 'agent_f', session_id: 's2', pending: 3 }, 'agent_f'));
+  assert.match(renderHumanStatus(v, now), /\n  agent\/frontend \(T-2\): 3 notice\(s\) waiting, 00:00 UTC \(84s ago\)\n/, 'counted per session');
+  v.apply(ev('task.completed', { task_id: 'T-2', by: 'agent_f' }));
+  assert.match(renderHumanStatus(v, now), /agent\/frontend \(T-2\): 3 notice\(s\) waiting/, 'done, but not landed');
+  v.apply(ev('land.requested', { land_id: 'land_1', task_id: 'T-2', device_id: 'dev', run_tests: true }));
+  v.apply(ev('land.completed', { land_id: 'land_1', task_id: 'T-2', new_base_sha: 'abc', changed_paths: [] }));
+  assert.doesNotMatch(renderHumanStatus(v, now), /Stop gate/, 'landed');
+  v.apply(ev('stop_gate.capped', { task_id: 'T-1', agent_id: 'agent_b', session_id: 's_b', pending: 1 }, 'agent_b'));
+  assert.match(renderHumanStatus(v, now), /agent\/backend \(T-1\): 1 notice\(s\) waiting/);
+  v.apply(ev('task.abandoned', { task_id: 'T-1' }));
+  assert.doesNotMatch(renderHumanStatus(v, now), /Stop gate/, 'abandoned');
 });
