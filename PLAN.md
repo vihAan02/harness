@@ -1034,6 +1034,30 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Why it's safe:** fencing protects a current holder and catches a stale one (F-80). With no other holder and no newer token, there's nothing to protect. The check still runs under the lease lock, so no lease is granted between it and the land's acceptance (D-97).
   - **Found by:** the adversarial review of B5, which makes releases and real expiry reachable.
   - *Source:* the B5 review; an owner's choice in session. *Status:* Proposal.
+- **D-105 Agents send `contract_request` and `task_blocked`; a blocked report goes to the task's owner (0B item 6; D-24). Built by stream A, which took B7 over (S11).**
+  - **`contract_request`:**
+    - an agent (or a human) asks another agent to define or confirm an API, type or schema it owns: `to` by name or id, the contract as text (500 characters at most), and optional `about_paths`;
+    - it's answered with `answer`, like a question (its id is the `question_id`), once, and `wait_for(answer, id)` waits for it;
+    - budgets and priority are as for a question (`normal`), and the envelope tells the recipient to answer it if it owns the contract.
+  - **`task_blocked` from an agent:**
+    - it's always about the sender's own active task, and the server picks the recipient: **the task's owner**. A `to` is refused;
+    - an optional `blocked_on` names an agent, a task, or a question or contract request, each checked against the project;
+    - the data say `reason: agent_report`; it counts only as sent; priority `normal`;
+    - the task stays in progress, and nothing pauses. The agent keeps working, or waits for what blocks it with `wait_for`.
+  - **Tools:** `request_contract(to, contract, about_paths?)` and `report_blocked(reason, on?)`. `on` is optional, because a block on a person, access or a decision has no id. protocol.md §6 had `report_blocked(on, reason)`.
+  - **Status:**
+    - an agent's `harness_status` lists contract requests with its questions, both ways;
+    - `harness status` gets a "Blocked" section: the latest report for each open task, from its agent or from the harness (a timed-out wait, a sync conflict);
+    - a report to a human no longer counts as "waiting for delivery", because only agents get deliveries.
+  - **Why the owner, not the peer it's blocked on:**
+    - the human decides scope and unblocking (principle 9);
+    - the harness's own `task_blocked` already goes to the owner (D-53, D-95);
+    - a report sent to a peer would be agent-to-agent pressure that principle 8 keeps sparse. If a peer can unblock it, the agent `ask`s it or sends a `contract_request`.
+  - **Tests:**
+    - server: `messages.test.ts` and `waits.test.ts`;
+    - daemon: `tools.test.ts`, `view.test.ts` and `envelope.test.ts`;
+    - end to end, with the real CLI: `test/message-kinds.integration.test.ts`.
+  - *Source:* 0B item 6, coordination.md §3, S10, S11. *Status:* Proposal. **Who receives `task_blocked` is an owners' decision (the plan's B7 item): the owner is this Proposal's default, pending their confirmation.**
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
