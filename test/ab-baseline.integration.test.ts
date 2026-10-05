@@ -107,7 +107,7 @@ async function baselineRun(name: string, testCommand: string, capMs: number) {
   const root = path.join(t.dir, name);
   const home = tempHome(root);
   const { repo, sha } = makeRepo(root, { 'harness.yaml': `test:\n  command: "${testCommand}"\n`, 'src/a.ts': 'export {}\n' });
-  const raw = { device_id: 'dev_t', principal: 'human_t', server_url: 'wss://example.invalid', limits: { port_range: [31700, 31799] }, projects: [{ id: 'prj_t', repo }] };
+  const raw = { device_id: 'dev_t', principal: 'human_t', server_url: 'wss://example.invalid', limits: { port_range: [32100, 32199] }, projects: [{ id: 'prj_t', repo }] };
   fs.writeFileSync(home.config, toToml(raw)); // the launcher reads it, as harnessd would
   const config = parseConfig(raw, TOKEN);
   const mock = await startMock();
