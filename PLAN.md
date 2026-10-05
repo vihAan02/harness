@@ -1083,7 +1083,8 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Check before any real run:** `node scripts/provider-check.ts --provider <name>`.
     - It calls the endpoint directly: the key, the model that answered, the routing fields, one tool call.
     - Then it runs one hardened Claude Code session on it, as harnessd opens one: the pinned CLI, the read policy, a Read and a harness tool, cost from configured prices.
-    - About $0.01. It never prints the key, and redacts provider error bodies (some echo the key's tail, F-72).
+    - Then it checks the risk F-112 names: does the model act on harness notices delivered through the hooks? One rides a tool result (D-99); one comes after the last tool call, to the Stop gate or a new turn (D-100). The CLI sends hook context as a mid-conversation system message (F-106), which the provider must accept.
+    - About $0.02. It never prints the key, and redacts provider error bodies (some echo the key's tail, F-72).
     - `test/provider-check.test.ts` runs it with no key, against a stand-in and the scripted mock, with negative controls.
   - **What doesn't change:**
     - no provider in product code (D-87, D-90);

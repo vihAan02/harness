@@ -4,7 +4,7 @@
 #   key. Export it in the shell that runs harnessd; never put a key in this file or in the repo.
 # - Pick one with `[agents] provider = "<name>"` in config.toml, or `HARNESS_PROVIDER=<name>`.
 # - The demos read this file: `npm run demo:0b -- --real --provider openrouter`. Check a key first with
-#   `node scripts/provider-check.ts --provider openrouter` (about $0.01).
+#   `node scripts/provider-check.ts --provider openrouter` (about $0.02).
 # - Prices are USD per million tokens, used for metric M8 and the session budget. Checked 2026-10-04
 #   (F-73, F-75, F-76, F-77, F-111); they change, so re-check them.
 # - An A/B run uses one provider and model for both arms, never a router that picks models (D-87).
