@@ -191,7 +191,8 @@ test('a record from disk: each task\'s diffs/<key>.patch and main.patch, never t
   }
   assert.ok(m2!.user.includes('MAIN-PATCH') && !m6!.user.includes('MAIN-PATCH'));
   fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ ...summary, run_id: 'r-disk', tasks: [{ ...summary.tasks[0]!, key: '../T1' }] }));
-  assert.throws(() => loadRecord(dir, path.join(root, 'scripts/ab/scenarios')), /a task key that can't name a file: "\.\.\/T1"/);
+  // The contract refuses it first (checkSummary); the judge's own guard is the second line.
+  assert.throws(() => loadRecord(dir, path.join(root, 'scripts/ab/scenarios')), /tasks\[0\]\.key|a task key that can't name a file: "\.\.\/T1"/);
 });
 
 test('--dry: a fixed empty answer without the network, written as judge.json by the CLI', async () => {
