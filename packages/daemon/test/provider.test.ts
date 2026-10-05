@@ -114,5 +114,5 @@ test('the example providers in docs/examples/providers.toml are valid config (RE
   assert.equal(or.model!.id, 'deepseek/deepseek-v4.1-flash');
   assert.equal(or.model!.background, 'deepseek/deepseek-v4.1-flash', 'background calls run on the same model');
   assert.equal(or.model!.stripExperimental, true);
-  assert.deepEqual(or.model!.extraBody, { provider: { only: ['deepseek'], allow_fallbacks: false } });
+  assert.deepEqual(or.model!.extraBody, { provider: { only: ['parasail/fp8'], allow_fallbacks: false } });
 });

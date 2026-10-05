@@ -1072,13 +1072,18 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Still open:** B2's U-5 probe of a human driving the baseline.
   - *Source:* 0B item 9, validation.md §3, S10. *Status:* Proposal.
 - **D-104 OpenRouter is the provider for development, smoke tests and real-model runs, pinned to one model on one provider (supersedes D-87's priority list; S11). Decided by an owner, 2026-10-04.**
-  - **The default:** `[providers.openrouter]` in [docs/examples/providers.toml](docs/examples/providers.toml): `https://openrouter.ai/api`, bearer auth, the key from `OPENROUTER_API_KEY`, model `deepseek/deepseek-v4.1-flash`, and `extra_body.provider = { only = ["deepseek"], allow_fallbacks = false }`. Priced at $0.30 in, $1.20 out and $0.006 for cached input per million tokens (F-111).
+  - **The default:** `[providers.openrouter]` in [docs/examples/providers.toml](docs/examples/providers.toml): `https://openrouter.ai/api`, bearer auth, the key from `OPENROUTER_API_KEY`, model `deepseek/deepseek-v4.1-flash`, and `extra_body.provider = { only = ["parasail/fp8"], allow_fallbacks = false }`. Priced at $0.30 in, $1.20 out and $0.006 for cached input per million tokens, the same as DeepSeek's own endpoint (F-111).
   - **Why this model:**
     - it's the cheapest strong agentic-coding model with tool calls that its own maker serves on OpenRouter;
     - it's the model D-87 chose on DeepSeek's endpoint, so what's known about it carries over (F-72);
     - cached input at 2% of the input price keeps Claude Code's long system prompt cheap across turns;
     - 1M tokens of context.
-  - **Pinning the provider matters as much as the model:** 30 providers serve it on OpenRouter, some quantized to fp8 or fp4, and default routing can pick a different one per request (F-111). `only` keeps every request on DeepSeek's own endpoint.
+  - **Pinning the provider matters as much as the model:** 30 providers serve it on OpenRouter, some quantized to fp8 or fp4, and default routing can pick a different one per request (F-111). `only` keeps every request on one endpoint.
+  - **Which provider: Parasail, at fp8.** The first choice was DeepSeek's own endpoint. But OpenRouter refuses it to an account whose privacy setting excludes providers that train on paid inputs (F-113), and this project's account has that setting on. The provider was changed rather than the setting.
+    - Six other providers answered correctly with the key (F-113).
+    - Parasail matches DeepSeek's price, states its precision (fp8), serves the full context and was the fastest.
+    - It passed all three stages of the provider check, then `demo:0b` with real agents (F-113).
+    - An account that allows DeepSeek's own endpoint can use `only = ["deepseek"]` instead. A controlled A/B pins one provider in both arms, whichever it is.
   - **The risk, and the fallback:** OpenRouter guarantees Claude Code only on Anthropic's own provider (F-112). If the first real runs show tool-call, hook or thinking problems through OpenRouter, switch to `openrouter-haiku` (`anthropic/claude-haiku-4.5` served by Anthropic, about four times the price): one line in `config.toml`.
   - **Check before any real run:** `node scripts/provider-check.ts --provider <name>`.
     - It calls the endpoint directly: the key, the model that answered, the routing fields, one tool call.

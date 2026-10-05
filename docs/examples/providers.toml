@@ -9,11 +9,13 @@
 #   (F-73, F-75, F-76, F-77, F-111); they change, so re-check them.
 # - An A/B run uses one provider and model for both arms, never a router that picks models (D-87).
 
-# OpenRouter, pinned to DeepSeek V4.1-Flash served by DeepSeek itself: the default for development,
-# smoke tests and real-model runs (D-104, F-111, F-112). `provider.only` keeps every request on one
-# provider: 30 serve this model on OpenRouter, some quantized to fp8 or fp4 (F-111). OpenRouter only
-# guarantees Claude Code on Anthropic models (F-112); if the first runs show tool or hook problems, use
-# openrouter-haiku below. Pay-as-you-go credits. Key: https://openrouter.ai/settings/keys
+# OpenRouter, pinned to DeepSeek V4.1-Flash served by Parasail at fp8: the default for development,
+# smoke tests and real-model runs (D-104, F-111, F-112, F-113). `provider.only` keeps every request on one
+# provider: 30 serve this model on OpenRouter, at different precisions (F-111). DeepSeek's own endpoint is
+# left out because an account that refuses providers training on paid inputs (OpenRouter's privacy
+# setting) can't reach it (F-113). OpenRouter only guarantees Claude Code on Anthropic models (F-112);
+# `scripts/provider-check.ts` checks tools and hooks first. Pay-as-you-go credits.
+# Key: https://openrouter.ai/settings/keys
 [providers.openrouter]
 base_url = "https://openrouter.ai/api"
 auth = "bearer"
@@ -22,9 +24,9 @@ model = "deepseek/deepseek-v4.1-flash"
 max_context_tokens = 1000000
 auto_compact_window = 200000
 max_output_tokens = 32000
-extra_body = { provider = { only = ["deepseek"], allow_fallbacks = false } }
+extra_body = { provider = { only = ["parasail/fp8"], allow_fallbacks = false } }
 
-[providers.openrouter.prices."deepseek/deepseek-v4.1-flash"]  # DeepSeek's own rates on OpenRouter (F-111)
+[providers.openrouter.prices."deepseek/deepseek-v4.1-flash"]  # Parasail's rates on OpenRouter, the same as DeepSeek's own (F-111)
 input = 0.30
 output = 1.20
 cache_read = 0.006
