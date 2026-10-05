@@ -1096,7 +1096,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - DeepSeek's own endpoint, Kimi, Haiku and the free OpenRouter model stay as optional tables;
     - the A/B uses one fixed model and provider table in both arms. Which one is a B10 parameter both owners sign; until then, this default.
   - *Source:* S11; F-111 and F-112. *Status:* Locked for the provider (an owner's instruction). The model is a Proposal, revisited after the first real runs.
-- **D-105 Agents send `contract_request` and `task_blocked`; a blocked report goes to the task's owner (0B item 6; D-24). Built by stream A, which took B7 over (S11).**
+- **D-105 Agents send `contract_request` and `task_blocked`; a blocked report goes to the task's owner (0B item 6; D-24). Built by stream A, which took B7 over (S11). The recipient was decided by an owner, 2026-10-05.**
   - **`contract_request`:**
     - an agent (or a human) asks another agent to define or confirm an API, type or schema it owns: `to` by name or id, the contract as text (500 characters at most), and optional `about_paths`;
     - it's answered with `answer`, like a question (its id is the `question_id`), once, and `wait_for(answer, id)` waits for it;
@@ -1119,7 +1119,8 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - server: `messages.test.ts` and `waits.test.ts`;
     - daemon: `tools.test.ts`, `view.test.ts` and `envelope.test.ts`;
     - end to end, with the real CLI: `test/message-kinds.integration.test.ts`.
-  - *Source:* 0B item 6, coordination.md §3, S10, S11. *Status:* Proposal. **Who receives `task_blocked` is an owners' decision (the plan's B7 item): the owner is this Proposal's default, pending their confirmation.**
+  - **The recipient, decided by an owner (2026-10-05):** an agent's `task_blocked` goes to the task's owner only, as the harness's own reports do. The agent it's blocked on is **not** notified, for now; revisiting that is a new D-ID.
+  - *Source:* 0B item 6, coordination.md §3, S10, S11; an owner's choice in session for the recipient. *Status:* the recipient is Locked (an owner's decision); the rest is a Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
