@@ -209,7 +209,7 @@ Agents never get input mid-generation. Messages land only at a **safe boundary**
 
 ## 4. Waiting and deadlocks (D-27)
 
-- **`wait_for(event, timeout)`** (0B): an agent pauses until an event arrives (an answer to question X, task Y finishing, a lease on P freeing up) or the timeout passes.
+- **`wait_for(event, timeout)`** (0B): an agent pauses until an event arrives (an answer to question X, task Y landing, a lease on P freeing up) or the timeout passes. A land it waited for is merged into its branch before it's told (D-106).
   - **Mechanism, chosen in 0B** ([protocol.md §6](protocol.md#6-agent-facing-tool-shim)):
     - end the turn and have `harnessd` push the result as a new turn; or
     - a blocking tool call.

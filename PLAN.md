@@ -1096,6 +1096,24 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - end to end, with the real CLI: `test/message-kinds.integration.test.ts`.
   - **The recipient, decided by an owner (2026-10-05):** an agent's `task_blocked` goes to the task's owner only, as the harness's own reports do. The agent it's blocked on is **not** notified, for now; revisiting that is a new D-ID.
   - *Source:* 0B item 6, coordination.md §3, S10, S11; an owner's choice in session for the recipient. *Status:* the recipient is Locked (an owner's decision); the rest is a Proposal.
+- **D-106 A task's work reaches a waiting or finishing agent through its land: task waits end at the land, the land is merged before the agent is told, and `report_done` waits for landed work (refines D-53, D-95, D-101). Found by the first real-model run (F-113).**
+  - **What the real model did** (`demo:0b --real` on OpenRouter):
+    1. agent/frontend was told not to start until agent/backend's contract change had landed. It called `wait_for(task, T-2)` and ended its turn, as designed.
+    2. The wait resolved when T-2 was *done*, about a second before the human landed it. So the agent was woken before the change was anywhere it could have it.
+    3. It then worked through one long turn and called `report_done`. The landed notice was held for a turn end that never came before it finished (D-53), so it handed in work built on the old contract, saying so itself.
+    4. The scripted demo never shows this, because its agent ends a turn between steps.
+  - **The rules now:**
+    - **A task wait ends when the task lands or is abandoned, not when it's done.** A done task's work isn't in the base, so no sync can bring it to anyone. A task that's done and never landed runs into the wait's timeout, and the human hears it (D-95).
+    - **A land it waited for is merged before the agent is told.** When the wait resolves as landed and the waiter's branch doesn't contain the land, harnessd syncs the branch first: at once if the agent is between turns, else at its turn end, which the Stop gate allows (D-100). Then the outcome is delivered and opens its next turn. This holds even when the agent never read what the land changed, so no stale-context notice would have brought it.
+    - **The same when it has already landed:** `wait_for` on a task that landed before the call says so. If the branch doesn't have it, the tool tells the agent to end its turn, and harnessd merges it and then says so.
+    - **`report_done` waits for landed work.** While a landed change the agent read is held for its sync, or a land it waited for isn't merged, `report_done` is refused and nothing reaches the server. The tool's result names what landed and tells the agent to end its turn; the harness merges it and shows the diff, and the agent checks its work and calls `report_done` again. The human's `harness task done` isn't gated.
+  - **Tests:** three in `test/sync-land.integration.test.ts`:
+    - a wait stays open while the task is only done, then the order is land, then the resolved wait, then the sync, then the outcome, with the change in the waiter's tree;
+    - an already-landed task, in a branch made before and after the land;
+    - `report_done` refused, then accepted after the sync.
+
+    Each has a negative control: the old `done` rule, no sync before telling, an ungated `report_done`, and a `wait_for` that ignores an unmerged land. Also unit tests in server `waits.test.ts` and daemon `tools.test.ts`.
+  - *Source:* the first real-model run (F-113); D-53, D-95, D-101. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)

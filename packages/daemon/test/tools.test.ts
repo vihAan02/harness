@@ -54,7 +54,26 @@ test('a settled wait\'s outcome, in words', () => {
   assert.equal(waitOutcomeText({ ...w, on: { kind: 'lease', id: 'lease_1' }, outcome: 'resolved', result: { lease: 'expired' } }),
     'Your wait for lease lease_1 to free up is over: the lease expired.');
   assert.equal(waitOutcomeText({ ...w, on: { kind: 'task', id: 'T-3' }, outcome: 'timed_out' }),
-    'Your wait for task T-3 to finish timed out after 120 seconds without it happening, and your human has been told. You can carry on without it, or wait again.');
+    'Your wait for task T-3 to land timed out after 120 seconds without it happening, and your human has been told. You can carry on without it, or wait again.');
+});
+
+test('report_done waits for landed work the branch doesn\'t have; wait_for on a landed task asks harnessd to merge it (D-106)', async () => {
+  const sent: string[] = [];
+  const send: ToolContext['send'] = async (name) => { sent.push(name); return name === 'wait.start' ? { wait_id: 'wait_1', outcome: 'resolved', result: { status: 'landed' } } : {}; };
+  let behind = ['src/types.ts'];
+  const merged: string[] = [];
+  const c: ToolContext = { ...ctx, sessionId: 'sess-1', send, landedNotMerged: () => behind, mergeLand: async (t) => { merged.push(t); return false; } };
+  const tools = harnessTools(c);
+  const done = tools.find((t) => t.name === 'report_done')!;
+  const refused = await done.run({});
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /^Not done yet: work has landed that your branch doesn't have \(src\/types\.ts\)\./);
+  assert.deepEqual(sent, [], 'nothing reaches the server');
+  behind = [];
+  assert.equal((await done.run({})).text, 'Recorded: T-1 is done. The harness will commit your work and end this session.');
+  const wait = await tools.find((t) => t.name === 'wait_for')!.run({ kind: 'task', id: 'T-2' });
+  assert.deepEqual(merged, ['T-2']);
+  assert.match(wait.text, /^It has already happened: task T-2 has landed, but your branch doesn't have it yet\. End your turn now/);
 });
 
 test('request_contract and report_blocked send the 0B kinds; report_blocked goes to the owner and names what blocks it (D-105)', async () => {
