@@ -224,7 +224,7 @@
    **Done 2026-10-03** (D-98): three layers (deny rules, a call-time check, the sandbox), and T-1 passes.
 8. **Security tests** T-1 (hostile message), T-1b (guardrail tampering) and T-2 (stale lease, using fault injection) ([validation.md §7](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test)).
 9. **A/B setup:**
-   - scenarios SC-0 to SC-4 planted in the benchmark repo: scenario tags, task cards and hidden integration checks (D-58);
+   - scenarios SC-0 to SC-4 (D-58, D-120): tags in the benchmark repo, task cards in [scripts/ab/scenarios/](../scripts/ab/scenarios/), and hidden integration checks in a separate private repo that only the grader reads;
    - the baseline recorder and launch config;
    - the coordinator playbook;
    - the scoring rubric.

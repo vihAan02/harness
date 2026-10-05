@@ -34,6 +34,10 @@ test('a harness notice and an owner message', () => {
   const notice = renderMessage({ id: 'msg_3', kind: 'claim_conflict', text: 'src/types.ts: agent/web (task T-2) is also changing this file.', fromTask: null, sender: { kind: 'harness' } });
   assert.match(notice, /^\[harness notice\]\nSOURCE: harness   TRUST: system-notice   PERMISSIONS: none\nKIND: claim_conflict   ID: msg_3\nsrc\/types\.ts: agent\/web/);
   assert.match(notice, /not locks/);
+  // A hard claim (a lease, D-97) is enforced when a task lands, so its notice doesn't say nothing stops the edit.
+  const lease = renderMessage({ id: 'msg_5', kind: 'claim_conflict', text: 'lib/: agent/y (task T-2) holds a hard claim until 12:05:00 UTC. Your claim was not granted.', fromTask: null, sender: { kind: 'harness' }, lease: true });
+  assert.match(lease, /\nlib\/: agent\/y \(task T-2\) holds a hard claim until 12:05:00 UTC\. Your claim was not granted\.\nA hard claim doesn't stop edits; the land step enforces it\. A land is rejected if it changes a path another task holds a current lease on/);
+  assert.doesNotMatch(lease, /not locks|nothing stops/);
   const owner = renderMessage({ id: 'msg_4', kind: 'question', text: 'How is it going?', fromTask: null, sender: { kind: 'human', id: 'human_a', local: true } });
   assert.match(owner, /SOURCE: human\/human_a \(local owner\)\nTRUST: owner instruction\nPERMISSIONS: none/);
   assert.match(owner, /\n---\nHow is it going\?\n---\n/);
