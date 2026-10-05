@@ -62,8 +62,11 @@ export type JudgeResult = {
   v: 1;
   run_id: string;
   judge_model: string;
-  /** M2: each functionality implemented more than once, with where. */
-  m2: { units: { what: string; locations: string[]; extra_copies: number }[]; lines_removed_in_integration: number };
+  /**
+   * M2: each functionality implemented more than once, with where. `planted` marks SC-4's planted ISBN helper,
+   * whose count the grader decides (Grade.m2_planted); the scorer ignores it in other scenarios.
+   */
+  m2: { units: { what: string; locations: string[]; extra_copies: number; planted?: boolean }[]; lines_removed_in_integration: number };
   /** M6: stale-context incidents, each caught before its task finished or not. */
   m6: { incidents: { agent: string; coupling: string; evidence: string; caught: boolean }[] };
   cost_usd: number;
@@ -104,4 +107,47 @@ export function checkSummary(v: unknown, where = 'summary.json'): RunSummary {
   if (s.surfaced !== null && (!isObj(s.surfaced) || !nonNeg(s.surfaced.planted) || !nonNeg(s.surfaced.surfaced))) bad('surfaced');
   if (!Array.isArray(s.tasks)) bad('tasks');
   return v as RunSummary;
+}
+
+const count = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+
+/** Throws on M2 and M6 answers that don't match JudgeResult's m2 and m6, naming the first bad field. */
+export function checkJudgeParts(v: unknown, where: string, parts: readonly ('m2' | 'm6')[] = ['m2', 'm6']): Pick<JudgeResult, 'm2' | 'm6'> {
+  const bad = (f: string): never => { throw new Error(`${where}: bad or missing ${f}`); };
+  if (!isObj(v)) bad('object');
+  const j = v as Record<string, unknown>;
+  if (parts.includes('m2')) {
+    if (!isObj(j.m2) || !Array.isArray(j.m2.units) || !count(j.m2.lines_removed_in_integration)) bad('m2');
+    for (const [i, u] of ((j.m2 as Record<string, unknown>).units as unknown[]).entries()) {
+      if (!isObj(u) || typeof u.what !== 'string' || !Array.isArray(u.locations) || !u.locations.every((l) => typeof l === 'string')
+        || !count(u.extra_copies) || (u.planted !== undefined && typeof u.planted !== 'boolean')) bad(`m2.units[${i}]`);
+    }
+  }
+  if (parts.includes('m6')) {
+    if (!isObj(j.m6) || !Array.isArray(j.m6.incidents)) bad('m6');
+    for (const [i, x] of ((j.m6 as Record<string, unknown>).incidents as unknown[]).entries()) {
+      if (!isObj(x) || typeof x.agent !== 'string' || typeof x.coupling !== 'string' || typeof x.evidence !== 'string' || typeof x.caught !== 'boolean') bad(`m6.incidents[${i}]`);
+    }
+  }
+  return v as Pick<JudgeResult, 'm2' | 'm6'>;
+}
+
+/** Throws on a judge.json that isn't a JudgeResult. */
+export function checkJudge(v: unknown, where = 'judge.json'): JudgeResult {
+  checkJudgeParts(v, where);
+  const j = v as Record<string, unknown>;
+  if (j.v !== 1) throw new Error(`${where}: bad or missing v`);
+  for (const f of ['run_id', 'judge_model']) if (typeof j[f] !== 'string') throw new Error(`${where}: bad or missing ${f}`);
+  if (!nonNeg(j.cost_usd)) throw new Error(`${where}: bad or missing cost_usd`);
+  return v as JudgeResult;
+}
+
+/** Throws on a grades.json that isn't Grades, naming the first bad run. */
+export function checkGrades(v: unknown, where = 'grades.json'): Grades {
+  if (!isObj(v) || v.v !== 1 || !isObj(v.runs)) throw new Error(`${where}: bad or missing v or runs`);
+  for (const [id, g] of Object.entries(v.runs)) {
+    if (!isObj(g) || !isObj(g.checks) || !Object.values(g.checks).every((c) => c === 'pass' || c === 'fail')
+      || !count(g.m9b) || !count(g.m6_reached) || !count(g.m2_planted)) throw new Error(`${where}: bad grade for run ${id}`);
+  }
+  return v as Grades;
 }
