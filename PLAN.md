@@ -1052,7 +1052,12 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - The interactive CLI has no per-session budget flag, so the baseline has no budget cap. The time cap applies to both arms, and the recorder reprices tokens (B9b).
     - The CLI's first-run state is seeded in the agent's own config dir, so no dialog stands between the human and the work, and none offers a subscription login (F-109).
   - **Tests:** `test/baseline.integration.test.ts` compares the launch with an SDK session's policy for the same spec, and runs the pinned CLI in a pseudo-terminal against the scripted mock, with negative controls.
-  - **Still open:** the manual run against a real model (it needs a key, Q-18), with B2's U-5 probe.
+  - **The run against a real model (2026-10-05, OpenRouter, `deepseek/deepseek-v4.1-flash` on Parasail; D-104):** the launch ran in a pseudo-terminal from a `config.toml` naming the `openrouter` provider.
+    - The interactive CLI started on the API key, with no login dialog.
+    - It read a file, wrote one in its worktree with no permission prompt, and replied, in 14 s.
+    - The key never appeared on screen.
+    - The CLI shows an "auth conflict" banner, because a bearer provider gets the key in both auth variables (D-90). It's harmless, and the harness arm's SDK sessions get the same pair.
+  - **Still open:** B2's U-5 probe of a human driving the baseline.
   - *Source:* 0B item 9, validation.md §3, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
