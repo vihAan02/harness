@@ -92,7 +92,7 @@ test('the M6 prompt: only the scenario\'s coupling, the timeline, and both agent
   const order = ['backend Write src/shared/types.ts', 'frontend Edit src/client/api.ts', 'frontend MultiEdit src/client/api.ts'].map((s) => m6!.user.indexOf(s));
   assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1]!)), `in time order: ${order}`);
   assert.match(m6!.user, /1 of frontend's edit calls failed .* and are left out; frontend's transcript has 1 line\(s\) that aren't JSON/);
-  assert.equal(rubric('m6', 'SC-4').includes('isbn-helper'), true);
+  assert.equal(rubric('m6', 'SC-4').includes('Coupling name: `none`'), true, 'SC-4 has no M6 coupling: its duplicate is M2\'s (§9)');
   assert.throws(() => rubric('m6', 'SC-9'), /no section for SC-9/);
 });
 
