@@ -171,8 +171,10 @@ test('kill ends the session and its process at once', async () => {
   await adapter.stopSession(h, 'kill');
   await c.done;
   assert.equal(c.of('ended')[0]!.reason, 'killed');
-  await new Promise((r) => setTimeout(r, 200));
-  assert.ok(!alive(pid));
+  // The kill is immediate, but a killed process can still be signalled for a moment while it's torn down and
+  // reaped. A fixed 200 ms wasn't enough on a loaded machine (load average over 50), so wait for it, bounded.
+  for (const end = Date.now() + 5000; alive(pid) && Date.now() < end;) await new Promise((r) => setTimeout(r, 25));
+  assert.ok(!alive(pid), 'the process is gone');
   await assert.rejects(adapter.injectMessage(h, human('m2', 'late')), /has ended/);
 });
 
