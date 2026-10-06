@@ -2,7 +2,7 @@
 // (D-32). It supervises agents only through @harness/adapters and owns every Git write (D-50).
 export { Daemon, type AgentRef, type DaemonOptions, type RunningAgent, type TaskWorkspace } from './daemon.ts';
 export { renderTask, type TaskForAgent } from './envelope.ts';
-export { sessionInstructions, STANDING_INSTRUCTION } from './instructions.ts';
+export { environmentInstructions, readRepoInstructions, sessionInstructions, STANDING_INSTRUCTION } from './instructions.ts';
 export { harnessHome, type Home } from './home.ts';
 export { loadConfig, parseConfig, parseProvider, type LocalConfig, type ProviderConfig } from './config.ts';
 export { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
@@ -14,3 +14,5 @@ export { duration, renderAgentStatus, renderHumanStatus } from './status.ts';
 export { renderMessage } from './envelope.ts';
 export { harnessTools, HARNESS_TOOL_NAMES } from './tools.ts';
 export { computeMetrics, renderMetrics, type RunMetrics } from './metrics.ts';
+export { readPolicyFor } from './readpolicy.ts';
+export { agentConfigDir, portEnv } from './resources.ts';

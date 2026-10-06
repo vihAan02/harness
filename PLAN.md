@@ -1044,6 +1044,31 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Why it's safe:** fencing protects a current holder and catches a stale one (F-80). With no other holder and no newer token, there's nothing to protect. The check still runs under the lease lock, so no lease is granted between it and the land's acceptance (D-97).
   - **Found by:** the adversarial review of B5, which makes releases and real expiry reachable.
   - *Source:* the B5 review; an owner's choice in session. *Status:* Proposal.
+- **D-102 The A/B baseline launch, as built (0B item 9; validation.md §3).**
+  - **What it is:** `node scripts/ab/baseline-launch.ts --worktree <dir> --repo <checkout> --agent <name> [--ports <base>:<count>]` starts an interactive Claude Code in a worktree the human made, one per agent and terminal. `--print` shows the command instead.
+  - **The same as the harness arm, from harnessd's own config and code:**
+    - the provider and model (D-87);
+    - permissions and the allow list, without the harness tools;
+    - the sandbox and read confinement (D-98);
+    - the flag settings, no setting sources, no MCP servers;
+    - `dontAsk`;
+    - the session env (API key, auto memory off) and the port block;
+    - the repo's instruction files and the ports line, appended the same way.
+
+    `ClaudeAdapter.interactiveLaunch` builds the command from the same compiled policy an SDK session gets, so the two can't drift apart.
+  - **The treatment it leaves out:** harness tools, the standing harness instructions, the envelope text, notices, claims, sync and `wait_for`.
+  - **Other differences, by necessity:**
+    - An interactive session has no SDK callbacks, so no harness hooks. The call-time read check and the dead-man are the harness arm's only (D-62, D-98); the deny rules and the sandbox are the same.
+    - The interactive CLI has no per-session budget flag, so the baseline has no budget cap. The time cap applies to both arms, and the recorder reprices tokens (B9b).
+    - The CLI's first-run state is seeded in the agent's own config dir, so no dialog stands between the human and the work, and none offers a subscription login (F-109).
+  - **Tests:** `test/baseline.integration.test.ts` compares the launch with an SDK session's policy for the same spec, and runs the pinned CLI in a pseudo-terminal against the scripted mock, with negative controls.
+  - **The run against a real model (2026-10-05, OpenRouter, `deepseek/deepseek-v4.1-flash` on Parasail; D-104):** the launch ran in a pseudo-terminal from a `config.toml` naming the `openrouter` provider.
+    - The interactive CLI started on the API key, with no login dialog.
+    - It read a file, wrote one in its worktree with no permission prompt, and replied, in 14 s.
+    - The key never appeared on screen.
+    - The CLI shows an "auth conflict" banner, because a bearer provider gets the key in both auth variables (D-90). It's harmless, and the harness arm's SDK sessions get the same pair.
+  - **Still open:** B2's U-5 probe of a human driving the baseline.
+  - *Source:* 0B item 9, validation.md §3, S10. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
