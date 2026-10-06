@@ -134,6 +134,7 @@ test('S3: A reads src/types.ts; B changes it and it lands; A is synced at turn e
 
   // B is landed: its worktree is gone; the land's metrics are in the log.
   assert.equal((await s.db.pool.query('SELECT status FROM tasks WHERE id = $1', [tB])).rows[0].status, 'landed');
-  assert.ok(!fs.existsSync(s.worktreeOf(tB)));
+  // harnessd removes it just after the server hears of the land (when the CLI prints "Landed"), so it may still be going.
+  await s.until(() => !fs.existsSync(s.worktreeOf(tB)), 20_000, `${tB}'s landed worktree to go`);
   await s.daemon.stopAgent(tA);
 });

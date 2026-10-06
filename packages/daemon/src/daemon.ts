@@ -121,6 +121,7 @@ export class Daemon {
   delivered = new Set<string>(); // acknowledged in this process, before the server's event comes back
   lifecycles = new Map<string, Promise<void>>(); // per task while in flight, so assigned → completed never overlap
   landing = new Map<string, Promise<void>>(); // per project: lands run one at a time (D-93)
+  landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
 
   constructor(o: DaemonOptions) {
@@ -365,8 +366,14 @@ export class Daemon {
 
   // ---------- the land step (0B item 5; D-51, D-54; local-runtime.md §4) ----------
 
+  /** Lands run one at a time per project. Once harnessd is stopping, one not started yet stays as it is on the server: recoverLands runs it at the next start. */
   queueLand(projectId: string, job: () => Promise<void>): void {
-    const next = (this.landing.get(projectId) ?? Promise.resolve()).then(job).catch((e: Error) => this.log(`land: ${e.message}`));
+    const run = async () => {
+      if (this.stopping) return;
+      this.landsInFlight++;
+      try { await job(); } finally { this.landsInFlight--; }
+    };
+    const next = (this.landing.get(projectId) ?? Promise.resolve()).then(run).catch((e: Error) => this.log(`land: ${e.message}`));
     this.landing.set(projectId, next);
   }
 
@@ -450,15 +457,18 @@ export class Daemon {
         }
         await step('tested');
       }
+      // The base never moves once harnessd is stopping: the land is interrupted, as a restart would interrupt it.
+      if (this.stopping) throw new Error('harnessd stopped before the base moved');
       writeJsonAtomic(this.landFile(landId), { projectId, landId, taskId, baseSha, head, dir, merge: m.commit });
       const adv = await advanceBase(project.repo, project.baseBranch, baseSha, m.commit);
       if (!adv.ok) return void await fail(adv.reason, adv.detail);
       moved = true;
       await this.completeLand(projectId, landId, taskId, baseSha, m.commit, head);
+      moved = false; // the server heard: the land's record goes too, as after a retry that got through
     } catch (e) {
       // Once the base has moved, the land happened: never report it failed. The record stays for a retry
-      // now and for recovery at the next start.
-      if (!moved) await fail(e instanceof ApprovalTimeout ? 'not_approved' : 'error', (e as Error).message).catch(() => {});
+      // now and for recovery at the next start. Before then, a stop interrupts it, as a restart does (recoverLands).
+      if (!moved) await fail(e instanceof ApprovalTimeout ? 'not_approved' : this.stopping ? 'interrupted' : 'error', (e as Error).message).catch(() => {});
       else {
         this.log(`land of ${taskId}: the base moved, but reporting it failed (${(e as Error).message}); retrying`);
         const saved = readJson<{ merge: string | null } | null>(this.landFile(landId), null);
@@ -686,6 +696,11 @@ export class Daemon {
     this.leases.stop();
     await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
     await Promise.all(this.lifecycles.values()); // with no agents left running, these finish promptly
+    // The land in flight finishes before the link closes: it reports through it, and once the server hears it
+    // landed it still removes worktrees. One waiting for an approval, or not yet past its tests, is interrupted.
+    if (this.landsInFlight) this.log('stopping: waiting for the land in flight to finish');
+    await Promise.all(this.landing.values());
+    await Promise.all(this.lifecycles.values()); // any that events started meanwhile
     await this.link?.stop();
   }
 
