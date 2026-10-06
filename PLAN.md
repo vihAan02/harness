@@ -1049,6 +1049,31 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Hidden checks:** a private repo that only the grader reads (D-94). A self-test proves that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
   - *Why:* every coupling comes from a natural feature request on Shelf, so the agents meet it while doing ordinary work, and the checks test behaviour on real API data rather than the exact code.
   - *Source:* 0B item 9, Q-02, D-58, S10. *Status:* Proposal (frozen with the `ab-v1` tag).
+- **D-122 D-107 is approved: a human can send a done task back to its agent with `harness task reopen` (0B). Decided by an owner, 2026-10-06.**
+  - **What's approved:** D-107 as proposed by stream A (branch `daniyal/task-reopen`): `task.reopen { task_id, text }`, for humans, on a `done` task with no land in flight. The task goes back to `in_progress`, and harnessd starts a new session on its branch, opening with the task plus the human's message. A reopen counts as M5.
+  - **What doesn't change:** D-96 still holds. A failed land leaves the task `done`, and nothing reopens a task unless a human asks. Resume, which restores the old conversation, is still Phase 1 (D-40).
+  - **Why:** the A/B playbook (validation.md §9, D-121) has the coordinator ask the agent to fix a failed integration, and never write code. Without reopen, only the baseline could do that, because its terminal stays open.
+  - **Next:** stream A opens D-107 as its own PR, which needs review as usual; §9's step 6 uses it in the harness arm.
+  - *Source:* S13; D-107; the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85).
+- **D-123 D-108 is approved for 0B: a task `wait_for` that would close a wait cycle is refused (an owner's exception to §10; D-27's cycle detection otherwise stays in Phase 1). Decided by an owner, 2026-10-06.**
+  - **What's approved:** D-108 as in PR #63. `wait.start` on a task follows the open task waits from its target, and refuses with `conflict` if the chain leads back to the waiting task. The agent is told to finish its part and say what the other task needs.
+  - **What stays in Phase 1:** detecting a cycle that has already formed, asking an agent to release, and escalating to a human (D-27; the roadmap's Phase 1 item 7). Waits on answers and leases aren't checked.
+  - **Why it comes forward:** in a real SC-1 rehearsal two agents waited on each other's land until the 600 s timeout, twice: 10 of the run's 30 minutes. With the A/B's 30-minute cap, the timeout backstop (D-95) would use up most of a run.
+  - **For the A/B:** the harness arm runs with it, as part of the treatment.
+  - *Source:* S13; D-108; the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85); #63 still needs its review.
+- **D-124 Coupled changes in the counted A/B runs: test-gated integration first, untested only when the first integration fails (SC-1 to SC-3, both arms). Decided by an owner, 2026-10-06.**
+  - **The problem:** in SC-1 to SC-3 a change can span both tasks. In SC-1, T-1 changes the login response and T-2's client reads it, so a test-gated land of either task alone can fail type-checking. In the rehearsal both lands failed, and the agents waited on each other.
+  - **The rule, the same in both arms:**
+    - each task is integrated with the scenario's test command (`harness land`; the baseline runner's `merge`);
+    - if the first task's first integration fails its tests, that counts for M9a, and the coordinator integrates it again with tests skipped (`harness land --no-tests`; `merge --no-tests` in the baseline runner, added with B9b);
+    - the second task must integrate with tests green. If it fails, §9's step 6 applies: ask its agent to fix it (`harness task reopen`, D-122, in the harness arm; its terminal in the baseline), then integrate again;
+    - M1 ends when both tasks are integrated and main's tests are green.
+  - **Why this option:** it's mechanical, so the coordinator decides nothing. M9a still records the failed first attempt. The hidden checks on final main still decide M6 "reached" and M9b. And it needs no new product feature.
+  - **Rejected:**
+    - always integrating the first task without tests: M9a would then measure only the second integration in those scenarios;
+    - a "land together" feature: new product work in 0B, which would delay the counted runs.
+  - **Where it goes:** validation.md §9's playbook (B10, #59), and the baseline runner's `merge` (B9b). Both owners sign §9 as a whole (D-121).
+  - *Source:* S13; HANDOFF's owner decisions (PR #56); the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85).
 <!-- Stream B: append new D-IDs (D-120 to D-139) above this line. -->
 
 ## 8. Hypotheses (what we're testing, not assuming)
