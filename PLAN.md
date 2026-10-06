@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-03):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with the real-model check U-1 deferred until an API key exists ([Q-18](docs/open-questions.md#q-18)). The model endpoint is configurable, with no provider hardcoded (D-87); real-model runs use OpenRouter, pinned to one model on one provider (D-104, superseding D-87's DeepSeek-first order). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
+> **Status (2026-10-06):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with real-model checks U-1 and U-2 verified and U-3 measured on the configured model (2026-10-05, #58; [Q-18](docs/open-questions.md#q-18)). **The functional MVP is declared (D-109, 2026-10-06).** The model endpoint is configurable, with no provider hardcoded (D-87); real-model runs use OpenRouter, pinned to one model on one provider (D-104, superseding D-87's DeepSeek-first order). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. The rest of 0B is approved and built in two parallel workstreams (D-94; rules in [AGENTS.md](AGENTS.md)), toward the functional MVP and then the formal A/B gate; a real-model run needs an API key (README, "Choosing a model provider").
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. The rest of 0B is approved and built in two parallel workstreams (D-94; rules in [AGENTS.md](AGENTS.md)), toward the functional MVP, declared on 2026-10-06 (D-109), and then the formal A/B gate. Real-model runs use OpenRouter (D-104; README, "Choosing a model provider").
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -40,6 +40,8 @@ These sources define this plan. Later sources win where they sharpen or override
 | **S9** | [Co-owner approves 0B and sets the provider direction](docs/source/2026-10-03-S9-coowner-0b-go-and-providers.md) | Approved Phase 0B with U-1 deferred, Postgres 18 beside 17 on port 5433, and a configurable model provider with DeepSeek first (D-86, D-87). Resolved Q-06 and Q-07 (D-88, D-89). Set this stretch's stop point: the S3 example with the scripted model. |
 | **S10** | [Owners split the rest of 0B into two parallel workstreams](docs/source/2026-10-03-S10-owners-parallel-development.md) | Daniyal leads stream A and integration, Vihaan stream B; file ownership, ID ranges, dependency-gated squash merges and the review rules (D-94). |
 | **S11** | [Co-owner makes OpenRouter the real-model provider](docs/source/2026-10-04-S11-coowner-openrouter-and-takeover.md) | OpenRouter replaces DeepSeek as the provider for development and real-model runs, with one fixed model, the provider system kept configurable (D-104). Stream A may take over stream B tasks that haven't started, on its own branches. |
+| **S13** | [Owner approves reopen and wait-cycle refusal, and picks the coupled-landing rule](docs/source/2026-10-06-S13-owner-reopen-coupled-landing-wait-cycles.md) | D-107 and D-108 approved for 0B, and the A/B's rule for changes that span both tasks (D-122 to D-124) |
+| **S14** | [Co-owner declares the functional MVP](docs/source/2026-10-06-S14-coowner-functional-mvp-scope.md) | Declared on the A8 evidence, with the real-model run's scope stated; scripted-model coverage accepted for the rest (D-109) |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -1140,6 +1142,50 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 
     Each has a negative control: the old `done` rule, no sync before telling, an ungated `report_done`, and a `wait_for` that ignores an unmerged land. Also unit tests in server `waits.test.ts` and daemon `tools.test.ts`.
   - *Source:* the first real-model run (F-113); D-53, D-95, D-101. *Status:* Proposal.
+- **D-109 The functional MVP is declared (Milestone 1 of 0B; D-94, workboard #4 §1). Decided by an owner (Daniyal, S14), 2026-10-06. The workboard's list of what the real-model run exercises holds in part; the owner accepted the scripted-model coverage for the rest.**
+  - **What holds, on `main` @ `ab9eba8` (tree `a1224c9`):**
+    - **Items 3 to 7 are merged:**
+      - hook delivery and the Stop gate (D-99, D-100);
+      - `wait_for` (D-95, D-101, D-106);
+      - leases, `harness claim --force`, renewal and fencing (B5, B6; D-97, D-103);
+      - agent-sendable `contract_request` and `task_blocked` (D-105);
+      - read confinement (D-98).
+
+      Also in: the land-teardown (#73) and sync-land (#72) race fixes, and the CI rules in AGENTS.md (#69).
+    - **EC2:** T-1, T-1b and T-2 pass three times (`node --test test/security/`): 9/9 each time, in 51 s, 56 s and 48 s. Each suite has a negative control that shows the test can see an escape.
+    - **The scripted checks:** `npm run check` gives 308 tests, 307 pass, 0 fail, 1 skipped. `npm run demo` and `npm run demo:0b` both pass.
+    - **CI green on the same commit:** run 37520327840 (`guard`, `unit-linux`, `full-macos`).
+  - **Real-model runs on Shelf:** OpenRouter, `deepseek/deepseek-v4.1-flash` on `parasail/fp8` (D-104).
+    - **The provider check** (`node scripts/provider-check.ts --provider openrouter`) passes all three stages: the direct API call, a hardened Claude Code session, and harness notices through the hooks (one delivered between tools, one at the Stop hook). It runs outside Shelf.
+    - **`npm run demo:0b -- --real --provider openrouter`, twice. Both passed:**
+      - in 70 s and 66 s (M1 66.5 s and 63.7 s), for $0.022 and $0.027;
+      - each time, the in-progress notice was delivered (1/1), and the landed notice was delivered (1/1) after a sync, before the reader finished;
+      - in the first run, the hooks saw all 28 tool calls (missed 0), and the reader re-read the named file after the landed notice;
+      - the second run was kept for inspection. Its event log has two waits (`wait_for` on an answer and on a task, each started and resolved), five deliveries (one between tools, four at a new turn), and `ask`, `answer` and `contract_request`;
+      - with a real model, the demo doesn't check the notice's diff excerpt.
+    - **The two-agent harness-arm rehearsal** (`node scripts/ab/run.ts --scenario SC-0 --real --provider openrouter --phrasing 1 --auto-land`) integrated both tasks through `harness land` in 39 s, for $0.021. SC-0's tasks are independent, so no notices, waits or leases were expected.
+  - **Not exercised by a real model on Shelf:**
+    - **Leases:** no `lease.*` event in the kept run or the rehearsal.
+    - **The Stop gate holding an agent, or delivery at the Stop hook:** with a real model these ran only in the provider check's third stage.
+
+    Both are covered with the real pinned Claude Code CLI and the scripted model:
+    - **Leases, `--force` and fencing:** T-2 and `test/leases.integration.test.ts`, plus the server-level `packages/server/test/{leases,land}.test.ts`.
+    - **The Stop gate:** `packages/adapters/test/stopgate.test.ts` (D-100). harnessd's ordering at the gate is covered in `test/sync-land.integration.test.ts`, with a stand-in adapter.
+
+    The owner accepted this coverage for the declaration, on this corrected scope (S14, second question). The B11 dry runs of both arms run real agents before the freeze.
+  - **What it isn't:** the formal 0B gate. That's Milestone 2: at least 30 counted A/B runs after the `ab-v1` freeze. The freeze needs:
+    - B9b (the baseline arm);
+    - B10, with §9 signed by both owners (#59; on 2026-10-06 Daniyal asked for changes before signing);
+    - reopen (D-107, #76) and wait-cycle refusal (D-108, #63) built, as the owners approved for 0B (D-122, D-123).
+
+    A9's scorer and judge (#64, #65) are needed before scoring.
+  - **Open, not blocking it:**
+    - the waits flake fix (#70, PR #75, in review);
+    - harnessd's stop and recovery follow-ups (#74).
+
+    HANDOFF.md's section on the declaration goes in with #56.
+  - **Real-model cost of the declaration runs:** about $0.073. That's the three Shelf runs above, plus the provider check's first two stages ($0.0002 and $0.003); stage 3 reports no cost figure.
+  - *Source:* S14; workboard #4 §1 (Milestone 1's definition); the A8 runs (2026-10-06). *Status:* Decided by an owner (`DaniyalMughal1`, D-85).
 <!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
@@ -1273,7 +1319,7 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
 2. ~~**Before the spike:** the owner picks the auth mode for experiments ([Q-04](docs/open-questions.md#q-04)).~~ **Done 2026-10-01:** API keys (D-56).
 3. ~~**The adapter spike** (roadmap 0A item 0, D-59).~~ **Done 2026-10-01:** results in [research/spike-0a.md](docs/research/spike-0a.md); architecture changes D-60 to D-70.
    - ~~**The owner reviews the results and D-60 to D-70.**~~ **Done 2026-10-02:** accepted; 0A continues (D-71).
-   - **Deferred (D-86):** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). The script is ready (`e17-real-model.ts`, SP-15); it only needs a key and, for a non-Anthropic model, the provider settings (D-87).
+   - ~~**Deferred (D-86):** real-model checks U-1 to U-3 need an API key ([Q-18](docs/open-questions.md#q-18)). The script is ready (`e17-real-model.ts`, SP-15); it only needs a key and, for a non-Anthropic model, the provider settings (D-87).~~ **Done 2026-10-05:** e17 verified U-1 and U-2 and measured U-3 on the configured model (#58; spike-0a.md §5).
 4. **During 0A:**
    - ~~Item 1, the repo skeleton.~~ **Done 2026-10-02:** `packages/`, with runtime and tooling per D-72 (Proposal). `npm run check` type-checks and runs the tests.
    - ~~Item 2, data model v0.~~ **Done 2026-10-02:** `packages/server/migrations/0001_data_model_v0.sql`, plus the event log's append and read (D-73, Proposal).
@@ -1282,17 +1328,18 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - ~~Item 5, `AgentAdapter` + `ClaudeAdapter`.~~ **Done 2026-10-03:** `packages/adapters`, and harnessd runs agent sessions through it (D-77, Proposal).
    - ~~Item 6, the agent-facing tool shim.~~ **Done 2026-10-03:** `harness_status`, `ask`, `answer`, `report_done`, plus the task commands and `message.send` they map onto (D-78, Proposal).
    - ~~Item 7, claims.~~ **Done 2026-10-03:** prospective and observed claims, overlap warnings and `claim_conflict` messages (D-79, Proposal).
-   - ~~Item 8, typed messages.~~ **Done 2026-10-03, except U-1:** envelopes, budgets, delivery at safe boundaries and `message.ack` (D-80, Proposal). U-1 still needs the API key (Q-18).
+   - ~~Item 8, typed messages.~~ **Done 2026-10-03, except U-1:** envelopes, budgets, delivery at safe boundaries and `message.ack` (D-80, Proposal). U-1 was verified on 2026-10-05 on the configured model (#58).
    - ~~Item 9, the human CLI and lifecycle.~~ **Done 2026-10-03:** `harness agent/task/status/log`, and harnessd starts, stops and commits agents as tasks move (D-81, Proposal).
    - ~~Item 10, metrics capture and the benchmark repo's base app.~~ **Done 2026-10-03:** `harness metrics` (D-82, Proposal), and Shelf in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83).
    - ~~Item 11, the 0A demo script.~~ **Done 2026-10-03:** `npm run demo` meets every exit criterion with the scripted model (D-84, Proposal).
 5. ~~**To close 0A:**~~ **Done 2026-10-03:** a co-owner reviewed 0A and approved 0B, with U-1 deferred (D-86). Budgets ([Q-05](docs/open-questions.md#q-05)) keep the proposal as the default. The benchmark repo is built (D-83).
-   - **Still to run when a key exists:** `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and the demos with `--real` for the whole loop with real agents.
+   - ~~**Still to run when a key exists:** `node experiments/e17-real-model.ts` in the spike (U-1 to U-3), and the demos with `--real` for the whole loop with real agents.~~ **Done:** e17 verified U-1 and U-2 and measured U-3, and `npm run demo -- --real` ran, meeting 3 of the 6 0A criteria with real agents; the overlap criteria need simultaneous edits (2026-10-05, #58; spike-0a.md §5). `npm run demo:0b -- --real` ran twice for the functional MVP (2026-10-06, D-109).
 6. **During 0B** (approved, D-86):
    - ~~**This stretch:** provider integration (D-87); item 1, read capture and the missed-hook monitor; item 2, invalidation and sync; the land part of item 5.~~ **Done 2026-10-03:** providers (D-90), read capture (D-91), invalidation and sync (D-92), the land step (D-93). The S3 example passes end to end with the scripted model (`test/s3.integration.test.ts`); the roadmap's 0B exit criterion 1 is met with the scripted model. **Stop point reached; the owners approved the rest of 0B in two parallel workstreams (D-94).**
    - **The rest of 0B** (D-94, two parallel workstreams; tasks and dependencies in the pinned "0B workboard" GitHub issue): hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
-     - **Done by 2026-10-04:** read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), `wait_for` (D-95, D-101). The A/B baseline launch is built (D-102) and waits for a real-model run.
-     - **In review or in progress:** leases and T-2 (B5, B6), T-1b, the message kinds, the A/B scenarios, runner and recorder.
+     - **Done by 2026-10-04:** read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), `wait_for` (D-95, D-101). The A/B baseline launch is built (D-102); it ran against a real model on 2026-10-05 and merged as A7 (#44).
+     - **Done by 2026-10-06:** leases and T-2 (B5, B6; D-97, D-103), T-1b, the message kinds (D-105), task waits that end at the land (D-106), the A/B scenarios (D-120) and the harness arm's runner (B9a). **The functional MVP is declared (D-109):** EC2 three times, a real-model end-to-end run on Shelf, CI green.
+     - **Next:** the `ab-v1` freeze, which needs B9b, §9 signed by both owners (B10, #59), and reopen (D-107) and wait-cycle refusal (D-108, #63), both approved for 0B (D-122, D-123; #76, #63). Then the counted runs (A10), grading (B11), scoring (A9: #64, #65) and the gate.
      - **Real-model runs (D-104):** OpenRouter, pinned; `node scripts/provider-check.ts --provider openrouter` first, then `npm run demo:0b -- --real --provider openrouter`.
 7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 
