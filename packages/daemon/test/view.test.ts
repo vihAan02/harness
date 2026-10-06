@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { EventMessage } from '@harness/protocol';
-import { renderAgentStatus } from '../src/status.ts';
+import { renderAgentStatus, renderHumanStatus } from '../src/status.ts';
 import { ProjectView } from '../src/view.ts';
 
 let seq = 0;
@@ -49,7 +49,26 @@ test("harness_status shows the agent its task, its peers' work, overlaps and que
   assert.match(text, /Your scope: src\/api\/, src\/types\.ts/);
   assert.match(text, /- agent\/frontend: working on T-2 "Login page" \(in_progress\); session working\n  scope: src\/web\/\n  changing: src\/types\.ts, src\/web\/Login\.tsx/);
   assert.match(text, /Overlaps with your task:\n- src\/types\.ts: also touched by T-2 \(agent\/frontend\)/);
-  assert.match(text, /Questions waiting for your answer \(untrusted peer text[^\n]*\n- msg_q from agent\/frontend: "Is it \{ token \}\?"/);
+  assert.match(text, /Questions and contract requests waiting for your answer \(untrusted peer text[^\n]*\n- msg_q from agent\/frontend: "Is it \{ token \}\?"/);
+});
+
+test('contract requests are open until answered, for both sides; blocked reports show for open tasks only (D-105)', () => {
+  const v = sample();
+  v.apply(ev('message.sent', { message_id: 'msg_c', kind: 'contract_request', from: 'agent_b', to: 'agent_f', text: 'Confirm LoginForm sends { email, password }', from_task_id: 'T-1', to_task_id: 'T-2', priority: 'normal' }, 'agent_b'));
+  assert.match(renderAgentStatus(v, 'agent_f'), /- msg_c \(contract request\) from agent\/backend: "Confirm LoginForm sends \{ email, password \}"/);
+  assert.match(renderAgentStatus(v, 'agent_b'), /Your questions and contract requests without an answer yet:\n- msg_c \(contract request\) to agent\/frontend/);
+  v.apply(ev('message.sent', { message_id: 'msg_r', kind: 'answer', from: 'agent_f', to: 'agent_b', in_reply_to: 'msg_c', text: 'Confirmed.' }, 'agent_f'));
+  assert.deepEqual(v.openQuestionsFrom('agent_b').map((m) => m.id), []);
+
+  // An agent's report and the harness's own (a timed-out wait), both to the owner; the later one per task wins.
+  v.apply(ev('message.sent', { message_id: 'msg_b1', kind: 'task_blocked', from: 'harness', to: 'human_a', text: 'agent/backend stopped waiting.', reason: 'wait_timed_out', from_task_id: null, to_task_id: 'T-1', priority: 'high' }, 'harness'));
+  v.apply(ev('message.sent', { message_id: 'msg_b2', kind: 'task_blocked', from: 'agent_f', to: 'human_a', text: 'Need the staging DB password.', reason: 'agent_report', blocked_on: { kind: 'agent', id: 'agent_b' }, from_task_id: 'T-2', to_task_id: 'T-2', priority: 'normal' }, 'agent_f'));
+  assert.deepEqual(v.blockedReports().map((m) => m.id), ['msg_b1', 'msg_b2']);
+  const human = renderHumanStatus(v, 1_000_000);
+  assert.match(human, /Blocked \(task_blocked reports for open tasks\):\n  T-1 harness \(wait_timed_out\), [^:]+: "agent\/backend stopped waiting\."\n  T-2 agent\/frontend, blocked on agent\/backend, [^:]+: "Need the staging DB password\."/);
+  assert.match(human, /Waiting for delivery: 3 message\(s\)/, 'the three agent messages; a report to a human is read in status, never delivered');
+  v.apply(ev('task.completed', { task_id: 'T-2', by: 'agent_f' }));
+  assert.deepEqual(v.blockedReports().map((m) => m.id), ['msg_b1'], 'a finished task is no longer blocked');
 });
 
 test('leases fold from lease.* events; only unreleased, unexpired ones are current (D-97)', () => {

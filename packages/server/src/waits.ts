@@ -12,7 +12,7 @@ import { inTransaction, serverClock } from './db.ts';
 import { appendEvents, notifyProject, type NewEvent } from './events.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 import { lockLeases } from './leases.ts';
-import { newMessageId } from './messages.ts';
+import { ANSWERABLE_KINDS, newMessageId } from './messages.ts';
 import { requireAgentOnDevice } from './sessions.ts';
 
 export const WAIT_KINDS = ['answer', 'task', 'lease'] as const;
@@ -103,8 +103,9 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   // What it waits on must exist, and be something it can wait for.
   if (kind === 'answer') {
     const q = (await ctx.tx.query<{ from_principal: string; kind: string }>('SELECT from_principal, kind FROM messages WHERE id = $1 AND project_id = $2', [on.id, ctx.projectId])).rows[0];
-    if (!q || q.kind !== 'question') throw new CommandError('not_found', `no question ${on.id}`);
-    if (q.from_principal !== agentId) throw new CommandError('forbidden', `question ${on.id} wasn't asked by you`);
+    // A contract request is answered like a question (D-105).
+    if (!q || !ANSWERABLE_KINDS.includes(q.kind)) throw new CommandError('not_found', `no question or contract request ${on.id}`);
+    if (q.from_principal !== agentId) throw new CommandError('forbidden', `${on.id} wasn't asked by you`);
   } else if (kind === 'task') {
     if (on.id === sess.task_id) throw new CommandError('bad_request', 'a task cannot wait for itself');
     if (!(await ctx.tx.query('SELECT 1 FROM tasks WHERE id = $1 AND project_id = $2', [on.id, ctx.projectId])).rowCount) throw new CommandError('not_found', `no task ${on.id}`);

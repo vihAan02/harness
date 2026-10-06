@@ -158,8 +158,8 @@ An observed claim lasts until the task is done or landed, or until the file no l
 | `question` | agent / human | Ask one specific thing | `to`, `text`, optional `about_paths`, `expects_answer_by` |
 | `answer` | agent / human | Reply to a question | `in_reply_to`, `text` |
 | `dependency_changed` | harness | Stale-context or merge-impact notice | `path`, `read_hash`, `new_hash`, `stage`, `changed_by`, `diff_excerpt?` |
-| `contract_request` | agent / human | "I need this API/type/schema contract defined or confirmed" | `contract` (free text in 0A/0B; structured from Phase 1), `to` |
-| `task_blocked` | agent / harness | "I can't continue until X" (also sent by the harness for timed-out waits and deadlocks) | `blocked_on` (task / agent / question id), `reason` |
+| `contract_request` | agent / human | "I need this API/type/schema contract defined or confirmed". Answered with `answer`, like a question (D-105) | `contract` (free text in 0A/0B; structured from Phase 1), `to` |
+| `task_blocked` | agent / harness | "I can't continue until X" (also sent by the harness for timed-out waits, sync conflicts and deadlocks). Goes to the task's owner, shown in `harness status` (D-105) | `blocked_on` (task / agent / question id), `reason` |
 | `claim_conflict` | harness | Overlap or lease conflict | `paths`, `other_task`, `level` |
 
 Phase 0A uses `question`, `answer` and `claim_conflict`. Phase 0B adds the rest.
