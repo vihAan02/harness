@@ -718,7 +718,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - The local owner's text isn't quoted.
     - Harness notices carry their own fact text.
   - **Paths never carry control characters.** Changed-file paths and `about_paths` end up in other agents' notices, where a newline in a file name could forge a line. The server refuses them, and harnessd leaves such files out of its reports and logs them.
-  - **Still open:** item 8's exit also needs U-1, the real-model check ([Q-18](docs/open-questions.md#q-18)). The mechanics are tested end to end with the scripted model. *Deferred by D-86 until an API key exists.*
+  - **Still open:** item 8's exit also needs U-1, the real-model check ([Q-18](docs/open-questions.md#q-18)). The mechanics are tested end to end with the scripted model. *Deferred by D-86 until an API key exists. U-1 was verified on 2026-10-05 for the configured OpenRouter model (spike-0a.md §5).*
   - *Source:* 0A item 8. *Status:* Proposal.
 - **D-81 The human CLI and the task lifecycle in harnessd (0A item 9).** Implements D-54.
   - **The CLI** (`harness`) reads the same `~/.harness` config and token as harnessd. Each command replays the project's log into a view, then sends its command. It has:
