@@ -130,6 +130,36 @@ test('fencing: my current, highest lease → accepted; so is mine expired or rel
   assert.deepEqual(res(await run('land', landArgs(landId, [], [{ lease_id: 'lease_forged', token: 999 }]), device)).problems.map((p: any) => p.reason), ['unknown_token']);
 });
 
+test('fencing: a lease logged as expired is never current again, as the lease commands judge it (D-97)', async () => {
+  const a = await finished('agent/x1');
+  const b = await worker('agent/x2');
+  const held = await lease(b.task, 'src/x/');
+  // Logged as expired, but its expiry is later than now: a renewal that lost the race with the expiry, say.
+  await db.pool.query("UPDATE leases SET expired_logged_at = now() - interval '1 second' WHERE id = $1", [held.id]);
+  let landId = await request(a.task);
+  assert.equal(res(await run('land', landArgs(landId, ['src/x/a.ts']), device)).accepted, true, 'b no longer holds src/x/');
+  await run('land.fail', { land_id: landId, reason: 'error' }, device);
+  // Negative control: the same lease, not logged as expired, still blocks.
+  await db.pool.query('UPDATE leases SET expired_logged_at = NULL WHERE id = $1', [held.id]);
+  landId = await request(a.task);
+  assert.deepEqual(res(await run('land', landArgs(landId, ['src/x/a.ts']), device)).problems.map((p: any) => p.reason), ['leased_by_other']);
+});
+
+test('completing a land releases only the task\'s current leases; one that ran out is left to be logged as expired (D-97)', async () => {
+  const w = await finished('agent/r1');
+  const current = await lease(w.task, 'src/r/a.ts');
+  const ranOut = await lease(w.task, 'src/r/b.ts', { current: false });
+  const logged = await lease(w.task, 'src/r/c.ts');
+  await db.pool.query("UPDATE leases SET expired_logged_at = now() - interval '1 second' WHERE id = $1", [logged.id]);
+  const landId = await request(w.task);
+  assert.equal(res(await run('land', landArgs(landId, ['src/r/a.ts'], [{ lease_id: current.id, token: current.token }]), device)).accepted, true);
+  const c = await run('land.complete', { land_id: landId, old_base_sha: SHA('1'), new_base_sha: SHA('4'), changed: [{ path: 'src/r/a.ts', new_hash: SHA('a') }] }, device);
+  const evs = await kinds(c.seqs);
+  assert.deepEqual(evs.filter((e) => e.kind === 'lease.released').map((e) => [e.data.lease_id, e.data.reason]), [[current.id, 'landed']]);
+  const rows = (await db.pool.query('SELECT id, released_at IS NOT NULL AS released FROM leases WHERE id = ANY($1) ORDER BY id', [[current.id, ranOut.id, logged.id]])).rows;
+  assert.deepEqual(Object.fromEntries(rows.map((r) => [r.id, r.released])), { [current.id]: true, [ranOut.id]: false, [logged.id]: false });
+});
+
 test('fencing judges "current" on the clock read under the lease lock, not at the transaction\'s start (D-97)', async () => {
   const a = await finished('agent/c1');
   const b = await worker('agent/c2');
