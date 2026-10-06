@@ -100,3 +100,78 @@ test('with the land step, M1 runs until tasks land; M3, M9 and the stale-context
   assert.match(renderMetrics(m), /M9  failed tests at first integration: 1/);
   assert.equal(m.notComputed.M3, undefined, 'M3 and M9 come from the land step now');
 });
+
+test('M5c counts human integration actions apart from M5; M5 counts a human\'s lease actions; H-03 sums capture coverage; H-04 counts re-reads after landed notices', () => {
+  const view = new ProjectView('prj');
+  let seq = 0;
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 4, 12, 0, s)).toISOString();
+  const e = (s: number, kind: string, data: Record<string, unknown>, principal = 'human_a'): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'prj', seq: ++seq, at: at(s), actor: { principal, on_behalf_of: null, device_id: null }, kind, data });
+  const read = (s: number, path: string, hash: string) => e(s, 'readset.added', { task_id: 'T-1', session_id: 's1', agent_id: 'agent_a', entries: [{ path, hash, source: 'read_tool', confidence: 'high' }] }, 'agent_a');
+  const notice = (s: number, id: string, stage: string, paths: string[]) => [
+    e(s, 'message.sent', { message_id: id, kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage, paths, text: 'x' }, 'harness'),
+    e(s, 'message.delivered', { message_id: id, delivery: 'between_tools', delivered_at: at(s) }),
+  ];
+  for (const ev of [
+    e(0, 'task.created', { task_id: 'T-1', title: 'a', text: '', scope: [], owner_human_id: 'human_a' }),
+    e(0, 'task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_a' }),
+    e(1, 'session.started', { session_id: 's1', agent_id: 'agent_a', task_id: 'T-1', device_id: 'd', worktree: '/w1' }),
+    read(2, 'src/x.ts', 'h1'),
+    ...notice(4, 'm1', 'in_progress', ['src/x.ts']), // another agent's uncommitted edit: a re-read can't show in the log
+    read(5, 'src/x.ts', 'h1'),
+    ...notice(7, 'm2', 'landed', ['src/y.ts']), // never re-read
+    // A human's hard claims: two leases in one command are one action; an agent's own claim isn't one.
+    e(8, 'lease.granted', { lease_id: 'ls_1', task_id: 'T-1', path: 'a/', token: 1, expires_at: at(200), ttl_s: 120, by: 'human_a', force: false }),
+    e(8, 'lease.granted', { lease_id: 'ls_2', task_id: 'T-1', path: 'b/', token: 2, expires_at: at(200), ttl_s: 120, by: 'human_a', force: false }),
+    e(8, 'lease.granted', { lease_id: 'ls_3', task_id: 'T-1', path: 'c/', token: 3, expires_at: at(200), ttl_s: 120, by: 'agent_a', force: false }, 'agent_a'),
+    e(9, 'claim.observed', { task_id: 'T-1', session_id: 's1', paths: ['src/gen.ts', 'src/gen2.ts'], source: 'diff' }),
+    e(9, 'claim.observed', { task_id: 'T-1', session_id: 's1', paths: ['src/x.ts'], source: 'hook' }),
+    ...notice(10, 'm3', 'landed', ['src/x.ts']),
+    read(11, 'src/x.ts', 'h2'), // re-read within the window: counted
+    ...notice(12, 'm4', 'landed', ['src/z.ts']),
+    e(10, 'usage.reported', { session_id: 's1', input: 1, output: 1, tool_calls: { Read: 3 }, denied_calls: 1, hook_coverage: { observed: 5, missed: 1, rejected: 2 }, read_coverage: { read_tool: 3, shell_heuristic: 1, unparsed_shell: 2 } }),
+    e(11, 'task.blocked', { task_id: 'T-1', reason: 'sync_conflict', paths: ['src/x.ts'] }),
+    e(12, 'task.unblocked', { task_id: 'T-1', by: 'human_a' }),
+    e(12, 'setup.approved', { task_id: 'T-1', device_id: 'd', command_hash: 'h' }),
+    e(13, 'task.completed', { task_id: 'T-1', by: 'agent_a' }, 'agent_a'),
+    read(14, 'src/z.ts', 'h3'), // after the task ended: outside m4's window
+    e(14, 'land.requested', { land_id: 'l1', task_id: 'T-1', device_id: 'd', requested_by: 'human_a', run_tests: true }),
+    e(15, 'land.failed', { land_id: 'l1', task_id: 'T-1', reason: 'cancelled' }),
+    e(16, 'land.requested', { land_id: 'l2', task_id: 'T-1', device_id: 'd', requested_by: 'human_a', run_tests: true }),
+    e(16, 'land.progress', { land_id: 'l2', task_id: 'T-1', step: 'awaiting_approval' }),
+    // A human takes another lease over: the revoke and the grant are one action. Then a human release.
+    e(17, 'lease.released', { lease_id: 'ls_9', task_id: 'T-9', reason: 'revoked', by: 'human_a' }),
+    e(17, 'lease.granted', { lease_id: 'ls_4', task_id: 'T-1', path: 'd/', token: 4, expires_at: at(200), ttl_s: 120, by: 'human_a', force: true }),
+    e(18, 'lease.released', { lease_id: 'ls_1', task_id: 'T-1', reason: 'released', by: 'human_a' }),
+    e(18, 'lease.released', { lease_id: 'ls_2', task_id: 'T-1', reason: 'released', by: 'human_a' }),
+    e(19, 'land.completed', { land_id: 'l2', task_id: 'T-1', new_base_sha: 'b', changed_paths: ['src/x.ts'] }),
+  ]) view.apply(ev);
+  const m = computeMetrics(view);
+  assert.deepEqual(m.integrationActions, { total: 6, byKind: { 'task.unblocked': 1, approval: 2, 'land.requested': 2, 'land.cancelled': 1 } });
+  assert.deepEqual(m.interventions.events.map((x) => x.detail), ['claimed leases for T-1', 'took over leases for T-1', 'released leases of T-1'], 'M5: one per human lease command');
+  assert.deepEqual(m.coverage, { hooks: { observed: 5, missed: 1, rejected: 2 }, reads: { read_tool: 3, shell_heuristic: 1, unparsed_shell: 2 }, editsOnlyByDiff: 2 });
+  assert.deepEqual(m.reReads, { landed: { notices: 3, reReadAfter: 1 }, inProgress: { notices: 1 } }, 'm3 re-read in its window; m2 never; m4 only after the task ended');
+  const text = renderMetrics(m);
+  assert.match(text, /M5c human integration actions: 6 \(task\.unblocked 1, approval 2, land\.requested 2, land\.cancelled 1\)/);
+  assert.match(text, /M5  human interventions: 3 \(claimed leases for T-1; took over leases for T-1; released leases of T-1\)/);
+  assert.match(text, /H-03 capture: hooks saw 5 tool call\(s\), missed 1, never reached 2; edits found only by a worktree diff 2/);
+  assert.match(text, /H-04 re-reads: after 1 of 3 delivered landed notice\(s\), the reader read a named file again before its task ended or the next notice on it\n    1 in-progress notice\(s\) not measured/);
+});
+
+test('H-04: a later notice naming the same file ends the earlier one\'s window', () => {
+  const view = new ProjectView('prj');
+  let seq = 0;
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 4, 12, 0, s)).toISOString();
+  const e = (s: number, kind: string, data: Record<string, unknown>): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'prj', seq: ++seq, at: at(s), actor: { principal: 'harness', on_behalf_of: null, device_id: null }, kind, data });
+  for (const ev of [
+    e(0, 'task.created', { task_id: 'T-1', title: 'a', text: '', scope: [], owner_human_id: 'human_a' }),
+    e(0, 'task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_a' }),
+    e(1, 'message.sent', { message_id: 'n1', kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage: 'landed', paths: ['src/x.ts'], text: 'x' }),
+    e(1, 'message.delivered', { message_id: 'n1', delivery: 'new_turn', delivered_at: at(1) }),
+    e(5, 'message.sent', { message_id: 'n2', kind: 'dependency_changed', from: 'harness', to: 'agent_a', to_task_id: 'T-1', stage: 'landed', paths: ['src/x.ts'], text: 'x' }),
+    e(5, 'message.delivered', { message_id: 'n2', delivery: 'new_turn', delivered_at: at(5) }),
+    e(6, 'readset.added', { task_id: 'T-1', session_id: 's1', agent_id: 'agent_a', entries: [{ path: 'src/x.ts', hash: 'h', source: 'read_tool', confidence: 'high' }] }),
+  ]) view.apply(ev);
+  assert.deepEqual(computeMetrics(view).reReads.landed, { notices: 2, reReadAfter: 1 }, 'the re-read answers the second notice only');
+});

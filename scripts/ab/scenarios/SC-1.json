@@ -3,6 +3,7 @@
   "name": "API contract",
   "repo": "https://github.com/vihAan02/harness-bench.git",
   "tag": "SC-1",
+  "base_sha": "ae3198eea31d3ce740d7bff56cca141c233ebf82",
   "tasks": [
     {
       "key": "T1",
