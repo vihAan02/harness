@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 11 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82), the benchmark app (D-83) and the demo (D-84). **The exit criteria are met with a scripted model** (`npm run demo`). **Phase 0B approved 2026-10-03 (D-86),** with the real-model checks (U-1, Q-18) deferred until a key exists. This stretch built items 1, 2 and the land part of 5, plus provider configuration (D-87, D-90 to D-93): the S3 exit example passes with the scripted model. **The rest of 0B is approved (D-94)** and built in two parallel workstreams: items 3 to 8 lead to the functional MVP (EC2 plus a real-model end-to-end run), then the A/B test (items 9, 10) is the formal 0B gate.
+> **Status:** Phase 0A approved 2026-10-01 (D-59). **Item 0, the adapter spike, is done** ([results](research/spike-0a.md); decisions D-60 to D-70) and accepted (D-71). **Items 1 to 11 are done:** the repo skeleton (D-72), data model v0 (D-73), coordination server v0 (D-74), `harnessd` v0 (D-75, D-76), `AgentAdapter` + `ClaudeAdapter` (D-77), the tool shim (D-78), claims (D-79), typed messages (D-80), the CLI with the task lifecycle (D-81), metrics (D-82), the benchmark app (D-83) and the demo (D-84). **The exit criteria are met with a scripted model** (`npm run demo`). **Phase 0B approved 2026-10-03 (D-86),** with the real-model checks (U-1, Q-18) deferred until a key existed; U-1 and U-2 were verified, and U-3 measured, on the configured model on 2026-10-05 (#58). This stretch built items 1, 2 and the land part of 5, plus provider configuration (D-87, D-90 to D-93): the S3 exit example passes with the scripted model. **The rest of 0B is approved (D-94)** and built in two parallel workstreams: items 3 to 8 lead to the functional MVP (EC2 plus a real-model end-to-end run), then the A/B test (items 9, 10) is the formal 0B gate. **Items 3 to 8 are done, and the functional MVP is declared (D-109, 2026-10-06):** EC2 three times and a real-model end-to-end run on Shelf, with CI green on `main` @ `ab9eba8`. Item 9 (the A/B setup) is in progress toward the `ab-v1` freeze.
 > - [PLAN.md](../PLAN.md) wins on any conflict.
 > - Each phase starts only after the owner approves it (D-44).
 > - Items are ordered; build them roughly top to bottom.
@@ -31,7 +31,7 @@
    
    **Output:** updated F-IDs, a go/no-go note for each assumption, and any decisions to supersede.
    
-   **Done 2026-10-01** against Claude Code 2.1.287 / SDK 0.3.287: [research/spike-0a.md](research/spike-0a.md). The core mechanisms held; six configuration and hook assumptions failed and were replaced (D-60 to D-70). The real-model checks U-1 to U-3 wait for an API key ([Q-18](open-questions.md#q-18)).
+   **Done 2026-10-01** against Claude Code 2.1.287 / SDK 0.3.287: [research/spike-0a.md](research/spike-0a.md). The core mechanisms held; six configuration and hook assumptions failed and were replaced (D-60 to D-70). The real-model checks U-1 to U-3 ran on 2026-10-05 on the configured model: U-1 and U-2 verified, U-3 measured ([Q-18](open-questions.md#q-18); #58).
 1. **Repo skeleton** for the chosen stack. One repo with packages:
    - `server` (coordination server);
    - `daemon` (`harnessd`);
@@ -136,7 +136,7 @@
    - A forged notice inside the answer stayed quoted.
    - Overlap notices reached both live agents.
    
-   **Open:** U-1, the same round trip with a real model, needs an API key ([Q-18](open-questions.md#q-18)).
+   **U-1, the same round trip with a real model:** verified on 2026-10-05 on the configured model ([Q-18](open-questions.md#q-18); #58).
 9. **Human CLI and lifecycle (D-54):**
    - `harness agent add`;
    - `harness task add` / `assign` / `done`;
@@ -158,9 +158,9 @@
     Found for 0B: the land step's `test.command` needs loopback binding in its `srt` config.
 11. **A 0A demo script** that exercises every exit criterion below.
     
-    **Done 2026-10-03:** `npm run demo` (D-84). The whole stack runs on Shelf, and two agents change the login contract from both sides. It checks every criterion below and prints the evidence. With the scripted model it passed three runs out of three in about 15 seconds; `--real` runs real agents once there's an API key.
+    **Done 2026-10-03:** `npm run demo` (D-84). The whole stack runs on Shelf, and two agents change the login contract from both sides. It checks every criterion below and prints the evidence. With the scripted model it passed three runs out of three in about 15 seconds; `--real` runs real agents, and ran on 2026-10-05 (#58).
 
-**Exit criteria (from S3).** The harness reliably shows the following. Each is met in `npm run demo` with the scripted model (2026-10-03, D-84); with real agents, once the real-model checks run (Q-18).
+**Exit criteria (from S3).** The harness reliably shows the following. Each is met in `npm run demo` with the scripted model (2026-10-03, D-84). `npm run demo -- --real` ran with real agents on 2026-10-05 (#58), meeting 3 of the 6 criteria; the overlap criteria need simultaneous edits (spike-0a.md §5).
 - [x] which agents are alive;
 - [x] which task each agent owns;
 - [x] what each agent is currently modifying (observed claims);
@@ -217,12 +217,16 @@
    - `harness claim` CLI for human-taken hard claims;
    - a fault-injection switch for lease renewal (for T-2).
 
-   **The land step: done 2026-10-03** (D-93). Leases, `harness claim` and the fault switch: in review (B5, B6; D-97).
+   **The land step: done 2026-10-03** (D-93). **Leases, `harness claim` and the fault switch: done 2026-10-05** (B5, B6; D-97, D-103).
 6. **Remaining message kinds:** `contract_request`, `task_blocked`.
+
+   **Done 2026-10-06** (D-105): agents send both; a blocked report goes to the task's owner.
 7. **`compilePermissions` adds read confinement:** flag-settings `Read(//…)` deny rules outside the worktree and allowlist, good enough to pass T-1. They cover the file tools, `@`-expansion and shell reads; sandbox `denyRead` alone covers shell reads only (D-61, SP-13).
 
    **Done 2026-10-03** (D-98): three layers (deny rules, a call-time check, the sandbox), and T-1 passes.
 8. **Security tests** T-1 (hostile message), T-1b (guardrail tampering) and T-2 (stale lease, using fault injection) ([validation.md §7](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test)).
+
+   **Done 2026-10-06:** T-1 (D-98), T-1b (B3) and T-2 (B6) pass, 9/9 three times on `main` @ `ab9eba8` (D-109).
 9. **A/B setup:**
    - scenarios SC-0 to SC-4 (D-58, D-120): tags in the benchmark repo, task cards in [scripts/ab/scenarios/](../scripts/ab/scenarios/), and hidden integration checks in a separate private repo that only the grader reads;
    - the baseline recorder and launch config;
@@ -235,7 +239,7 @@
   1. A reads `src/types.ts` @ hash ABC.
   2. B changes it and finishes, and the human lands it.
   3. A's branch is synced at turn end, and A is told "Dependency changed: src/types.ts has changed since you read it." with a diff excerpt.
-- [ ] T-1, T-1b and T-2 pass (run before the A/B test, and re-run after any policy change).
+- [x] T-1, T-1b and T-2 pass (run before the A/B test, and re-run after any policy change). **9/9 three times on `main` @ `ab9eba8`, 2026-10-06 (D-109).**
 - [ ] The A/B test is complete and evaluated against the **owner-approved** pass bar.
 
 ---

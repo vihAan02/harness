@@ -4,13 +4,23 @@
 
 The first wedge: **several humans, each running their own AI coding agents on their own machines, coordinating on one repository as one AI-augmented engineering team.**
 
-## Status (2026-10-03)
+## Status (2026-10-06)
 
-**Phase 0A is built; Phase 0B is approved and under way (D-86).**
-- 0A: the coordination server, harnessd, the Claude adapter, soft claims, typed messages, the CLI, metrics and the benchmark app. Every 0A exit criterion is met with a scripted model (`npm run demo`, D-84).
-- Agents can run on any Anthropic-compatible model endpoint by configuration (D-87). Real-model runs use OpenRouter, pinned to DeepSeek V4.1-Flash served by DeepSeek (D-104). See [Choosing a model provider](#choosing-a-model-provider).
-- 0B's first stretch is built: read capture, stale-context notices with sync at turn end, and the local land step (`harness land`). The S3 example ("Dependency changed: src/types.ts has changed since you read it.", with a diff) passes end to end with the scripted model (PLAN.md §12).
-- The code lives in `packages/`. See [Running locally](#running-locally). The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a); the hand-over notes are in [HANDOFF.md](HANDOFF.md).
+**Phase 0A is built. Phase 0B's functional MVP is declared (D-109); the A/B study, 0B's formal gate, comes next.**
+- **0A:** the coordination server, harnessd, the Claude adapter, soft claims, typed messages, the CLI, metrics and the benchmark app. Every 0A exit criterion is met with a scripted model (`npm run demo`, D-84).
+- **0B so far:**
+  - read capture, stale-context notices with sync at turn end, and the local land step (`harness land`);
+  - notices through Claude Code's hooks, and a Stop gate that keeps an agent going while it has unread news (D-99, D-100);
+  - `wait_for` (D-95, D-101, D-106);
+  - leases with fencing, `harness claim --force` and renewal (D-97, D-103);
+  - agents that send `contract_request` and `task_blocked` (D-105);
+  - read confinement (D-98).
+- **The functional MVP (D-109),** on `main` @ `ab9eba8`:
+  - the security tests T-1, T-1b and T-2 pass three times;
+  - `npm run check` passes;
+  - with real agents (OpenRouter, DeepSeek V4.1-Flash served by Parasail at fp8, D-104), the S3 example passes end to end, and so does a two-agent run of the A/B harness arm, each for $0.02 to $0.03.
+- **Next:** the `ab-v1` freeze, then the counted A/B runs (PLAN.md §12).
+- **Where things are:** the code lives in `packages/` (see [Running locally](#running-locally)). The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a); the hand-over notes are in [HANDOFF.md](HANDOFF.md).
 
 ## Running locally
 

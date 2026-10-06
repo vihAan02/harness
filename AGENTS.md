@@ -18,13 +18,14 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
     - item 5, `AgentAdapter` + `ClaudeAdapter`, with harnessd running agent sessions through it (D-77);
     - item 6, the agent-facing tool shim, the task commands and `message.send` (D-78);
     - item 7, soft claims and overlap warnings (D-79);
-    - item 8, typed message delivery (D-80). Its real-model check, U-1, still needs an API key (Q-18);
+    - item 8, typed message delivery (D-80). Its real-model check, U-1, was verified on 2026-10-05 (#58);
     - item 9, the human CLI and the task lifecycle (D-81);
     - item 10, metrics capture (D-82) and the benchmark app, Shelf, in [harness-bench](https://github.com/vihAan02/harness-bench) (D-83);
     - item 11, the 0A demo, `npm run demo`, which meets every 0A exit criterion with a scripted model (D-84).
-  - **Deferred from 0A:** the real-model checks need an API key (U-1, Q-18, deferred by D-86).
-  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93) are built; the S3 example passes with the scripted model (`test/s3.integration.test.ts`). Since D-94: read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), and `wait_for` (D-95, D-101).
+  - **Real-model checks:** U-1 and U-2 are verified, and U-3 measured, on the configured model (2026-10-05, #58; spike-0a.md §5).
+  - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93); then items 3 to 8 (D-95 to D-106): hook delivery and the Stop gate, `wait_for`, leases and fencing, the message kinds, read confinement, and T-1, T-1b and T-2.
   - **The rest of 0B (D-94):** approved 2026-10-03 and built in two parallel workstreams. See "Parallel development (0B)" below before touching any file.
+  - **The functional MVP is declared (D-109, 2026-10-06):** items 3 to 8 are merged, EC2 passed three times, and a real-model end-to-end run on Shelf works, with CI green on `main` @ `ab9eba8`. Next comes the `ab-v1` freeze (B9b, §9 signed by both owners, and D-107 (#76) and D-108 (#63) built), then the counted A/B runs (Milestone 2).
   - **Environment caveat:** if the checkout is inside an iCloud-synced folder (such as `~/Desktop`), real-CLI tests flake and iCloud can create `name 2.ext` duplicate files; run them from a clone outside iCloud (see HANDOFF.md).
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
