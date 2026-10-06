@@ -64,8 +64,10 @@ jobs:
   latency:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # A job's own permissions replace the workflow's, so contents: read is needed again here for the checkout.
     permissions:
       actions: read
+      contents: read
     steps:
       - uses: actions/checkout@v5
         with:
