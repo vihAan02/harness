@@ -151,7 +151,8 @@ gh issue list -R vihAan02/harness --label status:active --label status:blocked
     - A fixed sleep never waits for something to happen. Use one only to show that something did *not* happen, and make it longer than twice the relevant interval.
     - Before a stack's teardown, wait for the background work the test started in harnessd, such as lands and syncs. A CLI reply ("Landed") doesn't mean harnessd has finished.
     - Run a new integration test 5 times, and once under `npm run test:ci`, before opening its PR.
-  - **The repo is public:** everything pushed is public, including PR text and comments. Never push keys or `.env` files, logs or transcripts that might contain a key, or files from the private harness-bench repo.
+  - **The repo is public:** everything pushed is public, including PR text and comments. Never push keys or `.env` files, logs or transcripts that might contain a key, files from the private harness-bench repo, or anything from `vihAan02/harness-hidden-checks`.
+  - **Handoff records are exact** (PR descriptions, comments, the workboard, HANDOFF): report exactly what ran, on which commit, with the numbers. Never say a test passed on a commit where it didn't run. Diagnose CI from annotations and logs, not from guesses.
 - **Review:**
   - Daniyal reviews B's PRs that touch A's files or a contract, leases and fencing, delivery semantics, migrations or dependencies, or that add a D-ID.
   - Vihaan reviews contract PRs, A's PRs that touch B's files, and A/B parameters.
