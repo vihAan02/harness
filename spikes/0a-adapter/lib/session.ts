@@ -6,9 +6,14 @@ import { DUMMY_KEY } from './mock-api.ts';
 
 /**
  * The model, and optionally a third-party Anthropic-compatible endpoint, for real runs (D-87). Defaults to
- * Anthropic's Haiku 4.5. For DeepSeek, for example:
+ * Anthropic's Haiku 4.5. For OpenRouter, the default since D-104 (the same settings as its table in
+ * docs/examples/providers.toml):
+ *   SPIKE_BASE_URL=https://openrouter.ai/api SPIKE_KEY_ENV=OPENROUTER_API_KEY SPIKE_AUTH_SCHEME=bearer \
+ *   SPIKE_MODEL=deepseek/deepseek-v4.1-flash SPIKE_EXTRA_BODY='{"provider":{"only":["parasail/fp8"],"allow_fallbacks":false}}'
+ * For DeepSeek's own endpoint:
  *   SPIKE_BASE_URL=https://api.deepseek.com/anthropic SPIKE_KEY_ENV=DEEPSEEK_API_KEY SPIKE_MODEL=deepseek-flash
- * SPIKE_AUTH_SCHEME=bearer for endpoints that take only a bearer token (OpenRouter, Kimi).
+ * SPIKE_AUTH_SCHEME=bearer for endpoints that take only a bearer token (OpenRouter, Kimi). SPIKE_EXTRA_BODY is
+ * merged into every request (CLAUDE_CODE_EXTRA_BODY, F-29), e.g. to pin a router's provider.
  */
 export const MODEL = process.env.SPIKE_MODEL ?? 'claude-haiku-4-5-20251001';
 export const PROVIDER = {
@@ -129,6 +134,7 @@ export function correctedOptions(p: {
       ...(PROVIDER.baseUrl ? {
         ANTHROPIC_DEFAULT_OPUS_MODEL: MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL: MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL: MODEL,
         CLAUDE_CODE_SUBAGENT_MODEL: MODEL, CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
+        ...(process.env.SPIKE_EXTRA_BODY ? { CLAUDE_CODE_EXTRA_BODY: JSON.stringify(JSON.parse(process.env.SPIKE_EXTRA_BODY)) } : {}),
       } : {}),
       CLAUDE_CONFIG_DIR: p.configDir, // D-65
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
