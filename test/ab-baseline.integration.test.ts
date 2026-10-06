@@ -16,7 +16,7 @@ import { runBaseline } from '../scripts/ab/baseline-arm.ts';
 import { CoordinatorConsole } from '../scripts/ab/console.ts';
 import { Recorder } from '../scripts/ab/recorder.ts';
 import { checkSummary } from '../scripts/ab/summary.ts';
-import { commitsAfterFirst, independentTip, surfaced, writeDiffs } from '../scripts/ab/summarize.ts';
+import { commitsAfterFirst, firstAttempt, harnessAttempts, independentTip, mergeTree, surfaced, untestedRetry, writeDiffs } from '../scripts/ab/summarize.ts';
 import { readTranscript, transcriptUsage } from '../scripts/ab/transcripts.ts';
 
 const t = tempDir('ab-baseline');
@@ -76,11 +76,12 @@ test('P1\'s "surfaced": a notice naming a planted file, delivered before the aff
   const ev = (kind: string, data: Record<string, unknown>, at: number): EventMessage =>
     ({ v: 1, type: 'event', project_id: 'p', seq: ++seq, at: new Date(1_000_000 + at * 1000).toISOString(), actor: { principal: 'x', on_behalf_of: null, device_id: null }, kind, data } as EventMessage);
   const ids = new Map([['T1', 'T-1'], ['T2', 'T-2']]);
-  const build = (noticeAt: number, path: string) => {
+  const build = (noticeAt: number, path: string, o: { delivered?: boolean; synced?: boolean } = {}) => {
     const v = new ProjectView('p');
     v.apply(ev('task.created', { task_id: 'T-2', title: 'Front', scope: [], owner_human_id: 'h' }, 0));
+    if (o.synced) v.apply(ev('worktree.synced', { task_id: 'T-2', old_base_sha: 'a'.repeat(40), new_base_sha: 'b'.repeat(40), changed_paths: [path] }, noticeAt - 2));
     v.apply(ev('message.sent', { message_id: 'm1', kind: 'dependency_changed', from: 'harness', to: 'agent_f', to_task_id: 'T-2', paths: [path], text: 'x', priority: 'high' }, noticeAt - 1));
-    v.apply(ev('message.delivered', { message_id: 'm1', delivery: 'between_tools', delivered_at: new Date(1_000_000 + noticeAt * 1000).toISOString() }, noticeAt));
+    if (o.delivered !== false) v.apply(ev('message.delivered', { message_id: 'm1', delivery: 'between_tools', delivered_at: new Date(1_000_000 + noticeAt * 1000).toISOString() }, noticeAt));
     v.apply(ev('task.completed', { task_id: 'T-2', by: 'agent_f' }, 20));
     return v;
   };
@@ -90,6 +91,64 @@ test('P1\'s "surfaced": a notice naming a planted file, delivered before the aff
   assert.deepEqual(surfaced(build(10, 'src/server/migrations/004_status.sql'), 'SC-3', ids), { planted: 1, surfaced: 1 }, 'a directory matches what is in it');
   assert.equal(surfaced(build(10, 'src/shared/types.ts'), 'SC-4', ids), null);
   assert.equal(surfaced(build(10, 'src/shared/types.ts'), 'SC-0', ids), null);
+  // A sync merges code without telling the agent anything; a notice never delivered told it nothing (§9).
+  assert.deepEqual(surfaced(build(10, 'src/shared/types.ts', { synced: true, delivered: false }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'a sync alone, and a notice never delivered');
+  assert.deepEqual(surfaced(build(10, 'src/shared/types.ts', { synced: true }), 'SC-1', ids), { planted: 1, surfaced: 1 }, 'the notice still counts beside a sync');
+});
+
+test('D-124: in SC-1 to SC-3 only the first task\'s first integration, failed on its tests, is retried untested', () => {
+  const base = { anyIntegrated: false, attempts: 1, testsFailed: true };
+  for (const sc of ['SC-1', 'SC-2', 'SC-3']) assert.equal(untestedRetry(sc, base), true, sc);
+  for (const sc of ['SC-0', 'SC-4']) assert.equal(untestedRetry(sc, base), false, `${sc}: no planted coupling`);
+  assert.equal(untestedRetry('SC-1', { ...base, anyIntegrated: true }), false, 'the other task is already in: it goes back to its agent');
+  assert.equal(untestedRetry('SC-1', { ...base, attempts: 2 }), false, 'only the first attempt');
+  assert.equal(untestedRetry('SC-1', { ...base, testsFailed: false }), false, 'a conflict or another failure goes back to its agent');
+});
+
+test('M6 "reached" at the first integration: the affected task\'s first attempt, merged cleanly but red, after task 1 was in', () => {
+  let seq = 0;
+  const ev = (kind: string, data: Record<string, unknown>): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'p', seq: ++seq, at: new Date(1_000_000 + seq * 1000).toISOString(), actor: { principal: 'x', on_behalf_of: null, device_id: null }, kind, data } as EventMessage);
+  const ids = new Map([['T1', 'T-1'], ['T2', 'T-2']]);
+  const sha = (c: string) => c.repeat(40);
+  const land = (v: ProjectView, task: string, id: string, base: string, head: string, end: Record<string, unknown> | null) => {
+    v.apply(ev('land.requested', { land_id: id, task_id: task, device_id: 'd', run_tests: true }));
+    v.apply(ev('land.accepted', { land_id: id, task_id: task, base_branch: 'main', base_sha: base, head_sha: head, changed_paths: [] }));
+    if (end?.kind === 'land.completed') v.apply(ev('land.completed', { land_id: id, task_id: task, old_base_sha: base, new_base_sha: sha('e'), changed_paths: [] }));
+    else if (end) v.apply(ev('land.failed', { land_id: id, task_id: task, reason: end.reason }));
+  };
+  const run = (steps: [string, string, string | null][]) => {
+    const v = new ProjectView('p');
+    steps.forEach(([task, id, reason], i) => land(v, task, id, sha(String(i + 1)), sha(String.fromCharCode(97 + i)), reason === null ? { kind: 'land.completed' } : { reason }));
+    return harnessAttempts(v, ids);
+  };
+  const red = run([['T-1', 'l1', null], ['T-2', 'l2', 'tests'], ['T-2', 'l3', null]]);
+  assert.deepEqual(red.map((a) => [a.task, a.outcome]), [['T1', 'merged'], ['T2', 'tests_failed'], ['T2', 'merged']]);
+  assert.deepEqual(firstAttempt('SC-1', red), { base: sha('2'), head: sha('b') }, 'T2\'s first land, after T1 landed');
+  assert.equal(firstAttempt('SC-0', red), null, 'no planted coupling');
+  assert.equal(firstAttempt('SC-1', run([['T-2', 'l1', 'tests'], ['T-1', 'l2', null]])), null, 'task 1 wasn\'t in yet');
+  assert.equal(firstAttempt('SC-1', run([['T-1', 'l1', null], ['T-2', 'l2', 'conflict']])), null, 'a conflict leaves no merge result');
+  assert.equal(firstAttempt('SC-1', run([['T-1', 'l1', null], ['T-2', 'l2', null]])), null, 'green at the first attempt');
+  assert.equal(firstAttempt('SC-1', run([['T-1', 'l1', null], ['T-2', 'l2', 'error']])), null, 'not a test failure');
+});
+
+test('mergeTree is the merge the land step makes; a conflict gives none', () => {
+  const root = path.join(t.dir, 'merge-tree');
+  const { repo, sha } = makeRepo(root, { 'a.txt': 'a\n', 'b.txt': 'b\n' });
+  const commit = (branch: string, file: string, text: string) => {
+    gitIn(repo, 'switch', '-q', '-C', branch, sha);
+    fs.writeFileSync(path.join(repo, file), text);
+    gitIn(repo, 'commit', '-q', '-am', `${branch}: ${file}`);
+    return gitIn(repo, 'rev-parse', 'HEAD');
+  };
+  const left = commit('left', 'a.txt', 'a2\n');
+  const right = commit('right', 'b.txt', 'b2\n');
+  const clash = commit('clash', 'a.txt', 'a3\n');
+  const tree = mergeTree(repo, left, right);
+  gitIn(repo, 'switch', '-q', '-C', 'merged', left);
+  gitIn(repo, 'merge', '-q', '--no-ff', '--no-edit', right);
+  assert.equal(tree, gitIn(repo, 'rev-parse', 'HEAD^{tree}'), 'the tree of a real --no-ff merge');
+  assert.equal(mergeTree(repo, left, clash), null);
 });
 
 test('M4\'s commits after the first integration discount the other task\'s own integration', () => {
@@ -124,8 +183,8 @@ test('a task\'s independent diff stops at its first sync: what it did before it 
   assert.equal(fs.readFileSync(path.join(dir, 'diffs/T3.independent.patch'), 'utf8'), '');
 });
 
-/** Runs the baseline arm on a two-task repo whose test command is `testCommand`. */
-async function baselineRun(name: string, testCommand: string, capMs: number) {
+/** Runs the baseline arm on a two-task repo whose test command is `testCommand`; `slow` delays a task's every model response. */
+async function baselineRun(name: string, testCommand: string, capMs: number, o: { scenario?: string; slow?: Record<string, number> } = {}) {
   const root = path.join(t.dir, name);
   const home = tempHome(root);
   const { repo, sha } = makeRepo(root, { 'harness.yaml': `test:\n  command: "${testCommand}"\n`, 'src/a.ts': 'export {}\n' });
@@ -137,8 +196,9 @@ async function baselineRun(name: string, testCommand: string, capMs: number) {
   const tasks = ['backend', 'frontend'].map((agent, i) => ({ key: `T${i + 1}`, agent, title: `Task ${i + 1}`, scope: [], phrasings: ['x'] }));
   try {
     const r = await runBaseline({
-      scenario: 'SC-0', tasks, phrasing: 1, capMs, rec, root, repo, home, config, provider: null, mockUrl: mock.url, launch: 'headless', autoIntegrate: true,
-      prompt: (task, wt) => [`${task.title}.`, `#STEP Write ${JSON.stringify({ file_path: `${wt}/${task.agent}.md`, content: `${task.key}\n` })}`, '#STEP TEXT Done.'].join('\n'),
+      scenario: o.scenario ?? 'SC-0', tasks, phrasing: 1, capMs, rec, root, repo, home, config, provider: null, mockUrl: mock.url, launch: 'headless', autoIntegrate: true,
+      prompt: (task, wt) => [`${task.title}.`, ...(o.slow?.[task.key] ? [`#SLOW ${o.slow[task.key]}`] : []),
+        `#STEP Write ${JSON.stringify({ file_path: `${wt}/${task.agent}.md`, content: `${task.key}\n` })}`, '#STEP TEXT Done.'].join('\n'),
       stopRequested: () => false, console: null, harnessRoot: path.resolve(import.meta.dirname, '..'),
     });
     return { r, rec, repo, sha, mock };
@@ -170,4 +230,22 @@ test('negative control: tests that never pass leave main where it was, count onc
   assert.equal(r.summary.m1_ms, null);
   assert.ok(r.summary.m9a >= 1 && r.summary.m9a <= 2, `only first attempts count: ${r.summary.m9a}`);
   assert.ok(r.summary.m5 >= 1, 'the fix requests typed into the terminal are messages to the agent');
+});
+
+test('D-124 in the baseline arm (SC-1): the first task goes in untested after red tests; the second must be green, and its red first attempt is kept for grading', async () => {
+  // T2 answers slowly, so T1 finishes and is integrated first, as the assertions below require.
+  const { r, rec, repo, sha } = await baselineRun('coupled', 'false', 180_000, { scenario: 'SC-1', slow: { T2: 4000 } });
+  assert.equal(r.outcome, 'stopped', 'T2 can never pass: three attempts, then the auto coordinator stops');
+  const integrations = timeline(rec).filter((e) => e.what === 'integration');
+  const t1 = integrations.filter((e) => e.task === 'T1').map((e) => [e.outcome, e.tests]);
+  assert.deepEqual(t1, [['tests_failed', true], ['merged', false]], 'T1: red, then in untested');
+  const firstT2 = integrations.findIndex((e) => e.task === 'T2');
+  assert.ok(firstT2 > integrations.findIndex((e) => e.task === 'T1' && e.outcome === 'merged'), 'precondition: T1 was in before T2\'s first attempt');
+  assert.ok(integrations.filter((e) => e.task === 'T2').every((e) => e.outcome === 'tests_failed' && e.tests === true), 'T2 is never let in untested');
+  assert.equal(gitIn(repo, 'rev-list', '--first-parent', '--count', `${sha}..main`), '1', 'main moved once: T1');
+  assert.equal(r.summary.m9a, 2, 'each task\'s first attempt was red');
+  const first = firstAttempt('SC-1', r.attempts);
+  assert.ok(first, 'T2\'s red first attempt, after T1 was in');
+  const tree = mergeTree(repo, first.base, first.head)!;
+  assert.deepEqual(gitIn(repo, 'ls-tree', '--name-only', tree).split('\n').sort(), ['backend.md', 'frontend.md', 'harness.yaml', 'src'], 'the merge it tested has both tasks\' work');
 });
