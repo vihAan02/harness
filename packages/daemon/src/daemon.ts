@@ -340,8 +340,9 @@ export class Daemon {
   async deliverWait(run: RunningAgent, w: WaitInfo): Promise<void> {
     const id = `wait:${w.id}`;
     if (this.delivering.has(id) || this.delivered.has(id)) return;
-    // Resolved by wait.start itself (one transaction, one timestamp): the tool's result already said so.
-    if (w.outcome === 'resolved' && w.finishedAt === w.startedAt) return;
+    // Resolved by wait.start itself: the tool's result already said so. The server marks it, because the two
+    // events' times can differ, even across a millisecond (#70).
+    if (w.outcome === 'resolved' && w.immediate) return;
     await run.sync.running;
     if (run.sync.blocked || this.delivering.has(id) || this.delivered.has(id)) return; // delivered after the unblock (deliverPending)
     const text = renderMessage({ id, kind: 'wait_outcome', text: waitOutcomeText(w), fromTask: null, sender: { kind: 'harness' } });
