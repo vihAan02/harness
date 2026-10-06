@@ -1142,6 +1142,11 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 
     Each has a negative control: the old `done` rule, no sync before telling, an ungated `report_done`, and a `wait_for` that ignores an unmerged land. Also unit tests in server `waits.test.ts` and daemon `tools.test.ts`.
   - *Source:* the first real-model run (F-113); D-53, D-95, D-101. *Status:* Proposal.
+- **D-108 A task wait that would close a cycle is refused (pulls the simplest part of D-27's cycle detection into 0B; refines D-95). Found by the A/B rehearsal (B11), 2026-10-05. Approved for 0B by an owner, 2026-10-06 (D-123).**
+  - **The problem:** in a real SC-1 run, T-2's agent waited for T-1 to land while T-1's agent waited for T-2. Both sat until the 600 s timeout, and both did it again after their lands failed: 10 of the run's 30 minutes. D-27 and D-95 left cycle detection to Phase 1, with timeouts as the backstop. In an A/B run, the backstop costs most of a scenario's time cap.
+  - **What it does:** `wait.start` on a task follows the open task waits from the target, and refuses the wait (`conflict`) when the chain leads back to the waiting task. The agent is told that the other task already waits for its task, and to finish its part and say in its summary what the other needs. Task waits take a project-level waits lock first, so two waits that would close a cycle at the same moment can't both slip through.
+  - **What it doesn't do:** waits on answers or leases aren't part of the check, because a waiting agent can still answer questions in a new turn. Nothing is escalated, and existing waits aren't broken: the cycle is refused before it forms.
+  - *Source:* the B11 rehearsal on SC-1 (2026-10-05), D-27, D-95. *Status:* Approved for 0B by an owner (`vihAan02`, D-123, S13), 2026-10-06: an owner's exception to §10, since it pulls part of a Phase 1 item into 0B.
 - **D-109 The functional MVP is declared (Milestone 1 of 0B; D-94, workboard #4 §1). Decided by an owner (Daniyal, S14), 2026-10-06. The workboard's list of what the real-model run exercises holds in part; the owner accepted the scripted-model coverage for the rest.**
   - **What holds, on `main` @ `ab9eba8` (tree `a1224c9`):**
     - **Items 3 to 7 are merged:**
