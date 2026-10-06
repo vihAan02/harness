@@ -62,9 +62,13 @@ export type RunningAgent = {
   monitor: { calls: Map<string, { tool: string; hooked: boolean; result: 'ok' | 'error' | null }>; observed: number; missed: number; rejected: number; unparsedShell: number };
   /**
    * Sync at turn end (D-53): landed notices held until the branch has the new base; whether a sync is due;
-   * the one running (deliveries wait for it); and, after a conflict, what the human must resolve.
+   * the one running (deliveries wait for it); and, after a conflict, what the human must resolve. `forced`
+   * syncs with no notice held, and `after` is what to tell the agent once it has: a land it waited for (D-106).
    */
-  sync: { held: MessageInfo[]; pending: boolean; running: Promise<void> | null; blocked: { target: string; oldBase: string } | null; retryGuard?: boolean };
+  sync: {
+    held: MessageInfo[]; pending: boolean; running: Promise<void> | null; blocked: { target: string; oldBase: string } | null; retryGuard?: boolean;
+    forced?: boolean; after: { id: string; text: string; label: string }[];
+  };
   done: Promise<void>;
 };
 
@@ -340,9 +344,11 @@ export class Daemon {
     if (w.outcome === 'resolved' && w.finishedAt === w.startedAt) return;
     await run.sync.running;
     if (run.sync.blocked || this.delivering.has(id) || this.delivered.has(id)) return; // delivered after the unblock (deliverPending)
+    const text = renderMessage({ id, kind: 'wait_outcome', text: waitOutcomeText(w), fromTask: null, sender: { kind: 'harness' } });
+    // A wait for another task's land is over only once this branch has that land (D-106): merge it, then tell.
+    if (w.outcome === 'resolved' && w.on.kind === 'task' && w.result?.status === 'landed' && !(await this.hasLand(run, w.on.id))) return this.syncThenTell(run, id, text, `task ${w.on.id}'s land`);
     this.delivering.add(id);
     try {
-      const text = renderMessage({ id, kind: 'wait_outcome', text: waitOutcomeText(w), fromTask: null, sender: { kind: 'harness' } });
       await run.adapter.queueNotice(run.handle, { id, text, origin: 'coordinator' });
       this.delivered.add(id);
     } catch (e) {
@@ -540,6 +546,33 @@ export class Daemon {
 
   // ---------- sync at turn end (0B item 2; D-53; coordination.md §2) ----------
 
+  /** Does this branch have task `taskId`'s land? With no completed land seen there's nothing to merge, so yes. */
+  async hasLand(run: RunningAgent, taskId: string): Promise<boolean> {
+    const land = [...this.view(run.projectId).lands.values()].find((l) => l.taskId === taskId && l.status === 'completed' && l.newBaseSha);
+    return !land || contains(run.workspace.worktree, land.newBaseSha!);
+  }
+
+  /**
+   * A land this agent is waiting for reaches it only once its branch has it (D-106): sync now if it's between
+   * turns, else at its turn end (the Stop gate lets the turn end for it), and then tell it. The notice opens its
+   * next turn.
+   */
+  syncThenTell(run: RunningAgent, id: string, text: string, label: string): void {
+    if (this.delivered.has(id) || run.sync.after.some((a) => a.id === id)) return;
+    run.sync.after.push({ id, text, label });
+    run.sync.forced = true;
+    run.sync.pending = true;
+    if (!run.sync.running && !run.sync.blocked && this.betweenTurns(run)) void this.runSync(run);
+  }
+
+  /** What `report_done` must wait for (D-106): files a landed change touched, and lands this agent waits for, not yet merged into its branch. */
+  landedNotMerged(taskId: string): string[] {
+    const run = this.running.get(taskId);
+    if (!run) return [];
+    const paths = run.sync.held.filter((m) => !this.delivered.has(m.id)).flatMap((m) => (Array.isArray(m.data.paths) ? m.data.paths as string[] : []));
+    return [...new Set([...paths, ...run.sync.after.filter((a) => !this.delivered.has(a.id)).map((a) => a.label)])];
+  }
+
   /** Between turns: idle, or errored (the turn failed but the session is alive). A sync never starts mid-turn (D-28). */
   betweenTurns(run: RunningAgent): boolean {
     const st = run.adapter.getStatus(run.handle);
@@ -565,12 +598,14 @@ export class Daemon {
     if (run.sync.blocked || (!run.sync.pending && !opts.resume)) return Promise.resolve();
     if (!this.betweenTurns(run)) return Promise.resolve(); // mid-turn: at its turn end (D-28)
     run.sync.pending = false;
+    const forced = run.sync.forced === true; // a land the agent waits for, with no notice held (D-106)
+    run.sync.forced = false;
     let held: MessageInfo[] = [];
     const job = (async () => {
       await run.diff.running; // never alongside a worktree diff: both use the index
       const view = this.view(run.projectId);
       held = run.sync.held.splice(0).map((m) => view.messages.get(m.id) ?? m).filter((m) => !m.deliveredAt && !m.supersededBy);
-      if (!held.length && !opts.resume) return;
+      if (!held.length && !opts.resume && !forced) return;
       const project = this.project(run.projectId);
       const worktree = run.workspace.worktree;
       run.adapter.setHold(run.handle, SYNC_HOLD);
@@ -605,7 +640,8 @@ export class Daemon {
       // Nothing is lost: the notices go back, and the sync is tried again at the next turn end.
       run.sync.held.unshift(...held.filter((m) => !this.delivered.has(m.id)));
       if (!run.sync.blocked) run.adapter.setHold(run.handle, null);
-      run.sync.pending = run.sync.held.length > 0;
+      run.sync.forced ||= forced;
+      run.sync.pending = run.sync.held.length > 0 || run.sync.after.length > 0;
       this.log(`${run.agent.name} (${run.taskId}): sync failed, will retry at the next turn end: ${e.message}`);
     }).finally(() => {
       run.sync.running = null;
@@ -641,6 +677,16 @@ export class Daemon {
         continue;
       }
       await this.injectLanded(run, m, oldBase, newBase, safe);
+    }
+    // Then what the agent was waiting for (D-106): its branch has the land now.
+    for (const a of run.sync.after.splice(0)) {
+      if (this.delivered.has(a.id)) continue;
+      try {
+        await run.adapter.queueNotice(run.handle, { id: a.id, text: a.text, origin: 'coordinator' });
+        this.delivered.add(a.id);
+      } catch (e) {
+        this.log(`${a.id} to ${run.agent.name}: not delivered: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -777,6 +823,15 @@ export class Daemon {
       tools: tools ?? harnessTools({
         view: this.view(ws.projectId), agentId: agent.id, taskId: ws.taskId, sessionId,
         send: async (name, args) => (await this.link!.command(ws.projectId, name, args, agent.id)).result,
+        landedNotMerged: () => this.landedNotMerged(ws.taskId),
+        mergeLand: async (taskId) => {
+          const run = this.running.get(ws.taskId);
+          if (!run || await this.hasLand(run, taskId)) return true;
+          const id = `land:${taskId}:${sessionId}`;
+          this.syncThenTell(run, id, renderMessage({ id, kind: 'wait_outcome', fromTask: null, sender: { kind: 'harness' },
+            text: `Task ${taskId} has landed, and the harness has merged it into your branch. Carry on.` }), `task ${taskId}'s land`);
+          return false;
+        },
       }),
       instructions: sessionInstructions({ agentName: agent.name, taskId: ws.taskId, ports: ws.ports, repo: readRepoInstructions(ws.worktree) }),
       ...(provider.model ? { model: provider.model } : {}),
@@ -802,7 +857,7 @@ export class Daemon {
       sessionId, projectId: ws.projectId, taskId: ws.taskId, agent, workspace: ws, adapter, handle, record, lastUsage: null, status: 'starting', tools: { calls: {}, denied: 0 },
       diff: { last: null, hooksSince: false, running: null, timer: null }, reads,
       monitor: { calls: new Map(), observed: 0, missed: 0, rejected: 0, unparsedShell: 0 },
-      sync: { held: [], pending: false, running: null, blocked: null }, done: Promise.resolve(),
+      sync: { held: [], pending: false, running: null, blocked: null, after: [] }, done: Promise.resolve(),
     };
     // The repo instruction files harnessd put in the system prompt were read too (coordination §2).
     reads.record(readRepoInstructions(ws.worktree).map((r) => ({ path: r.file, source: 'instructions' as const, confidence: 'high' as const })));

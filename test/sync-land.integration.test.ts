@@ -507,3 +507,85 @@ test('a land never moves the base on red tests, a merge conflict, or a missing t
   assert.deepEqual([out.kind, dataOf(out).reason], ['land.failed', 'not_approved']);
   assert.equal(baseTip(), before);
 });
+
+/** An agent's harness tool, called as the model would. */
+const tool = (task: string, name: string) => fake.of(task).spec.tools.find((t) => t.name === name)!;
+
+test('a wait for another task ends when it lands, not when it\'s done; the waiter\'s branch has the land before it\'s told (D-106)', async () => {
+  const waiter = await agent('agent/waiter6');
+  const writer = await agent('agent/writer6');
+  const tR = await startTask(waiter, 'waiter');
+  const tW = await startTask(writer, 'writer');
+  // The waiter never read what the writer changes: no notice would bring the land to it, only the wait.
+  const r = fake.of(tR);
+  r.startTurn();
+  const started = await tool(tR, 'wait_for').run({ kind: 'task', id: tW, timeout_s: 300 });
+  assert.match(started.text, /^Waiting \(wait_id wait_[0-9a-f]+\)\. End your turn now\./);
+  r.endTurn();
+  await finish(tW, { 'src/other.ts': 'export const other = 6;\n' });
+  // Done isn't landed: the writer's work isn't anywhere the waiter can have it yet.
+  await new Promise((res) => setTimeout(res, 2500)); // more than two sweeps
+  assert.equal([...s.daemon.view(s.project).waits.values()].find((w) => w.taskId === tR)?.outcome, 'waiting', 'still waiting while the task is only done');
+  const landed = await land(tW);
+  assert.equal(landed.kind, 'land.completed');
+  const told = () => r.injected.find((m) => m.text.includes('KIND: wait_outcome'));
+  await s.until(() => !!told(), 30_000, 'the wait outcome to reach the waiter');
+  assert.match(told()!.text, new RegExp(`Your wait for task ${tW} to land is over: the task is landed\\.`));
+  // Merged first, then told: the sync is logged before the outcome, and the waiter's tree has the change.
+  const kinds = s.daemon.view(s.project).events.filter((e) => ['land.completed', 'worktree.synced', 'wait.resolved'].includes(e.kind) && [tR, tW].includes(dataOf(e).task_id)).map((e) => e.kind);
+  assert.deepEqual(kinds, ['land.completed', 'wait.resolved', 'worktree.synced']);
+  assert.equal(fs.readFileSync(path.join(s.worktreeOf(tR), 'src/other.ts'), 'utf8'), 'export const other = 6;\n');
+  assert.equal(told()!.status, 'idle', 'it opened a new turn');
+});
+
+test('wait_for on a task that has already landed: the tool says to end the turn until the branch has it, then the harness tells it (D-106)', async () => {
+  const waiter = await agent('agent/waiter7');
+  const writer = await agent('agent/writer7');
+  const tW = await startTask(writer, 'writer');
+  await finish(tW, { 'src/other.ts': 'export const other = 7;\n' });
+  assert.equal((await land(tW)).kind, 'land.completed');
+  const tR = await startTask(waiter, 'waiter'); // its branch starts from main, which has the land already
+  const r = fake.of(tR);
+  r.startTurn();
+  const already = await tool(tR, 'wait_for').run({ kind: 'task', id: tW });
+  assert.equal(already.text, 'It has already happened: the task is landed. Carry on.', 'a branch made after the land has it');
+  r.endTurn();
+  await retire(tR);
+  // A branch made before the land doesn't: the tool says so, and harnessd merges it at the turn end.
+  const tW2 = await startTask(writer, 'writer again');
+  const tR2 = await startTask(waiter, 'waiter again');
+  await finish(tW2, { 'src/other.ts': 'export const other = 77;\n' });
+  assert.equal((await land(tW2)).kind, 'land.completed');
+  const r2 = fake.of(tR2);
+  r2.startTurn();
+  const behind = await tool(tR2, 'wait_for').run({ kind: 'task', id: tW2 });
+  assert.equal(behind.text, `It has already happened: task ${tW2} has landed, but your branch doesn't have it yet. End your turn now: the harness merges it into your branch, then starts your next turn.`);
+  r2.endTurn();
+  await s.until(() => r2.injected.some((m) => m.text.includes(`Task ${tW2} has landed, and the harness has merged it into your branch.`)), 30_000, 'the merge notice');
+  assert.equal(fs.readFileSync(path.join(s.worktreeOf(tR2), 'src/other.ts'), 'utf8'), 'export const other = 77;\n');
+});
+
+test('report_done waits while a landed change hasn\'t reached the branch: end the turn, get the sync and the diff, then finish (D-106)', async () => {
+  const reader = await agent('agent/reader8');
+  const writer = await agent('agent/writer8');
+  const tR = await startTask(reader, 'reader');
+  const r = fake.of(tR);
+  r.startTurn();
+  r.read(['src/types.ts']);
+  r.endTurn();
+  await s.nextEvent((e) => e.kind === 'readset.added' && dataOf(e).task_id === tR, 10_000);
+  r.startTurn(); // working through one long turn, as a real model did (F-113)
+  const tW = await startTask(writer, 'writer');
+  await finish(tW, { 'src/types.ts': 'export type User = { id: string; name: string };\n' });
+  assert.equal((await land(tW)).kind, 'land.completed');
+  await s.until(() => s.daemon.running.get(tR)!.sync.held.length > 0, 10_000, 'the landed notice to be held for the turn end');
+  const early = await tool(tR, 'report_done').run({ summary: 'done' });
+  assert.equal(early.isError, true);
+  assert.match(early.text, /^Not done yet: work has landed that your branch doesn't have \(src\/types\.ts\)\. End your turn now/);
+  assert.equal(s.daemon.view(s.project).tasks.get(tR)!.status, 'in_progress', 'nothing was sent');
+  r.endTurn();
+  await s.until(() => r.injected.some((m) => m.text.includes('Dependency changed: src/types.ts')), 30_000, 'the sync and its notice');
+  const done = await tool(tR, 'report_done').run({ summary: 'checked against the new User' });
+  assert.equal(done.isError, undefined, done.text);
+  await s.nextEvent((e) => e.kind === 'task.completed' && dataOf(e).task_id === tR, 10_000);
+});

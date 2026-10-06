@@ -1,5 +1,5 @@
 // wait_for (0B item 4; D-27, D-95; protocol.md §3/§4). An agent waits for one thing: the answer to a
-// question it asked, another task finishing, or a lease freeing up, always with a timeout. Every wait
+// question it asked, another task landing (or being abandoned; D-106), or a lease freeing up, always with a timeout. Every wait
 // ends in exactly one outcome:
 //  - resolved: what it waited for happened (checked at once when the wait starts, then by the sweep);
 //  - timed_out: the timeout passed first, and the task's owner gets a task_blocked message;
@@ -35,7 +35,8 @@ async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id
   }
   if (kind === 'task') {
     const t = (await tx.query<{ status: string }>('SELECT status FROM tasks WHERE id = $1 AND project_id = $2', [id, projectId])).rows[0];
-    return t && ['done', 'landed', 'abandoned'].includes(t.status) ? { status: t.status } : null;
+    // Done isn't enough: a task's work reaches anyone else only when it lands (D-106).
+    return t && ['landed', 'abandoned'].includes(t.status) ? { status: t.status } : null;
   }
   const l = (await tx.query<{ released: boolean; expired: boolean }>(
     'SELECT released_at IS NOT NULL AS released, expires_at <= $3::timestamptz AS expired FROM leases WHERE id = $1 AND project_id = $2',

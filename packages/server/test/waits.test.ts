@@ -60,14 +60,16 @@ test('waiting for an answer: resolved by the sweep once it arrives, or at once i
   assert.deepEqual((await events(['wait.resolved'])).find((e) => e.data.wait_id === wc.wait_id)!.data.result, { answer_id: ca });
 });
 
-test('waiting for a task to finish, and for a lease to free up (released or expired)', async () => {
+test('waiting for a task to land, and for a lease to free up (released or expired)', async () => {
   const a = await worker('agent/wa2');
   const b = await worker('agent/wb2');
   const w = await a.wait({ kind: 'task', id: b.task });
   assert.equal(w.outcome, 'waiting');
   await run('task.complete', { task_id: b.task });
+  assert.equal(await sweepWaits(db.pool), 0, 'done isn\'t landed: its work isn\'t anywhere the waiter can have it yet (D-106)');
+  await db.pool.query("UPDATE tasks SET status = 'landed' WHERE id = $1", [b.task]); // the land step's end state
   await sweepWaits(db.pool);
-  assert.deepEqual((await events(['wait.resolved'])).find((e) => e.data.wait_id === w.wait_id)!.data.result, { status: 'done' });
+  assert.deepEqual((await events(['wait.resolved'])).find((e) => e.data.wait_id === w.wait_id)!.data.result, { status: 'landed' });
 
   // Leases are granted by stream B's commands (D-97); a row is enough to wait on.
   const lease = async (expiresIn: string) => {
@@ -141,7 +143,7 @@ test('two sweeps at once settle each wait exactly once', async () => {
     waits.push((await a.wait({ kind: 'task', id: b.task })).wait_id);
     targets.push(b.task);
   }
-  for (const t of targets) await run('task.complete', { task_id: t });
+  for (const t of targets) await db.pool.query("UPDATE tasks SET status = 'landed' WHERE id = $1", [t]); // a task wait ends at the land (D-106)
   const [x, y] = await Promise.all([sweepWaits(db.pool), sweepWaits(db.pool)]);
   assert.ok(x + y >= waits.length);
   for (const id of waits) assert.deepEqual(await ofWait(id), ['wait.started', 'wait.resolved']);
