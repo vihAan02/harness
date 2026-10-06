@@ -33,6 +33,9 @@ before(async () => {
 });
 after(async () => {
   clearInterval(approver);
+  // `harness land` prints "Landed" when the server hears of the land, but harnessd then still removes the
+  // task's and the integration worktrees. Removing the stack's temp dir under it fails with ENOTEMPTY.
+  if (s) await Promise.all(s.daemon.landing.values());
   await s?.stop();
 });
 
