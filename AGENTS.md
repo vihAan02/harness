@@ -126,7 +126,7 @@ gh issue list -R vihAan02/harness --label status:active --label status:blocked
   - keep it small (≲800 changed lines, ≲3 days);
   - rebase, never merge `main` into your branch;
   - never push to `main`, and never use `git add -A`.
-- **Merging:** squash merges only. **A PR merges as soon as its listed dependencies have merged, the required checks are green, and any review below is done.** There's no global merge order.
+- **Merging:** squash merges only. **A PR merges as soon as its listed dependencies have merged, the required checks are green, and any review below is done.** There's no global merge order: dependencies decide what *may* merge. To spare CI, the integration owner sequences what merges *next* (one PR in flight; see below) and keeps that queue on the workboard.
 - **Before opening a PR:** run `npm run check` from a checkout outside iCloud, plus the targeted suites for what you touched:
   - sync and land: `test/sync-land`, `test/s3`, `npm run demo:0b`;
   - read capture: `packages/daemon/test/reads.test.ts`;
@@ -135,6 +135,23 @@ gh issue list -R vihAan02/harness --label status:active --label status:blocked
   - policy and hooks: `packages/adapters/test/policy.test.ts`, `test/security/`;
   - delivery: `test/messages.integration.test.ts`;
   - any daemon, adapter, server or script change: `npm run demo && npm run demo:0b`.
+- **CI capacity and flakes** (learned 2026-10-04 to 06):
+  - **CI is scarce.** `full-macos` is required on every PR, takes 3 to 4 minutes, and the account runs at most 5 macOS jobs at once. So:
+    - push only after the local checks pass, and batch your commits;
+    - never push work in progress to a branch with an open PR, and don't open drafts for unfinished work (drafts run CI too);
+    - never re-run CI just to get green. Local `npm run check` results posted on a PR are evidence, but they don't replace the required checks.
+  - **Rebase a PR only when it's next to merge,** or when a conflict blocks its review. Never rebase or force-push several branches at once: every merge puts every other PR behind, and each rebase is a full CI run.
+  - **One PR in flight.** Before rebasing a PR to merge it, check that no other PR is up to date and running CI. If this prints a number, let that PR merge first:
+    ```
+    gh pr list -R vihAan02/harness --json number,mergeStateStatus,statusCheckRollup --jq '.[] | select(.mergeStateStatus != "BEHIND") | select([.statusCheckRollup[]? | select(.status != "COMPLETED")] | length > 0) | .number'
+    ```
+  - **A job that fails with zero steps is infrastructure** (runner or account limits). Read its annotations (`gh api repos/vihAan02/harness/check-runs/<job-id>/annotations`), stop, and tell the owners. Never change code to work around it.
+  - **A flaky test gets a fix that states its cause,** never a re-run.
+  - **Tests wait for exactly the condition they assert:** `s.until` or `s.nextEvent`, with a timeout.
+    - A fixed sleep never waits for something to happen. Use one only to show that something did *not* happen, and make it longer than twice the relevant interval.
+    - Before a stack's teardown, wait for the background work the test started in harnessd, such as lands and syncs. A CLI reply ("Landed") doesn't mean harnessd has finished.
+    - Run a new integration test 5 times, and once under `npm run test:ci`, before opening its PR.
+  - **The repo is public:** everything pushed is public, including PR text and comments. Never push keys or `.env` files, logs or transcripts that might contain a key, or files from the private harness-bench repo.
 - **Review:**
   - Daniyal reviews B's PRs that touch A's files or a contract, leases and fencing, delivery semantics, migrations or dependencies, or that add a D-ID.
   - Vihaan reviews contract PRs, A's PRs that touch B's files, and A/B parameters.
