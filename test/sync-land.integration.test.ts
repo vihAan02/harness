@@ -422,15 +422,27 @@ test('a land interrupted after the base moved is completed at recovery, even wit
   const a = await agent('agent/crash');
   const t = await startTask(a, 'crash');
   await finish(t, { 'src/crash.ts': 'export const crash = 1;\n' });
-  // harnessd "crashes" between moving the base and the server hearing of it.
+  // harnessd "crashes" between moving the base and the server hearing of it: the land's report fails, and so do
+  // its three retries (1, 2 and 3 s apart). Each try is recorded with the merge it reports (its fifth argument).
   const realComplete = s.daemon.completeLand;
-  s.daemon.completeLand = async () => { throw new Error('simulated crash before land.complete'); };
+  const tried: Parameters<typeof realComplete>[] = [];
+  s.daemon.completeLand = async (...args) => { tried.push(args); throw new Error('simulated crash before land.complete'); };
   let merge: string;
   try {
+    const before = baseTip();
     const r = await s.command('land.request', { task_id: t });
-    await s.until(() => fs.existsSync(path.join(s.repo, 'src/crash.ts')), 30_000, 'the base to move');
-    merge = baseTip();
-    await new Promise((res) => setTimeout(res, 7000)); // its three retries fail too
+    // The first try comes once advanceBase has seen the base at the merge. The merged file in the checkout is no
+    // sign of that: a fast-forward writes the files before it moves the ref.
+    await s.until(() => tried.length > 0, 30_000, 'the base to move');
+    merge = tried[0]![4];
+    assert.notEqual(merge, before);
+    assert.equal(baseTip(), merge);
+    assert.ok(fs.existsSync(path.join(s.repo, 'src/crash.ts')), 'the checkout followed');
+    await s.until(() => tried.length === 4, 30_000, 'the land and its three retries to fail');
+    // And the land is over before the real completeLand is back: a late retry with it would complete the land
+    // itself, and recovery would go untested.
+    await s.daemon.landing.get(s.project);
+    assert.ok(tried.every((x) => x[4] === merge), 'every try reported the same merge');
     assert.equal(s.daemon.view(s.project).lands.get(r.land_id!)?.status, 'accepted', 'the server never heard');
   } finally {
     s.daemon.completeLand = realComplete;
