@@ -950,6 +950,16 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - **The time "current" is judged at:** the server's clock read under the lease lock (`clock_timestamp()` after the lock), not the transaction's start (`now()`), wherever expiry or currency is decided. Otherwise a command that began just before a lease expired, and got the lock after another command had seen it expire, could still renew or count it. A lease once seen expired is never renewed.
     - **Renewal timing in the LeaseKeeper** comes from the device's own receipt of each grant or renewal plus the lease's `ttl_s` / 3, never from comparing the server's `expires_at` with the device clock (one clock for expiry, F-84).
     - **A task's own released or expired lease doesn't block its land** (D-103).
+  - **Settled in the B5/B6 re-review (2026-10-04):**
+    - **Re-claiming a path the task already holds:**
+      - it keeps the lease and its token;
+      - without `ttl_s`, it keeps the lease's own TTL;
+      - it never moves the lease's expiry earlier;
+      - every `lease.renewed` entry carries `ttl_s`, so harnessd reschedules when a TTL changes. Otherwise a re-claim could shorten a lease while its keeper still renewed it on the old schedule, and the lease would lapse on an awake device.
+    - **When renewal timing starts** (refines "receipt" above): when the device *sends* each renewal, or receives the grant, still on the device's own clock. So a reply that arrives late (one replayed after a reconnect, say) doesn't push the next renewal past the lease's expiry.
+    - **A lease harnessd first sees when it starts tracking a task** (granted before the agent started) is renewed at once, as after a restart, because its age isn't known.
+    - **What a lease protects against:** lands fenced after it was granted. A land already accepted (past its fencing check) completes even if another task acquires a path it changes; that task hears of the change as a landed notice if it read the file. `--force` and release stay refused while a holder's land is in flight.
+    - **What an agent reads:** a `claim_conflict` about a lease (`level: lease`) is rendered with a hard-claim footer. The land step enforces a hard claim; nothing stops the edit itself. Soft-claim conflicts keep the soft footer.
   - *Source:* 0B item 5, D-89, S10. *Status:* Proposal.
 - **D-98 How read confinement is built (0B item 7; refines D-61).**
   - **Scope:**

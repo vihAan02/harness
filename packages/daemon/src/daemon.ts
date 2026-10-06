@@ -296,6 +296,7 @@ export class Daemon {
       const msg: MessageForAgent = {
         id: m.id, kind: m.kind, text: m.text, fromTask: m.fromTask, ...(m.inReplyTo ? { inReplyTo: m.inReplyTo } : {}),
         ...(Array.isArray(m.data.about_paths) ? { aboutPaths: m.data.about_paths as string[] } : {}),
+        ...(m.kind === 'claim_conflict' && m.data.level === 'lease' ? { lease: true } : {}),
         sender: m.from === 'harness' ? { kind: 'harness' }
           : sender ? { kind: 'agent', name: sender.name, humanId: sender.humanId }
           : { kind: 'human', id: m.from, local: m.from === this.config.principal },
