@@ -13,7 +13,7 @@ const REPO = opt('repo', process.env.GITHUB_REPOSITORY ?? 'vihAan02/harness');
 const WORKFLOW = opt('workflow', 'ci.yml');
 const RUNS = Number(opt('runs', '20'));
 
-type Job = { name: string; conclusion: string | null; created_at: string; started_at: string; completed_at: string | null };
+type Job = { name: string; conclusion: string | null; created_at: string; started_at: string; completed_at: string | null; steps?: unknown[] };
 const gh = <T>(path: string): T => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8' })) as T;
 
 const { workflow_runs: runs } = gh<{ workflow_runs: { id: number }[] }>(
@@ -21,8 +21,9 @@ const { workflow_runs: runs } = gh<{ workflow_runs: { id: number }[] }>(
 const byJob = new Map<string, { run: number[]; queue: number[] }>();
 for (const { id } of runs) {
   for (const job of gh<{ jobs: Job[] }>(`repos/${REPO}/actions/runs/${id}/jobs?per_page=100`).jobs) {
-    // A failed job still made someone wait; cancelled and skipped ones didn't run to the end.
-    if ((job.conclusion !== 'success' && job.conclusion !== 'failure') || !job.completed_at) continue;
+    // A failed job still made someone wait; cancelled and skipped ones didn't run to the end. A job with no
+    // steps never started (GitHub refused it, e.g. over account limits): its seconds are no runtime.
+    if ((job.conclusion !== 'success' && job.conclusion !== 'failure') || !job.completed_at || !job.steps?.length) continue;
     const entry = byJob.get(job.name) ?? { run: [], queue: [] };
     entry.run.push(Date.parse(job.completed_at) - Date.parse(job.started_at));
     entry.queue.push(Date.parse(job.started_at) - Date.parse(job.created_at));
