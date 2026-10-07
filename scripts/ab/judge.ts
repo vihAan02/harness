@@ -117,8 +117,8 @@ export function rubric(kind: 'm2' | 'm6', scenario: string, dir = RUBRIC_DIR): s
 }
 
 /**
- * One run's record as the judge reads it: the summary, the card, each task's diffs/<key>.patch (the task as it
- * ended) and diffs/main.patch, and the transcripts. Never the .independent.patch files, which are M3's (summary.ts).
+ * One run's record as the judge reads it: the summary, the card, each task's diffs/<key>.patch (its own work, from
+ * the last main it merged in: summary.ts) and diffs/main.patch, and the transcripts. Never the .independent.patch files, which are M3's (summary.ts).
  */
 export function loadRecord(dir: string, cardsDir: string): RecordInput {
   const summary = checkSummary(JSON.parse(fs.readFileSync(path.join(dir, 'summary.json'), 'utf8')), path.join(dir, 'summary.json'));
@@ -148,8 +148,8 @@ export function buildPrompts(input: RecordInput, limits: Limits = LIMITS, rubric
     return untrusted(name, c.text);
   };
   const patches = (cut: string[]) => {
-    for (const p of input.patches) if (p.text === null) cut.push(`${p.name}'s final diff wasn't recorded`);
-    return input.patches.flatMap((p) => (p.text === null ? [] : [`${p.name}'s final diff from the base:\n${block(cut, `diffs/${p.name}.patch`, p.text, limits.patch)}`]));
+    for (const p of input.patches) if (p.text === null) cut.push(`${p.name}'s own diff wasn't recorded`);
+    return input.patches.flatMap((p) => (p.text === null ? [] : [`${p.name}'s own diff (its own work: from the last main it merged in, or the base if it never synced):\n${block(cut, `diffs/${p.name}.patch`, p.text, limits.patch)}`]));
   };
   const finish = (kind: Prompt['kind'], cut: string[], parts: string[]): Prompt => ({
     kind, cut, system: rubric(kind, s.scenario, rubricDir),
@@ -163,7 +163,8 @@ export function buildPrompts(input: RecordInput, limits: Limits = LIMITS, rubric
   const c6: string[] = [];
   const timeline = [
     `The run started at ${s.started_at} and ended at ${s.ended_at}.`,
-    ...s.tasks.map((t) => `- ${t.key} (agent "${t.agent}") was ${t.integrated_at ? `integrated at ${t.integrated_at}` : 'never integrated'}.`),
+    // done_at, the task's first completion, is what "caught" is judged against (§9, D-125).
+    ...s.tasks.map((t) => `- ${t.key} (agent "${t.agent}") ${t.done_at ? `first finished at ${t.done_at}` : 'never finished'}, and was ${t.integrated_at ? `integrated at ${t.integrated_at}` : 'never integrated'}.`),
   ];
   const all: Edit[] = [];
   for (const t of input.transcripts) {

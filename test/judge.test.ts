@@ -22,7 +22,10 @@ const summary: RunSummary = {
   m1_ms: 1_200_000, m3_conflicts: 0, sync_conflicts: 0, m4: { commits_after_first: 0, ms_to_green: null }, m5: 0, m5b: 0, m5c: 2, m7: {},
   m8: { input: 1, output: 1, cache_read: 0, cache_creation: 0, cost_usd: 0 }, m9a: 0, m10_ms: 1, surfaced: { planted: 1, surfaced: 1 },
   base_sha: 'ae3198e'.padEnd(40, '0'), main_sha: 'f'.repeat(40),
-  tasks: [{ key: 'T1', agent: 'backend', branch: 'b1', integrated_at: '2026-10-05T10:08:00.000Z' }, { key: 'T2', agent: 'frontend', branch: 'b2', integrated_at: '2026-10-05T10:19:00.000Z' }],
+  tasks: [
+    { key: 'T1', agent: 'backend', branch: 'b1', done_at: '2026-10-05T10:07:00.000Z', integrated_at: '2026-10-05T10:08:00.000Z' },
+    { key: 'T2', agent: 'frontend', branch: 'b2', done_at: '2026-10-05T10:15:00.000Z', integrated_at: '2026-10-05T10:19:00.000Z' },
+  ],
 };
 const card = JSON.parse(fs.readFileSync(path.join(root, 'scripts/ab/scenarios/SC-1.json'), 'utf8')) as RecordInput['card'];
 const line = (o: unknown) => JSON.stringify(o);
@@ -88,7 +91,7 @@ test('the M6 prompt: only the scenario\'s coupling, the timeline, and both agent
   const [, m6] = buildPrompts(input());
   assert.ok(m6!.system.includes('### SC-1\nCoupling name: `login-response`'));
   for (const other of ['### SC-0', '### SC-2', '### SC-3', '### SC-4']) assert.ok(!m6!.system.includes(other), other);
-  assert.match(m6!.user, /T1 \(agent "backend"\) was integrated at 2026-10-05T10:08:00.000Z/);
+  assert.match(m6!.user, /T1 \(agent "backend"\) first finished at 2026-10-05T10:07:00.000Z, and was integrated at 2026-10-05T10:08:00.000Z/, '"caught" is judged against done_at (D-125)');
   const order = ['backend Write src/shared/types.ts', 'frontend Edit src/client/api.ts', 'frontend MultiEdit src/client/api.ts'].map((s) => m6!.user.indexOf(s));
   assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1]!)), `in time order: ${order}`);
   assert.match(m6!.user, /1 of frontend's edit calls failed .* and are left out; frontend's transcript has 1 line\(s\) that aren't JSON/);
@@ -173,7 +176,7 @@ test('an error status throws with the key redacted from what the provider sent b
 test('a record from disk: each task\'s diffs/<key>.patch and main.patch, never the .independent.patch or a stray patch', () => {
   const dir = path.join(tmp, 'record', 'r-disk');
   fs.mkdirSync(path.join(dir, 'diffs'), { recursive: true });
-  const tasks = [...summary.tasks, { key: 'T3', agent: 'extra', branch: 'b3', integrated_at: null }];
+  const tasks = [...summary.tasks, { key: 'T3', agent: 'extra', branch: 'b3', done_at: null, integrated_at: null }];
   fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ ...summary, run_id: 'r-disk', tasks }));
   fs.writeFileSync(path.join(dir, 'diffs', 'T1.patch'), '--- a/f\n+++ b/f\n@@ -1 +1 @@\n-final-one\n+final-two\n');
   fs.writeFileSync(path.join(dir, 'diffs', 'T1.independent.patch'), '--- a/f\n+++ b/f\n@@ -1 +1 @@\n-INDEPENDENT-ONLY\n+x\n');
@@ -187,7 +190,7 @@ test('a record from disk: each task\'s diffs/<key>.patch and main.patch, never t
   for (const p of [m2!, m6!]) {
     assert.ok(p.user.includes('final-two') && !p.user.includes('INDEPENDENT-ONLY') && !p.user.includes('STRAY-PATCH'), p.kind);
     assert.match(p.user, /- T3, agent "extra": \(no card has this task\)/, 'the task list is the summary\'s');
-    assert.match(p.user, /T2's final diff wasn't recorded; T3's final diff wasn't recorded/);
+    assert.match(p.user, /T2's own diff wasn't recorded; T3's own diff wasn't recorded/);
   }
   assert.ok(m2!.user.includes('MAIN-PATCH') && !m6!.user.includes('MAIN-PATCH'));
   fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ ...summary, run_id: 'r-disk', tasks: [{ ...summary.tasks[0]!, key: '../T1' }] }));
