@@ -44,6 +44,19 @@ export function independentTip(repo: string, baseSha: string, commit: string): s
   return commit;
 }
 
+/**
+ * The last main a task merged in (the second parent of the last sync merge on its first-parent line), or the base if
+ * it never synced. The diff from there to its final commit is its own work: everything the sync brought in is on
+ * both sides, so the other task's work drops out (validation.md §9, M2's judge input).
+ */
+export function ownBase(repo: string, baseSha: string, commit: string): string {
+  for (const line of gitOut(repo, 'rev-list', '--first-parent', '--parents', `${baseSha}..${commit}`).split('\n')) {
+    const [, , second] = line.trim().split(' ');
+    if (second) return second;
+  }
+  return baseSha;
+}
+
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
 
 /**
@@ -69,16 +82,16 @@ export async function finalCommits(
 }
 
 /**
- * The patches the judge and the scorer read (scripts/ab/summary.ts): for each task, diffs/<task>.patch from the
- * base to its final commit and diffs/<task>.independent.patch to its last commit before a sync (both -U0; M3's
- * overlapping hunks compare the latter), and diffs/main.patch for main as the run ended. A task with no commit
- * gets empty patches.
+ * The patches the judge and the scorer read (scripts/ab/summary.ts): for each task, diffs/<task>.patch, its own
+ * work, from the last main it merged in (`ownBase`) to its final commit, and diffs/<task>.independent.patch, from
+ * the base to its last commit before a sync (both -U0; M3's overlapping hunks compare the latter), and
+ * diffs/main.patch for main as the run ended. A task with no commit gets empty patches.
  */
 export function writeDiffs(dir: string, repo: string, baseSha: string, mainSha: string, tasks: { key: string; commit: string | null }[]): void {
   const out = path.join(dir, 'diffs');
   fs.mkdirSync(out, { recursive: true });
   for (const t of tasks) {
-    fs.writeFileSync(path.join(out, `${t.key}.patch`), t.commit ? gitOut(repo, ...DIFF, '-U0', baseSha, t.commit) : '');
+    fs.writeFileSync(path.join(out, `${t.key}.patch`), t.commit ? gitOut(repo, ...DIFF, '-U0', ownBase(repo, baseSha, t.commit), t.commit) : '');
     fs.writeFileSync(path.join(out, `${t.key}.independent.patch`), t.commit ? gitOut(repo, ...DIFF, '-U0', baseSha, independentTip(repo, baseSha, t.commit)) : '');
   }
   fs.writeFileSync(path.join(out, 'main.patch'), gitOut(repo, ...DIFF, baseSha, mainSha));
@@ -194,6 +207,11 @@ export function mergeTree(repo: string, base: string, head: string): string | nu
 }
 
 
+/** A task's first completion, `done_at` (D-125): its first `task.completed`. A reopened task is done again later; the first counts. */
+export function firstCompletion(view: ProjectView, taskId: string): string | null {
+  return view.events.find((e) => e.kind === 'task.completed' && data(e).task_id === taskId)?.at ?? null;
+}
+
 /** The harness arm's summary, from its event log, `harness metrics` and Git. */
 export function harnessSummary(o: {
   runId: string; scenario: string; phrasing: number; outcome: RunSummary['outcome']; capMs: number; startedAt: string; endedAt: string;
@@ -234,7 +252,7 @@ export function harnessSummary(o: {
     m9a, m10_ms: o.m10Ms, surfaced: surfaced(o.view, o.scenario, o.ids), base_sha: o.baseSha, main_sha: o.mainSha,
     tasks: o.tasks.map((x) => {
       const id = o.ids.get(x.key)!;
-      return { key: x.key, agent: x.agent, branch: `harness/task/${id}`, integrated_at: landedAt.has(id) ? new Date(landedAt.get(id)!).toISOString() : null };
+      return { key: x.key, agent: x.agent, branch: `harness/task/${id}`, done_at: firstCompletion(o.view, id), integrated_at: landedAt.has(id) ? new Date(landedAt.get(id)!).toISOString() : null };
     }),
   };
 }

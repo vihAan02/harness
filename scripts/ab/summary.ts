@@ -3,7 +3,9 @@
 // side, grades.json, comes back separately and is joined by run id.
 //
 //   record/<run-id>/summary.json         RunSummary
-//   record/<run-id>/diffs/<task>.patch   `git diff -U0 <base> <task's final commit>`: what the task did in the end (the judge)
+//   record/<run-id>/diffs/<task>.patch   `git diff -U0 <the last main it merged in, or the base> <task's final commit>`:
+//                                        the task's own work (the judge's M2 input). From the base, a synced task's
+//                                        diff would hold the other task's work too, and give the arm away (§9)
 //   record/<run-id>/diffs/<task>.independent.patch
 //                                        the same, at its last commit before it first merged main in (a sync): what
 //                                        it changed before it could see the other task's work. M3's overlapping
@@ -35,11 +37,18 @@ export type RunSummary = {
   cap_ms: number;
   started_at: string;
   ended_at: string;
-  /** M1: from the assignment until both tasks are integrated with tests green; null if that never happened (scored as the cap). */
+  /**
+   * M1: from when both agents have started work, after their worktrees and setup, until both tasks are integrated
+   * with tests green; null if that never happened (scored as the cap). The same starting point in both arms (§9).
+   */
   m1_ms: number | null;
-  /** M3, the integration half: textual conflicts when a task was integrated (lands, or the runner's `merge`). */
+  /**
+   * M3's conflicts: each task's first textual conflict with the other task's integrated work counts once, whether
+   * it came at a sync (main merged into the task) or at its integration: 0 to one per task (§9). The overlapping
+   * hunks, M3's other half, the scorer computes from the independent patches.
+   */
   m3_conflicts: number;
-  /** A diagnostic, not M3: conflicts when main was merged into a task's branch mid-run (harnessd's sync, the baseline's `sync`). */
+  /** A diagnostic beside M3: every conflict when main was merged into a task's branch mid-run (harnessd's sync, the baseline's `sync`). */
   sync_conflicts: number;
   /** M4: commits to main after the first integration, and the time from it until main is green with both tasks. */
   m4: { commits_after_first: number; ms_to_green: number | null };
@@ -57,12 +66,20 @@ export type RunSummary = {
   m9a: number;
   /** M10: the coordinator's timer, both arms the same way. */
   m10_ms: number;
-  /** P1's first half, harness arm: planted changes the affected agent was told of before its task was done. Null in the baseline. */
+  /**
+   * P1's first half, harness arm: planted changes the affected agent was told of by task 1 (its notices or its agent's
+   * messages, delivered after task 1 first edited a planted file and before the affected task's `done_at`; §9). Null in the baseline.
+   */
   surfaced: { planted: number; surfaced: number } | null;
   /** The base every diff is taken from, and main as the run ended. */
   base_sha: string;
   main_sha: string;
-  tasks: { key: string; agent: string; branch: string; integrated_at: string | null }[];
+  /**
+   * `done_at`: the task's first completion, which M6's "caught" is judged against (§9, D-125). Harness arm: its first
+   * `task.completed` (a reopened task can be done twice; the first counts). Baseline: the start of its first `merge`,
+   * since the coordinator integrates a task as soon as its agent finishes. Null if it never finished.
+   */
+  tasks: { key: string; agent: string; branch: string; done_at: string | null; integrated_at: string | null }[];
 };
 
 /** What the LLM judge decides for one run (scripts/ab/judge.ts, the prompts in scripts/ab/rubric/). */
@@ -123,7 +140,9 @@ export function checkSummary(v: unknown, where = 'summary.json'): RunSummary {
     if (!isObj(t) || typeof x.key !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(x.key)) bad(`tasks[${i}].key (a short name: letters, digits, _ or -)`);
     if (typeof x.agent !== 'string' || typeof x.branch !== 'string') bad(`tasks[${i}].agent or .branch`);
     if (x.integrated_at !== null && typeof x.integrated_at !== 'string') bad(`tasks[${i}].integrated_at`);
+    if (x.done_at !== null && typeof x.done_at !== 'string') bad(`tasks[${i}].done_at (null, or when the task was first done)`);
   });
+  if ((s.m3_conflicts as number) > (s.tasks as unknown[]).length) bad('m3_conflicts (at most one per task)');
   return v as RunSummary;
 }
 
