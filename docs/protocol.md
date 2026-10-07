@@ -92,6 +92,7 @@
 |---|---|---|---|
 | `agent.created` | 0A | n/a | `agent_principals` |
 | `task.created`, `task.assigned`, `task.completed`, `task.abandoned` | 0A | n/a (`task.assigned` starts a session; `task.completed` stops it, D-54) | `tasks` |
+| `task.reopened { task_id, assignee_agent_id, text, by }` | 0B | harnessd on the agent's device starts a new session in the task's worktree, on its branch, whose first message is the task and `text` (D-107) | `tasks` |
 | `device.online`, `device.offline` (a presence change only; heartbeats themselves log nothing, D-75), `session.started`, `session.status` (presence), `session.ended` (D-77) | 0A | n/a | `device_presence`, `devices`, `agent_sessions` |
 | `worktree.created`, `worktree.committed` (a finished task's commit, D-81), `worktree.removed` | 0A | n/a | n/a (log only) |
 | `claim.prospective`, `claim.observed`, `claim.cleared` | 0A | n/a | `claims` |
@@ -119,6 +120,7 @@
 | `task.assign { task_id, assignee_agent_id }` | 0A | `harnessd` on the assignee's device starts a session (D-54) |
 | `task.complete { task_id, summary? }` | 0A | From the agent tool `report_done` (the assignee only) or the CLI `harness task done` → `task.completed { task_id, summary?, by }` |
 | `task.abandon { task_id, reason }` | 0A | CLI `harness task abandon` |
+| `task.reopen { task_id, text }` → `{ overlaps }` | 0B | CLI `harness task reopen`. A human sends a `done` task that hasn't landed back to its agent, with a message (≤ the task text's limit), say a failed land's output (D-107). Refused while a land of it is requested or accepted, or while its agent works on another task. The task goes back to `in_progress` and its scope is claimed again (`claim.prospective`); the old session isn't resumed |
 | ~~`device.heartbeat { device_id }`~~ | 0A | Superseded by D-75: presence is the `heartbeat` message (§2), not a command |
 | `worktree.report { task_id, event: created\|committed\|removed, path, branch?, commit? }` | 0A | `harnessd` only (a device connection) → `worktree.*` events. `committed` carries the commit harnessd made for a finished task (D-81) |
 | `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed, exit_code? }` | 0A | `harnessd` only. Local approvals happen through `harness approve`; this only records them (D-52) |

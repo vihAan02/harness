@@ -125,6 +125,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     if (e.kind === 'message.sent' && isHuman(String(d.from))) detail = `${String(d.kind)} to ${view.agentName(String(d.to))}`;
     else if (e.kind === 'task.completed' && isHuman(String(d.by))) detail = `marked ${String(d.task_id)} done`;
     else if (e.kind === 'task.abandoned') detail = `abandoned ${String(d.task_id)}`;
+    else if (e.kind === 'task.reopened') detail = `reopened ${String(d.task_id)}`;
     // A human's hard claims: one action per command (its leases share a time). A revoke is part of the
     // `force` claim that caused it, and an abandon's releases are part of the abandon.
     else if (e.kind === 'lease.granted' && isHuman(String(d.by))) {

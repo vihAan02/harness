@@ -16,6 +16,9 @@ const USAGE = `usage: harness <command> [--project <id>]
   task assign <task> <agent>                  assign an open task; harnessd on the agent's device starts it
   task done <task> [--summary <text>]         mark a task done; harnessd commits its work and stops the agent
   task abandon <task> --reason <text>         abandon a task; harnessd stops the agent and removes the worktree
+  task reopen <task> (--text <msg> | --file <path>)
+                                              send a done task back to its agent (a failed land, say): a new session
+                                              in its worktree, with your message (D-107)
   task unblock <task>                         after you've resolved a sync conflict in the task's worktree: resume the agent
   land <task> [--no-tests] [--no-wait]        land a finished task: its device merges it, runs the approved test command,
                                               and moves the base branch only if green (D-51)
@@ -141,6 +144,16 @@ async function main(argv: string[]): Promise<void> {
     return withServer(a, async (c) => {
       await c.command('task.abandon', { task_id: task, reason });
       console.log(`${task} is abandoned. harnessd stops its agent and removes its worktree.`);
+    });
+  }
+
+  if (command === 'task' && sub === 'reopen') {
+    const task = rest[0] ?? fail('usage: harness task reopen <task> (--text <message> | --file <path>)');
+    const file = flag(a, 'file');
+    const text = file ? fs.readFileSync(file, 'utf8') : flag(a, 'text') ?? fail('say what to fix with --text or --file (a failed land\'s output, say)');
+    return withServer(a, async (c) => {
+      await c.command('task.reopen', { task_id: task, text });
+      console.log(`${task} is reopened. harnessd starts its agent again in its worktree, with your message.`);
     });
   }
 
