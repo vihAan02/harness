@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectView, RunMetrics } from '../../packages/daemon/src/index.ts';
+import { commitAll } from '../../packages/daemon/src/git.ts';
 import type { RunSummary } from './summary.ts';
 import { transcriptFiles } from './transcripts.ts';
 
@@ -44,6 +45,28 @@ export function independentTip(repo: string, baseSha: string, commit: string): s
 }
 
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+
+/**
+ * Each task's last commit, for its diffs. harnessd commits a task's work only when the task is done, so the work
+ * an unfinished task (capped, stopped, or reopened and not done again) left in its worktree is committed first,
+ * as the baseline runner does with its agents' leftovers. The branch's tip then also holds the task's sync merges.
+ * A task whose branch is gone (landed, and deleted) keeps its last committed work; one never started has none.
+ */
+export async function finalCommits(
+  repo: string, tasks: { key: string; branch: string | null; worktree: string | null; committed: string | null }[], author: { name: string; email: string },
+): Promise<{ key: string; commit: string | null }[]> {
+  const out: { key: string; commit: string | null }[] = [];
+  for (const t of tasks) {
+    // Fails only with a merge left unresolved in the worktree, which is never committed as the agent's work.
+    if (t.worktree && fs.existsSync(t.worktree)) await commitAll(t.worktree, `Left at the end of the run\n\nAB-Task: ${t.key}`, author).catch(() => null);
+    let tip: string | null = null;
+    if (t.branch) {
+      try { tip = gitOut(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}^{commit}`).trim() || null; } catch { tip = null; }
+    }
+    out.push({ key: t.key, commit: tip ?? t.committed });
+  }
+  return out;
+}
 
 /**
  * The patches the judge and the scorer read (scripts/ab/summary.ts): for each task, diffs/<task>.patch from the

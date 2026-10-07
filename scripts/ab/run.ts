@@ -59,10 +59,11 @@ import { readEvents } from '../../packages/server/src/events.ts';
 import { startServer } from '../../packages/server/src/server.ts';
 import { DUMMY_KEY, startMock } from '../../packages/adapters/test/mock-api.ts';
 import { agentConfigDir } from '../../packages/daemon/src/resources.ts';
+import { taskBranch } from '../../packages/daemon/src/git.ts';
 import { runBaseline } from './baseline-arm.ts';
 import { CoordinatorConsole } from './console.ts';
 import { Recorder } from './recorder.ts';
-import { copyTranscripts, firstAttempt, harnessAttempts, harnessSummary, mergeTree, untestedRetry, writeDiffs, type IntegrationAttempt } from './summarize.ts';
+import { copyTranscripts, finalCommits, firstAttempt, harnessAttempts, harnessSummary, mergeTree, untestedRetry, writeDiffs, type IntegrationAttempt } from './summarize.ts';
 import type { RunSummary } from './summary.ts';
 
 export type CardTask = { key: string; agent: string; title: string; scope: string[]; phrasings: string[] };
@@ -121,6 +122,8 @@ const PROVIDERS_FILE = str('providers') ?? path.resolve(import.meta.dirname, '..
 if (PROVIDER && !REAL) fail('--provider needs --real');
 
 const PROJECT = 'prj_ab';
+/** Who commits what an unfinished harness task left in its worktree at the end of a run (never main). */
+const RUNNER = { name: 'A/B runner', email: 'runner@harness.invalid' };
 /** Every file the grader gets carries this time, so nothing in the tree tells when its run ended. */
 const FIXED_TIME = new Date('2000-01-01T00:00:00Z');
 const step = (tool: string, input: unknown) => `#STEP ${tool} ${JSON.stringify(input)}`;
@@ -458,7 +461,13 @@ async function runOnce(n: number): Promise<string> {
       tasks: CARD.tasks.map((t) => ({ key: t.key, agent: t.agent })),
     });
     rec.writeJson('summary.json', summary);
-    writeDiffs(rec.dir, repo, baseSha, mainSha, CARD.tasks.map((t) => ({ key: t.key, commit: metrics.tasks.find((x) => x.id === ids.get(t.key))?.commit ?? null })));
+    // Each task's diffs come from its branch's tip, after what an unfinished task left in its worktree is committed
+    // (harnessd commits only at done), so a capped task's work isn't lost to the judge or M3, as in the baseline.
+    const commits = await finalCommits(repo, CARD.tasks.map((t) => {
+      const id = ids.get(t.key);
+      return { key: t.key, branch: id ? taskBranch(id) : null, worktree: id ? daemon.worktreeOf(PROJECT, id) : null, committed: metrics.tasks.find((x) => x.id === id)?.commit ?? null };
+    }), RUNNER);
+    writeDiffs(rec.dir, repo, baseSha, mainSha, commits);
     copyTranscripts(rec.dir, [...record.agents.values()].map((a) => ({ name: a.name, configDir: agentConfigDir(home, a.id) })));
     saveGradeTree(repo, mainSha, runId);
     const firstTree = saveFirstAttemptTree(repo, runId, harnessAttempts(record, ids), rec);
