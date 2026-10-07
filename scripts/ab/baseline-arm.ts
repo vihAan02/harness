@@ -25,7 +25,7 @@ import { baselineSpec } from './baseline-launch.ts';
 import type { CoordinatorConsole } from './console.ts';
 import type { Recorder } from './recorder.ts';
 import type { RunSummary } from './summary.ts';
-import { commitsAfterFirst, untestedRetry, type IntegrationAttempt } from './summarize.ts';
+import { commitsAfterFirst, mergeTreeConflicted, untestedRetry, type IntegrationAttempt } from './summarize.ts';
 import { readTranscript, transcriptFiles, transcriptUsage } from './transcripts.ts';
 
 type CardTask = { key: string; agent: string; title: string; scope: string[]; phrasings: string[] };
@@ -54,7 +54,6 @@ type Agent = {
 
 const COORDINATOR = { name: 'Coordinator', email: 'coordinator@harness.invalid' };
 
-
 /**
  * Where an agent's files go: inside the harness home, which its read policy denies except for its own worktree
  * (D-98), as harnessd places a harness agent's worktree and a land's integration worktree. A run's temp root
@@ -67,26 +66,41 @@ export function baselinePaths(home: Home, agent: string): { worktree: string; ca
     integration: (attempt) => path.join(home.root, 'integration', 'baseline', `${agent}-${attempt}`),
   };
 }
+
+/**
+ * The files where merging `target` into the worktree's HEAD conflicts (a dry run: `git merge-tree`, which on a
+ * conflict lists the conflicted paths after the tree id). Empty when it merges cleanly; throws on any other failure.
+ */
+export function conflictedPaths(worktree: string, target: string): string[] {
+  try {
+    execFileSync('git', ['-C', worktree, 'merge-tree', '--write-tree', '--name-only', '--no-messages', 'HEAD', target], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return [];
+  } catch (e) {
+    if (!mergeTreeConflicted(e)) throw e;
+    const [, ...rest] = String((e as { stdout?: string }).stdout).split('\n');
+    const end = rest.indexOf('');
+    return [...new Set(end < 0 ? rest : rest.slice(0, end))].sort();
+  }
+}
+
 /**
  * §9 step 7, a sync conflict: main merged into an agent's branch with main's side winning every conflicting
  * hunk (`-X theirs`), after its work in progress is committed. The other task's integrated work stays whole and
- * the agent redoes its own part; nobody writes code. Returns the files whose hunks main's side replaced, or
- * null if even that merge fails (a modify/delete conflict, say), which leaves the branch as it was.
+ * the agent redoes its own part; nobody writes code. Returns the files that conflicted, where main's side
+ * replaced the agent's hunks (empty if the merge was clean), or null if even that merge fails (a modify/delete
+ * conflict, say): the merge is aborted, and the branch keeps only its work-in-progress commit.
  */
 export async function syncTheirs(worktree: string, target: string, author: { name: string; email: string }): Promise<{ replaced: string[] } | null> {
   const g = (...args: string[]) => execFileSync('git', ['-C', worktree, '-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`, ...args], { encoding: 'utf8' }).trim();
   await commitAll(worktree, 'Work in progress before sync', author);
-  // The files both sides changed since they parted: where main's side may have won.
-  const base = g('merge-base', 'HEAD', target);
-  const ours = new Set(g('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean));
-  const both = g('diff', '--name-only', base, target).split('\n').filter((f) => f && ours.has(f));
+  const replaced = conflictedPaths(worktree, target);
   try {
     g('merge', '--no-ff', '--no-edit', '-X', 'theirs', '-m', 'Sync with main (main\'s side wins conflicting hunks)', target);
   } catch {
     try { g('merge', '--abort'); } catch {}
     return null;
   }
-  return { replaced: both.sort() };
+  return { replaced };
 }
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
@@ -265,8 +279,8 @@ export async function runBaseline(b: BaselineInput): Promise<{
     actions++;
     if (o.theirs) {
       const r = await syncTheirs(a.worktree, await branchTip(repo, 'main'), COORDINATOR);
-      mark('sync', a, r ? { outcome: 'synced', theirs: true, replaced: r.replaced } : { outcome: 'conflict', theirs: true });
-      return r ? `synced, main's side winning conflicting hunks; tell the agent which of its files may have lost hunks: ${r.replaced.join(', ') || 'none'}` : 'even main-wins merging fails here; the branch is unchanged';
+      mark('sync', a, r ? { outcome: 'synced', theirs: true, replaced: r.replaced, conflict: r.replaced.length > 0 } : { outcome: 'conflict', theirs: true });
+      return r ? `synced, main's side winning conflicting hunks; tell the agent which of its files lost hunks: ${r.replaced.join(', ') || 'none (it merged cleanly)'}` : 'even main-wins merging fails here; the merge is aborted, and the branch has only its work-in-progress commit';
     }
     const r = await syncWorktree({ worktree: a.worktree, target: await branchTip(repo, 'main'), taskId: a.task.key, agent: COORDINATOR });
     mark('sync', a, r.ok ? { outcome: 'synced', changed: r.changed } : { outcome: 'conflict', conflicts: r.conflicts });
@@ -364,7 +378,8 @@ export async function runBaseline(b: BaselineInput): Promise<{
       v: 1, arm: 'baseline', scenario: b.scenario, outcome, models: [model],
       m1_ms: allIn ? merged.at(-1)! - clockStart : null,
       // M3: each task's first textual conflict with the other's integrated work, at a merge or a sync (§9).
-      m3_conflicts: new Set(marks.filter((m) => (m.what === 'integration' || m.what === 'sync') && m.detail?.outcome === 'conflict').map((m) => m.task)).size,
+      // A `sync --theirs` that settled a conflict counts too, so M3 doesn't depend on a plain `sync` having come first.
+      m3_conflicts: new Set(marks.filter((m) => (m.what === 'integration' || m.what === 'sync') && (m.detail?.outcome === 'conflict' || m.detail?.conflict === true)).map((m) => m.task)).size,
       sync_conflicts: marks.filter((m) => m.what === 'sync' && m.detail?.outcome === 'conflict').length,
       m4: { commits_after_first: commitsAfterFirst(repo, baseSha, mainSha, merged.length), ms_to_green: allIn ? merged.at(-1)! - merged[0]! : null },
       // The runner's own fix requests in a rehearsal are typed into the terminal, so the transcripts count them like a human's.
