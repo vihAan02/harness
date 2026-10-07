@@ -1142,6 +1142,18 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 
     Each has a negative control: the old `done` rule, no sync before telling, an ungated `report_done`, and a `wait_for` that ignores an unmerged land. Also unit tests in server `waits.test.ts` and daemon `tools.test.ts`.
   - *Source:* the first real-model run (F-113); D-53, D-95, D-101. *Status:* Proposal.
+- **D-107 A human can send a done task back to its agent: `harness task reopen` (refines D-96; 0B). Found by the A/B rehearsal (B11), 2026-10-05. Approved by an owner, 2026-10-06 (D-122).**
+  - **The problem:** under D-96 a failed land leaves the task `done`, and the human fixes the branch. But the A/B playbook (validation.md §9, D-121) has the coordinator ask the agent to fix a failed integration, never write code. In the baseline the agent's terminal is still open, so that works. In the harness arm the agent's session ended when it reported done, so the playbook couldn't be followed: a real SC-1 rehearsal's first land failed type-checking, and the run could only end there.
+  - **What it does:** `task.reopen { task_id, text }`, for humans, on a `done` task with no land in flight and its agent free:
+    - the task goes back to `in_progress`, and its scope is claimed again;
+    - harnessd starts a new session in the task's worktree, on its branch, which has the earlier work;
+    - the session's first message is the task plus the human's message;
+    - the agent reports done again, and the human lands again.
+
+    A reopen counts as a human intervention (M5), like the baseline coordinator's message to its agent.
+  - **What it isn't:** resume. The old conversation isn't restored (that's still Phase 1, D-40), so the message must say what to fix. D-51's "the task goes back to `in_progress` with the failure attached" happens only when a human asks for it, never automatically.
+  - **The alternative the owner declined (S13):** the protocol, not the product, changes. In both arms the coordinator fixes failed integrations by hand, which breaks §9's "never write code" rule in both arms.
+  - *Source:* the B11 rehearsal on SC-1 (2026-10-05), D-96, D-121, S12. *Status:* Approved by an owner (`vihAan02`, D-122, S13), 2026-10-06.
 - **D-108 A task wait that would close a cycle is refused (pulls the simplest part of D-27's cycle detection into 0B; refines D-95). Found by the A/B rehearsal (B11), 2026-10-05. Approved for 0B by an owner, 2026-10-06 (D-123).**
   - **The problem:** in a real SC-1 run, T-2's agent waited for T-1 to land while T-1's agent waited for T-2. Both sat until the 600 s timeout, and both did it again after their lands failed: 10 of the run's 30 minutes. D-27 and D-95 left cycle detection to Phase 1, with timeouts as the backstop. In an A/B run, the backstop costs most of a scenario's time cap.
   - **What it does:** `wait.start` on a task follows the open task waits from the target, and refuses the wait (`conflict`) when the chain leads back to the waiting task. The agent is told that the other task already waits for its task, and to finish its part and say in its summary what the other needs. Task waits take a project-level waits lock first, so two waits that would close a cycle at the same moment can't both slip through.

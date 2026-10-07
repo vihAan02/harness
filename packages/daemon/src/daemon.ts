@@ -19,7 +19,7 @@ import { ServerLink } from './link.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
-import { renderMessage, renderTask, type MessageForAgent, type TaskForAgent } from './envelope.ts';
+import { renderMessage, renderTask, reopenedText, type MessageForAgent, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
 import {
   addIntegrationWorktree, advanceBase, blobsAt, changedBetween, deleteMergedBranch, diffExcerpt, mergeCommit, removeIntegrationWorktree,
@@ -187,7 +187,7 @@ export class Daemon {
     this.views.get(e.project_id)?.apply(e);
     if (replayed) return;
     this.o.onEvent?.(e);
-    if (e.kind === 'task.assigned' || e.kind === 'task.completed' || e.kind === 'task.abandoned') {
+    if (e.kind === 'task.assigned' || e.kind === 'task.reopened' || e.kind === 'task.completed' || e.kind === 'task.abandoned') {
       const taskId = (e.data as { task_id: string }).task_id;
       const next: Promise<void> = (this.lifecycles.get(taskId) ?? Promise.resolve())
         .then(() => this.lifecycle(e))
@@ -230,6 +230,7 @@ export class Daemon {
   /**
    * The task lifecycle on this device (D-54), for agents accountable to this daemon's human:
    * - assigned: create the worktree from the base branch's tip, run setup, start the agent;
+   * - reopened: start the agent again in the task's worktree, on its branch, with its human's message (D-107);
    * - completed: let the agent finish its turn, stop it, commit its work, free its ports (the worktree
    *   and branch stay for review; land is 0B);
    * - abandoned: stop the agent and remove the worktree.
@@ -250,6 +251,14 @@ export class Daemon {
       if (this.stopping) return;
       await this.startAgent(ws, ref, { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId });
       this.log(`${agent.name} started on ${taskId} in ${ws.worktree}`);
+    } else if (e.kind === 'task.reopened') {
+      if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      if (!fs.existsSync(this.worktreeOf(project.id, taskId))) throw new Error(`${taskId}'s worktree isn't on this device; it can't be reopened here`);
+      const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha: '', agentId: agent.id, reuse: true });
+      if (this.stopping) return;
+      const message = String((e.data as { text?: unknown }).text ?? '');
+      await this.startAgent(ws, ref, { id: task.id, title: task.title, text: reopenedText(task.text, message), scope: task.scope, ownerHumanId: task.ownerHumanId });
+      this.log(`${agent.name} started again on ${taskId} (reopened) in ${ws.worktree}`);
     } else if (e.kind === 'task.completed') {
       const run = this.running.get(taskId);
       if (run) {
@@ -340,8 +349,9 @@ export class Daemon {
   async deliverWait(run: RunningAgent, w: WaitInfo): Promise<void> {
     const id = `wait:${w.id}`;
     if (this.delivering.has(id) || this.delivered.has(id)) return;
-    // Resolved by wait.start itself (one transaction, one timestamp): the tool's result already said so.
-    if (w.outcome === 'resolved' && w.finishedAt === w.startedAt) return;
+    // Resolved by wait.start itself: the tool's result already said so. The server marks it, because the two
+    // events' times can differ, even across a millisecond (#70).
+    if (w.outcome === 'resolved' && w.immediate) return;
     await run.sync.running;
     if (run.sync.blocked || this.delivering.has(id) || this.delivered.has(id)) return; // delivered after the unblock (deliverPending)
     const text = renderMessage({ id, kind: 'wait_outcome', text: waitOutcomeText(w), fromTask: null, sender: { kind: 'harness' } });
@@ -754,19 +764,23 @@ export class Daemon {
    * Creates the task's worktree from its base commit, runs the approved setup command in the
    * sandbox, and allocates its ports and agent config dir (local-runtime §3 steps 1 and 2).
    */
-  async prepareTask(t: { projectId: string; taskId: string; baseSha: string; agentId: string }): Promise<TaskWorkspace> {
+  async prepareTask(t: { projectId: string; taskId: string; baseSha: string; agentId: string; reuse?: boolean }): Promise<TaskWorkspace> {
     const project = this.project(t.projectId);
     if (!TASK_ID.test(t.taskId)) throw new Error(`invalid task id: ${t.taskId}`);
     this.checkCapacity(this.config.limits.maxConcurrentAgents);
     const worktree = this.worktreeOf(t.projectId, t.taskId);
-    ensureDir(path.dirname(worktree));
-    const { branch } = await createWorktree(project.repo, worktree, t.taskId, t.baseSha);
-    await this.report(t.projectId, 'worktree.report', { task_id: t.taskId, event: 'created', path: worktree, branch, base_sha: t.baseSha });
+    let branch = taskBranch(t.taskId);
+    // A reopened task keeps its worktree, its branch and what setup already made there (D-107).
+    if (!t.reuse) {
+      ensureDir(path.dirname(worktree));
+      ({ branch } = await createWorktree(project.repo, worktree, t.taskId, t.baseSha));
+      await this.report(t.projectId, 'worktree.report', { task_id: t.taskId, event: 'created', path: worktree, branch, base_sha: t.baseSha });
+    }
 
     const repo = readRepoConfig(worktree);
     const policy = effectivePolicy(this.config, project, repo);
     this.checkCapacity(policy.maxConcurrentAgents);
-    if (repo.setup) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
+    if (repo.setup && !t.reuse) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
     const ports = await this.ports.allocate(t.taskId, policy.portsPerAgent);
     const configDir = agentConfigDir(this.home, t.agentId);
     const env = portEnv(ports);

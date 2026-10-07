@@ -92,6 +92,7 @@
 |---|---|---|---|
 | `agent.created` | 0A | n/a | `agent_principals` |
 | `task.created`, `task.assigned`, `task.completed`, `task.abandoned` | 0A | n/a (`task.assigned` starts a session; `task.completed` stops it, D-54) | `tasks` |
+| `task.reopened { task_id, assignee_agent_id, text, by }` | 0B | harnessd on the agent's device starts a new session in the task's worktree, on its branch, whose first message is the task and `text` (D-107) | `tasks` |
 | `device.online`, `device.offline` (a presence change only; heartbeats themselves log nothing, D-75), `session.started`, `session.status` (presence), `session.ended` (D-77) | 0A | n/a | `device_presence`, `devices`, `agent_sessions` |
 | `worktree.created`, `worktree.committed` (a finished task's commit, D-81), `worktree.removed` | 0A | n/a | n/a (log only) |
 | `claim.prospective`, `claim.observed`, `claim.cleared` | 0A | n/a | `claims` |
@@ -103,7 +104,7 @@
 | `readset.added` | 0B | n/a | `read_entries` |
 | `message.sent` with kind `dependency_changed` (`stage: in_progress \| landed`); `message.superseded` when a newer notice replaces an undelivered one (as built, D-91, D-92) | 0B | `dependency_changed` | `messages`, `dependency_notices` |
 | `worktree.synced`, `worktree.sync_conflict` | 0B | synced → the held `dependency_changed` (landed, with diff) is released; conflict → `task_blocked` to the agent + human | log only (D-53) |
-| `wait.started { wait_id, task_id, session_id, agent_id, on: {kind, id}, timeout_at }`, `wait.resolved { …, result }`, `wait.timed_out { … }`, `wait.cancelled { …, reason: task_done\|task_landed\|task_abandoned }` (`…` = `wait_id, task_id, agent_id, on`) | 0B | resolved/timed out → the outcome is pushed **to the waiter** as a new turn (D-95); timed out also → `task_blocked` (reason `wait_timed_out`) to the task's owner | `waits` (**contract: D-95**) |
+| `wait.started { wait_id, task_id, session_id, agent_id, on: {kind, id}, timeout_at }`, `wait.resolved { …, result, immediate? }` (`immediate: true` when `wait.start` resolved it itself: the tool's result says so, and no outcome is pushed), `wait.timed_out { … }`, `wait.cancelled { …, reason: task_done\|task_landed\|task_abandoned }` (`…` = `wait_id, task_id, agent_id, on`) | 0B | resolved/timed out → the outcome is pushed **to the waiter** as a new turn (D-95); timed out also → `task_blocked` (reason `wait_timed_out`) to the task's owner | `waits` (**contract: D-95**) |
 | `lease.granted { lease_id, task_id, path, token, expires_at, ttl_s, by, force }` (one per lease), `lease.renewed { task_id, leases[{lease_id, expires_at, ttl_s}] }`, `lease.expired { lease_id, task_id }` (logged lazily, the first time a lease command sees it), `lease.released { lease_id, task_id, reason: released\|landed\|revoked\|abandoned, by? }` | 0B | A refused acquire → `claim_conflict` to the requesting agent; a revoke (`--force`) → `claim_conflict` to the revoked lease's agent | `leases` (**contract: D-97**) |
 | `land.requested`, `land.accepted` (tokens OK; not yet landed), `land.rejected`, `land.progress`, `land.completed`, `land.failed` | 0B | **completed** → `dependency_changed` (stage landed) for affected agents; failed → shown to the human | `lands`, `tasks` (D-51, D-93) |
 | `checkpoint.pushed`, `pr.opened`, `merge.completed` (GitHub webhook) | 1 | `merge.completed` → `notice.dependency_changed` (landed) for affected agents (merge-impact) | log only |
@@ -119,6 +120,7 @@
 | `task.assign { task_id, assignee_agent_id }` | 0A | `harnessd` on the assignee's device starts a session (D-54) |
 | `task.complete { task_id, summary? }` | 0A | From the agent tool `report_done` (the assignee only) or the CLI `harness task done` → `task.completed { task_id, summary?, by }` |
 | `task.abandon { task_id, reason }` | 0A | CLI `harness task abandon` |
+| `task.reopen { task_id, text }` → `{ overlaps }` | 0B | CLI `harness task reopen`. A human sends a `done` task that hasn't landed back to its agent, with a message (≤ the task text's limit), say a failed land's output (D-107). Refused while a land of it is requested or accepted, or while its agent works on another task. The task goes back to `in_progress` and its scope is claimed again (`claim.prospective`); the old session isn't resumed |
 | ~~`device.heartbeat { device_id }`~~ | 0A | Superseded by D-75: presence is the `heartbeat` message (§2), not a command |
 | `worktree.report { task_id, event: created\|committed\|removed, path, branch?, commit? }` | 0A | `harnessd` only (a device connection) → `worktree.*` events. `committed` carries the commit harnessd made for a finished task (D-81) |
 | `setup.report { task_id, command_hash, event: approval_requested\|approved\|ran\|failed, exit_code? }` | 0A | `harnessd` only. Local approvals happen through `harness approve`; this only records them (D-52) |

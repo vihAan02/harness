@@ -48,10 +48,12 @@ test('waiting for an answer: resolved by the sweep once it arrives, or at once i
   assert.equal(await sweepWaits(db.pool), 1);
   const [resolved] = (await events(['wait.resolved'])).filter((e) => e.data.wait_id === w.wait_id);
   assert.deepEqual(resolved!.data, { wait_id: w.wait_id, task_id: a.task, agent_id: a.agent, on: { kind: 'answer', id: q }, result: { answer_id: ans } });
-  // Already answered: the wait starts and resolves in the same command.
+  // Already answered: the wait starts and resolves in the same command, marked immediate (#70); the sweep's isn't.
   const again = await a.wait({ kind: 'answer', id: q });
   assert.deepEqual([again.outcome, again.result], ['resolved', { answer_id: ans }]);
   assert.deepEqual(await ofWait(again.wait_id), ['wait.started', 'wait.resolved']);
+  const [immediate] = (await events(['wait.resolved'])).filter((e) => e.data.wait_id === again.wait_id);
+  assert.deepEqual(immediate!.data, { wait_id: again.wait_id, task_id: a.task, agent_id: a.agent, on: { kind: 'answer', id: q }, result: { answer_id: ans }, immediate: true });
   // A contract request is answered, and waited for, the same way (D-105).
   const c = res(await a.as('message.send', { kind: 'contract_request', to: 'agent/wb1', text: 'Define { token }.' })).message_id as string;
   const wc = await a.wait({ kind: 'answer', id: c }, 120);

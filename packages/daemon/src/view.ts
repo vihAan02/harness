@@ -44,6 +44,8 @@ export type LeaseInfo = {
 export type WaitInfo = {
   id: string; taskId: string; sessionId: string; agentId: string; on: { kind: string; id: string }; timeoutAt: string; startedAt: string;
   outcome: 'waiting' | 'resolved' | 'timed_out' | 'cancelled'; result?: Record<string, unknown>; reason?: string; finishedAt?: string;
+  /** Resolved by wait.start itself: the tool's result already said so (#70). */
+  immediate?: boolean;
 };
 export type OverlapInfo = { id: string; level: 'prospective' | 'observed'; paths: string[]; tasks: [string, string]; at: string };
 
@@ -95,6 +97,9 @@ export class ProjectView {
       case 'task.completed':
         this.patchTask(s('task_id'), { status: 'done', completedAt: e.at, ...(d.summary ? { summary: s('summary') } : {}) });
         this.claims.delete(s('task_id'));
+        break;
+      case 'task.reopened': // back to its agent after it was done, with its human's message (D-107)
+        this.patchTask(s('task_id'), { status: 'in_progress', completedAt: undefined });
         break;
       case 'task.abandoned':
         this.patchTask(s('task_id'), { status: 'abandoned', completedAt: e.at });
@@ -221,6 +226,7 @@ export class ProjectView {
           Object.assign(w, { outcome: e.kind.slice('wait.'.length), finishedAt: e.at });
           if (typeof d.result === 'object' && d.result) w.result = d.result as Record<string, unknown>;
           if (d.reason) w.reason = s('reason');
+          if (d.immediate === true) w.immediate = true;
         }
         break;
       }
