@@ -127,6 +127,15 @@ Run on the purpose-built benchmark repo ([above](#benchmark-repo-d-58)).
     - `runs/grade/<run-id>/`: main's tree as the run ended, without `.git`, with every file dated 2000-01-01, so nothing in it tells when the run ended. It's all the grader gets, handed over once in a pack, in shuffled order (B11), never as the live directory;
     - `runs/record/<run-id>/`: the coordinator's side (meta, event log, metrics, timeline). It's rebuilt from the database after the stop, so it includes what committed while harnessd was stopping.
   - **Dry runs:** `--dry --auto-land` runs scripted stand-ins that check the pipeline, not the tasks.
+- **The runner, baseline arm (B9b):** `node scripts/ab/run.ts --arm baseline --scenario SC-n --phrasing n --real --provider <name>`.
+  - **Before the clock:** a fresh clone at the tag. The runner creates two worktrees and branches and runs the setup command in each, as harnessd does, and gives each agent a port block.
+  - **The launch:** it opens two Terminal windows (`--launch terminal`, the default), each running A7's launcher with that agent's card as the first message. `--launch print` prints the two commands instead. No server and no harnessd run in this arm.
+  - **The console:**
+    - `merge <agent>` commits the agent's work and merges it into main in an integration worktree, runs the setup and test commands there under the land step's sandbox, and moves main only if the tests are green: the land step without its fencing check;
+    - `sync <agent>` merges main into the agent's branch;
+    - Enter starts and stops the M10 timer, `note` adds a note, and `stop` ends the run. The harness arm's console has the same timer, notes and `stop`.
+  - **What it saves, in both arms:** `summary.json`, the measurements both arms share (`scripts/ab/summary.ts`), plus `diffs/` and `transcripts/` for the judge. The baseline's M5, M7, M5b and M8 come from the agents' Claude Code transcripts, M8 priced from the same provider table as the harness arm's.
+  - **Dry runs and rehearsals:** `--dry --auto-land` (headless, the scripted model) and `--real --launch headless --auto-land`. The runner starts both CLIs in its own pseudo-terminals and merges each task once its agent's turn ends. A failed merge gets a sync and a fix request typed into the agent's terminal.
 
 **Runs:**
 - At least **3 paired runs per scenario per arm**: 5 scenarios × 3 runs × 2 arms = **30 runs minimum**.

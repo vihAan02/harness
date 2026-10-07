@@ -51,8 +51,11 @@ export type RunMetrics = {
   /** H-07: harness tools each agent used (unprompted use of ask/answer is the hypothesis). */
   shimCalls: Record<string, Record<string, number>>;
   overlaps: { observed: number; prospective: number };
-  /** The land step (0B): lands by outcome; M3 conflicting edits (land or sync conflicts); M9 test failures at a task's first land. */
-  lands: { completed: number; rejected: number; failed: Record<string, number>; conflicts: number; firstLandTestFailures: number };
+  /**
+   * The land step (0B): lands by outcome; M3's conflicts at integration (a land's merge); M9a, test failures at a
+   * task's first land. Sync conflicts during the run are a diagnostic, not M3: the baseline has no sync (validation.md §4).
+   */
+  lands: { completed: number; rejected: number; failed: Record<string, number>; conflicts: number; syncConflicts: number; firstLandTestFailures: number };
   /**
    * Stale-context notices (0B; P1 diagnostic): how many of each stage were sent and delivered, and how many
    * landed notices reached their reader before its task finished.
@@ -160,7 +163,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     bump(integrationActions.byKind, approval ? 'approval' : e.kind === 'land.failed' ? 'land.cancelled' : e.kind);
   }
 
-  const lands: RunMetrics['lands'] = { completed: 0, rejected: 0, failed: {}, conflicts: 0, firstLandTestFailures: 0 };
+  const lands: RunMetrics['lands'] = { completed: 0, rejected: 0, failed: {}, conflicts: 0, syncConflicts: 0, firstLandTestFailures: 0 };
   const firstLand = new Map<string, string>(); // task → outcome of its first land
   for (const e of events) {
     const d = data(e);
@@ -172,7 +175,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
       if (d.reason === 'conflict') lands.conflicts++;
       if (d.reason !== 'cancelled' && !firstLand.has(task)) firstLand.set(task, String(d.reason));
     }
-    if (e.kind === 'worktree.sync_conflict') lands.conflicts++;
+    if (e.kind === 'worktree.sync_conflict') lands.syncConflicts++;
   }
   lands.firstLandTestFailures = [...firstLand.values()].filter((r) => r === 'tests').length;
 
@@ -283,7 +286,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
       M4: 'semantic rework after integration: post-integration log (0B)',
       M6: 'stale-context incidents reaching integration: hidden checks plus diff review (0B A/B setup)',
       M10: 'human coordination time: the coordinator\'s timer, same method in both arms',
-      ...(landForm ? {} : { M3: 'conflicting edits: from the land step, once the run lands tasks', M9: 'failed tests at first integration: from the land step, once the run lands tasks' }),
+      ...(landForm ? {} : { M3: 'conflicts at integration: from the land step, once the run lands tasks', M9a: 'failed tests at first integration: from the land step, once the run lands tasks' }),
     },
   };
 }
@@ -309,8 +312,9 @@ export function renderMetrics(m: RunMetrics): string {
   lines.push(`H-07 harness tool use: ${Object.entries(m.shimCalls).map(([a, c]) => `${a}: ${Object.entries(c).map(([k, n]) => `${k} ${n}`).join(', ')}`).join('; ') || 'none'}`);
   lines.push(`    overlaps: ${m.overlaps.observed} while editing, ${m.overlaps.prospective} between scopes`);
   if (m.completionForm === 'landed') {
-    lines.push(`M3  conflicting edits: ${m.lands.conflicts} (land or sync conflicts)`);
-    lines.push(`M9  failed tests at first integration: ${m.lands.firstLandTestFailures}`);
+    lines.push(`M3  conflicts at integration: ${m.lands.conflicts} (lands; overlapping hunks are scored from the diffs)`);
+    if (m.lands.syncConflicts) lines.push(`    sync conflicts during the run: ${m.lands.syncConflicts} (a diagnostic, not M3)`);
+    lines.push(`M9a failed tests at first integration: ${m.lands.firstLandTestFailures}`);
     lines.push(`    lands: ${m.lands.completed} landed, ${m.lands.rejected} rejected by the fencing check, ${Object.entries(m.lands.failed).map(([k, n]) => `${n} failed (${k})`).join(', ') || '0 failed'}`);
   }
   const n = m.notices;
