@@ -148,14 +148,25 @@ export function harnessAttempts(view: ProjectView, ids: Map<string, string>): In
 }
 
 /**
+ * True when a failed `git merge-tree --write-tree` was a conflict: it exits 1 and still prints the merged tree's id
+ * first. It also exits 1 for a commit it can't merge, printing nothing, which must not pass for a conflict.
+ */
+export function mergeTreeConflicted(e: unknown): boolean {
+  const err = e as { status?: number; stdout?: string | Buffer };
+  return err.status === 1 && /^[0-9a-f]{40,64}$/.test(String(err.stdout ?? '').split('\n')[0]!.trim());
+}
+
+/**
  * What an integration of `head` into `base` tested, as a tree: the same merge harnessd's land and the baseline's
- * `merge` make (ort), without a worktree. Null if they conflict.
+ * `merge` make (ort), without a worktree. Null if they conflict; any other failure (an unknown commit, a Git
+ * without `--write-tree`) throws, so a missing tree is never mistaken for a conflict.
  */
 export function mergeTree(repo: string, base: string, head: string): string | null {
   try {
     return gitOut(repo, 'merge-tree', '--write-tree', '--no-messages', base, head).split('\n')[0]!.trim();
-  } catch {
-    return null; // exit 1: a conflict
+  } catch (e) {
+    if (mergeTreeConflicted(e)) return null;
+    throw e;
   }
 }
 

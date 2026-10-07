@@ -214,12 +214,28 @@ function saveGradeTree(repo: string, treeish: string, runId: string, first = fal
  * M6 "reached" at the affected task's first integration (validation.md §9): when that attempt merged cleanly
  * but failed its tests with task 1 already in, the merge it tested goes to the grader as <run-id>.first/.
  */
-function saveFirstAttemptTree(repo: string, runId: string, attempts: IntegrationAttempt[], rec: Recorder): boolean {
+/**
+ * M6 "reached" at integration (validation.md §9): the grader's second tree, the first red integration attempt of
+ * either task whose merge held both tasks' work. False when there's no such attempt; 'error' when there is one
+ * but its tree couldn't be rebuilt, logged and marked, so a missing tree is never taken for "no attempt".
+ */
+function saveFirstAttemptTree(repo: string, runId: string, attempts: IntegrationAttempt[], rec: Recorder): boolean | 'error' {
   const a = firstAttempt(CARD.scenario, attempts);
-  const tree = a && mergeTree(repo, a.base, a.head);
-  if (!tree) return false;
+  if (!a) return false;
+  let tree: string | null;
+  try {
+    tree = mergeTree(repo, a.base, a.head);
+  } catch (e) {
+    tree = null;
+    rec.log(`first_attempt_tree: ${(e as Error).message}`);
+  }
+  if (!tree) {
+    rec.mark('first_attempt_tree_error', { base: a.base, head: a.head });
+    rec.log(`NOT saved: grade/${runId}.first/: the first red integration (${a.base.slice(0, 12)} + ${a.head.slice(0, 12)}) couldn't be rebuilt. Tell the grader.`);
+    return 'error';
+  }
   saveGradeTree(repo, tree, runId, true);
-  rec.log(`saved: grade/${runId}.first/ (the affected task's failed first integration, for M6 "reached")`);
+  rec.log(`saved: grade/${runId}.first/ (the first red integration attempt that held both tasks' work, for M6 "reached")`);
   return true;
 }
 
