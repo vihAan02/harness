@@ -9,6 +9,8 @@ import type { Prices } from '../../packages/adapters/src/adapter.ts';
 
 type Entry = {
   type?: string; isMeta?: boolean; timestamp?: string; isSidechain?: boolean;
+  /** The CLI's own entries: a compaction's summary of the conversation so far, and other text shown only in the transcript. */
+  isCompactSummary?: boolean; isVisibleInTranscriptOnly?: boolean;
   message?: { id?: string; role?: string; model?: string; content?: unknown; usage?: Record<string, number> };
 };
 type Block = { type?: string; text?: string; content?: unknown; is_error?: boolean };
@@ -47,7 +49,8 @@ export function readTranscript(lines: string[]): TranscriptFacts {
     if (e.isSidechain) continue; // a subagent's own conversation: its usage is in its parent's tool result too
     if (e.type === 'assistant' && e.message?.usage && e.message.model) {
       usage.set(e.message.id ?? `${usage.size}`, { model: e.message.model, u: e.message.usage });
-    } else if (e.type === 'user' && !e.isMeta && e.message) {
+    } else if (e.type === 'user' && !e.isMeta && !e.isCompactSummary && !e.isVisibleInTranscriptOnly && e.message) {
+      // A compaction's summary is a user entry with no isMeta (the pinned CLI): the CLI wrote it, not the human (M5).
       const bs = blocks(e.message.content);
       for (const b of bs) {
         if (b.type === 'tool_result' && b.is_error && DENIED.test(typeof b.content === 'string' ? b.content : textOf(blocks(b.content)))) out.denied++;
