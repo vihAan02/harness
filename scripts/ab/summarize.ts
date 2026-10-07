@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ProjectView, RunMetrics } from '../../packages/daemon/src/index.ts';
+import { commitAll } from '../../packages/daemon/src/git.ts';
 import type { RunSummary } from './summary.ts';
 import { transcriptFiles } from './transcripts.ts';
 
@@ -44,6 +45,28 @@ export function independentTip(repo: string, baseSha: string, commit: string): s
 }
 
 const DIFF = ['diff', '--no-color', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/'];
+
+/**
+ * Each task's last commit, for its diffs. harnessd commits a task's work only when the task is done, so the work
+ * an unfinished task (capped, stopped, or reopened and not done again) left in its worktree is committed first,
+ * as the baseline runner does with its agents' leftovers. The branch's tip then also holds the task's sync merges.
+ * A task whose branch is gone (landed, and deleted) keeps its last committed work; one never started has none.
+ */
+export async function finalCommits(
+  repo: string, tasks: { key: string; branch: string | null; worktree: string | null; committed: string | null }[], author: { name: string; email: string },
+): Promise<{ key: string; commit: string | null }[]> {
+  const out: { key: string; commit: string | null }[] = [];
+  for (const t of tasks) {
+    // Fails only with a merge left unresolved in the worktree, which is never committed as the agent's work.
+    if (t.worktree && fs.existsSync(t.worktree)) await commitAll(t.worktree, `Left at the end of the run\n\nAB-Task: ${t.key}`, author).catch(() => null);
+    let tip: string | null = null;
+    if (t.branch) {
+      try { tip = gitOut(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${t.branch}^{commit}`).trim() || null; } catch { tip = null; }
+    }
+    out.push({ key: t.key, commit: tip ?? t.committed });
+  }
+  return out;
+}
 
 /**
  * The patches the judge and the scorer read (scripts/ab/summary.ts): for each task, diffs/<task>.patch from the
@@ -148,14 +171,25 @@ export function harnessAttempts(view: ProjectView, ids: Map<string, string>): In
 }
 
 /**
+ * True when a failed `git merge-tree --write-tree` was a conflict: it exits 1 and still prints the merged tree's id
+ * first. It also exits 1 for a commit it can't merge, printing nothing, which must not pass for a conflict.
+ */
+export function mergeTreeConflicted(e: unknown): boolean {
+  const err = e as { status?: number; stdout?: string | Buffer };
+  return err.status === 1 && /^[0-9a-f]{40,64}$/.test(String(err.stdout ?? '').split('\n')[0]!.trim());
+}
+
+/**
  * What an integration of `head` into `base` tested, as a tree: the same merge harnessd's land and the baseline's
- * `merge` make (ort), without a worktree. Null if they conflict.
+ * `merge` make (ort), without a worktree. Null if they conflict; any other failure (an unknown commit, a Git
+ * without `--write-tree`) throws, so a missing tree is never mistaken for a conflict.
  */
 export function mergeTree(repo: string, base: string, head: string): string | null {
   try {
     return gitOut(repo, 'merge-tree', '--write-tree', '--no-messages', base, head).split('\n')[0]!.trim();
-  } catch {
-    return null; // exit 1: a conflict
+  } catch (e) {
+    if (mergeTreeConflicted(e)) return null;
+    throw e;
   }
 }
 
