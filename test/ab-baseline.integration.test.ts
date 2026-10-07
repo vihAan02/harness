@@ -16,7 +16,8 @@ import { runBaseline } from '../scripts/ab/baseline-arm.ts';
 import { CoordinatorConsole } from '../scripts/ab/console.ts';
 import { Recorder } from '../scripts/ab/recorder.ts';
 import { checkSummary } from '../scripts/ab/summary.ts';
-import { commitsAfterFirst, firstAttempt, harnessAttempts, independentTip, mergeTree, surfaced, untestedRetry, writeDiffs } from '../scripts/ab/summarize.ts';
+import { commitsAfterFirst, conflictedTasks, firstAttempt, harnessAttempts, harnessSummary, independentTip, mergeTree, surfaced, untestedRetry, writeDiffs } from '../scripts/ab/summarize.ts';
+import { computeMetrics } from '../packages/daemon/src/metrics.ts';
 import { readTranscript, transcriptUsage } from '../scripts/ab/transcripts.ts';
 
 const t = tempDir('ab-baseline');
@@ -71,29 +72,43 @@ test('a transcript gives the human\'s messages after the card, interrupts, denie
   assert.equal(u.cost_usd, (300 * 1 + 50 * 10 + 40 * 0.1 + 20 * 1) / 1e6, 'priced from the provider table, as the harness arm is');
 });
 
-test('P1\'s "surfaced": a notice naming a planted file, delivered before the affected task is done; nothing for SC-0 and SC-4', () => {
+test('P1\'s "surfaced": task 1\'s notice or message naming a planted file, delivered after its first edit there and before the affected task is done', () => {
   let seq = 0;
   const ev = (kind: string, data: Record<string, unknown>, at: number): EventMessage =>
     ({ v: 1, type: 'event', project_id: 'p', seq: ++seq, at: new Date(1_000_000 + at * 1000).toISOString(), actor: { principal: 'x', on_behalf_of: null, device_id: null }, kind, data } as EventMessage);
   const ids = new Map([['T1', 'T-1'], ['T2', 'T-2']]);
-  const build = (noticeAt: number, path: string, o: { delivered?: boolean; synced?: boolean } = {}) => {
+  type O = { delivered?: boolean; synced?: boolean; kind?: string; writer?: string; fromTask?: string; editAt?: number; editPath?: string };
+  const build = (noticeAt: number, path: string, o: O = {}) => {
     const v = new ProjectView('p');
-    v.apply(ev('task.created', { task_id: 'T-2', title: 'Front', scope: [], owner_human_id: 'h' }, 0));
+    for (const id of ['T-1', 'T-2']) v.apply(ev('task.created', { task_id: id, title: id, scope: [], owner_human_id: 'h' }, 0));
+    // Task 1's first edit of a planted file opens the window.
+    v.apply(ev('claim.observed', { task_id: 'T-1', session_id: 's1', paths: [o.editPath ?? 'src/shared/types.ts'], source: 'hook' }, o.editAt ?? 5));
     if (o.synced) v.apply(ev('worktree.synced', { task_id: 'T-2', old_base_sha: 'a'.repeat(40), new_base_sha: 'b'.repeat(40), changed_paths: [path] }, noticeAt - 2));
-    v.apply(ev('message.sent', { message_id: 'm1', kind: 'dependency_changed', from: 'harness', to: 'agent_f', to_task_id: 'T-2', paths: [path], text: 'x', priority: 'high' }, noticeAt - 1));
+    const kind = o.kind ?? 'dependency_changed';
+    const sent = kind === 'dependency_changed'
+      ? { kind, from: 'harness', paths: [path], writer_task: o.writer ?? 'T-1', stage: 'in_progress' }
+      : o.fromTask ? { kind, from: 'agent_b', from_task_id: o.fromTask, about_paths: [path] } : { kind, from: 'harness', paths: [path] };
+    v.apply(ev('message.sent', { message_id: 'm1', to: 'agent_f', to_task_id: 'T-2', text: 'x', priority: 'high', ...sent }, noticeAt - 1));
     if (o.delivered !== false) v.apply(ev('message.delivered', { message_id: 'm1', delivery: 'between_tools', delivered_at: new Date(1_000_000 + noticeAt * 1000).toISOString() }, noticeAt));
     v.apply(ev('task.completed', { task_id: 'T-2', by: 'agent_f' }, 20));
     return v;
   };
-  assert.deepEqual(surfaced(build(10, 'src/shared/types.ts'), 'SC-1', ids), { planted: 1, surfaced: 1 });
-  assert.deepEqual(surfaced(build(30, 'src/shared/types.ts'), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'delivered after the task was done');
+  const types = 'src/shared/types.ts';
+  assert.deepEqual(surfaced(build(10, types), 'SC-1', ids), { planted: 1, surfaced: 1 }, 'a notice from task 1\'s writes');
+  assert.deepEqual(surfaced(build(30, types), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'delivered after the task was done');
   assert.deepEqual(surfaced(build(10, 'README.md'), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'not a planted file');
   assert.deepEqual(surfaced(build(10, 'src/server/migrations/004_status.sql'), 'SC-3', ids), { planted: 1, surfaced: 1 }, 'a directory matches what is in it');
-  assert.equal(surfaced(build(10, 'src/shared/types.ts'), 'SC-4', ids), null);
-  assert.equal(surfaced(build(10, 'src/shared/types.ts'), 'SC-0', ids), null);
-  // A sync merges code without telling the agent anything; a notice never delivered told it nothing (§9).
-  assert.deepEqual(surfaced(build(10, 'src/shared/types.ts', { synced: true, delivered: false }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'a sync alone, and a notice never delivered');
-  assert.deepEqual(surfaced(build(10, 'src/shared/types.ts', { synced: true }), 'SC-1', ids), { planted: 1, surfaced: 1 }, 'the notice still counts beside a sync');
+  assert.equal(surfaced(build(10, types), 'SC-4', ids), null);
+  assert.equal(surfaced(build(10, types), 'SC-0', ids), null);
+  // What doesn't count (validation.md §9).
+  assert.deepEqual(surfaced(build(10, types, { synced: true, delivered: false }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'a sync alone, and a notice never delivered');
+  assert.deepEqual(surfaced(build(10, types, { synced: true }), 'SC-1', ids), { planted: 1, surfaced: 1 }, 'the notice still counts beside a sync');
+  assert.deepEqual(surfaced(build(10, types, { kind: 'claim_conflict' }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'harnessd\'s claim_conflict on the scopes');
+  assert.deepEqual(surfaced(build(10, types, { writer: 'T-9' }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'a notice about another task\'s writes');
+  assert.deepEqual(surfaced(build(10, types, { editAt: 12 }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'delivered before task 1 had edited a planted file');
+  assert.deepEqual(surfaced(build(10, types, { editPath: 'README.md' }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'task 1 never edited a planted file');
+  assert.deepEqual(surfaced(build(10, types, { kind: 'contract_request', fromTask: 'T-1' }), 'SC-1', ids), { planted: 1, surfaced: 1 }, 'a message from task 1\'s agent');
+  assert.deepEqual(surfaced(build(10, types, { kind: 'contract_request', fromTask: 'T-2' }), 'SC-1', ids), { planted: 1, surfaced: 0 }, 'not from task 1');
 });
 
 test('D-124: in SC-1 to SC-3 only the first task\'s first integration, failed on its tests, is retried untested', () => {
@@ -105,7 +120,7 @@ test('D-124: in SC-1 to SC-3 only the first task\'s first integration, failed on
   assert.equal(untestedRetry('SC-1', { ...base, testsFailed: false }), false, 'a conflict or another failure goes back to its agent');
 });
 
-test('M6 "reached" at the first integration: the affected task\'s first attempt, merged cleanly but red, after task 1 was in', () => {
+test('M6 "reached" at integration: the first attempt of either task whose merge held both tasks\' work, merged cleanly but red', () => {
   let seq = 0;
   const ev = (kind: string, data: Record<string, unknown>): EventMessage =>
     ({ v: 1, type: 'event', project_id: 'p', seq: ++seq, at: new Date(1_000_000 + seq * 1000).toISOString(), actor: { principal: 'x', on_behalf_of: null, device_id: null }, kind, data } as EventMessage);
@@ -126,10 +141,47 @@ test('M6 "reached" at the first integration: the affected task\'s first attempt,
   assert.deepEqual(red.map((a) => [a.task, a.outcome]), [['T1', 'merged'], ['T2', 'tests_failed'], ['T2', 'merged']]);
   assert.deepEqual(firstAttempt('SC-1', red), { base: sha('2'), head: sha('b') }, 'T2\'s first land, after T1 landed');
   assert.equal(firstAttempt('SC-0', red), null, 'no planted coupling');
-  assert.equal(firstAttempt('SC-1', run([['T-2', 'l1', 'tests'], ['T-1', 'l2', null]])), null, 'task 1 wasn\'t in yet');
+  assert.equal(firstAttempt('SC-1', run([['T-2', 'l1', 'tests'], ['T-1', 'l2', null]])), null, 'the other task wasn\'t in yet');
+  assert.deepEqual(firstAttempt('SC-1', run([['T-2', 'l1', null], ['T-1', 'l2', 'tests']])), { base: sha('2'), head: sha('b') }, 'the other finishing order: task 2 in first, task 1 red on top of it');
   assert.equal(firstAttempt('SC-1', run([['T-1', 'l1', null], ['T-2', 'l2', 'conflict']])), null, 'a conflict leaves no merge result');
   assert.equal(firstAttempt('SC-1', run([['T-1', 'l1', null], ['T-2', 'l2', null]])), null, 'green at the first attempt');
   assert.equal(firstAttempt('SC-1', run([['T-1', 'l1', null], ['T-2', 'l2', 'error']])), null, 'not a test failure');
+});
+
+test('M3\'s conflicts: each task once, whether its first conflict came at a sync or at a land', () => {
+  let seq = 0;
+  const ev = (kind: string, data: Record<string, unknown>): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'p', seq: ++seq, at: new Date(1_000_000 + seq * 1000).toISOString(), actor: { principal: 'x', on_behalf_of: null, device_id: null }, kind, data } as EventMessage);
+  const v = new ProjectView('p');
+  v.apply(ev('worktree.sync_conflict', { task_id: 'T-2', conflict_paths: ['a.ts'] }));
+  v.apply(ev('worktree.sync_conflict', { task_id: 'T-2', conflict_paths: ['a.ts'] }));
+  v.apply(ev('land.failed', { land_id: 'l1', task_id: 'T-2', reason: 'conflict' }));
+  v.apply(ev('land.failed', { land_id: 'l2', task_id: 'T-1', reason: 'tests' }));
+  v.apply(ev('land.failed', { land_id: 'l3', task_id: 'T-9', reason: 'conflict' }));
+  assert.equal(conflictedTasks(v, ['T-1', 'T-2']), 1, 'T-2 once; T-1\'s red tests aren\'t a conflict; T-9 isn\'t a card\'s task');
+  v.apply(ev('land.failed', { land_id: 'l4', task_id: 'T-1', reason: 'conflict' }));
+  assert.equal(conflictedTasks(v, ['T-1', 'T-2']), 2);
+});
+
+test('the harness summary\'s M1 starts when both agents have started work, after worktrees and setup, as the baseline\'s clock does', () => {
+  const root = path.join(t.dir, 'm1-start');
+  const { repo, sha } = makeRepo(root, { 'a.txt': 'a\n' });
+  let seq = 0;
+  const ev = (kind: string, data: Record<string, unknown>, at: number): EventMessage =>
+    ({ v: 1, type: 'event', project_id: 'p', seq: ++seq, at: new Date(1_000_000 + at * 1000).toISOString(), actor: { principal: 'x', on_behalf_of: null, device_id: null }, kind, data } as EventMessage);
+  const v = new ProjectView('p');
+  for (const id of ['T-1', 'T-2']) v.apply(ev('task.assigned', { task_id: id, agent_id: `agent_${id}` }, 0));
+  v.apply(ev('session.started', { session_id: 's1', task_id: 'T-1', agent_id: 'agent_T-1', device_id: 'd', worktree: '/w1' }, 5));
+  v.apply(ev('session.started', { session_id: 's2', task_id: 'T-2', agent_id: 'agent_T-2', device_id: 'd', worktree: '/w2' }, 8));
+  v.apply(ev('session.started', { session_id: 's3', task_id: 'T-2', agent_id: 'agent_T-2', device_id: 'd', worktree: '/w2' }, 25)); // a reopen's session: not the start
+  v.apply(ev('land.completed', { land_id: 'l1', task_id: 'T-1', old_base_sha: sha, new_base_sha: sha, changed_paths: [] }, 20));
+  v.apply(ev('land.completed', { land_id: 'l2', task_id: 'T-2', old_base_sha: sha, new_base_sha: sha, changed_paths: [] }, 30));
+  const s = harnessSummary({
+    runId: 'r-x', scenario: 'SC-0', phrasing: 1, outcome: 'integrated', capMs: 1_800_000, startedAt: new Date(1_000_000).toISOString(), endedAt: new Date(1_031_000).toISOString(),
+    view: v, metrics: computeMetrics(v), ids: new Map([['T1', 'T-1'], ['T2', 'T-2']]), runnerCancels: 0, m10Ms: 0, repo, baseSha: sha, mainSha: sha,
+    tasks: [{ key: 'T1', agent: 'a' }, { key: 'T2', agent: 'b' }],
+  });
+  assert.equal(s.m1_ms, 22_000, 'from the later first session start (8 s) to the last land (30 s), not from the assignment');
 });
 
 test('mergeTree is the merge the land step makes; a conflict gives none', () => {
