@@ -55,6 +55,19 @@ type Agent = {
 const COORDINATOR = { name: 'Coordinator', email: 'coordinator@harness.invalid' };
 
 /**
+ * Each task's `done_at` in the baseline (D-125): the start of its first `merge`, since the coordinator integrates a
+ * task as soon as its agent finishes; there's no done report of its own. Later than the agent's real finish by the
+ * coordinator's reaction time, which errs toward the baseline. Times are the recorder's, from `t0`.
+ */
+export function baselineDoneAt(marks: { what: string; task?: string; detail?: Record<string, unknown> }[], t0: number): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of marks) {
+    if (m.what === 'integration' && m.task && !out.has(m.task) && Number.isFinite(Number(m.detail?.start))) out.set(m.task, new Date(t0 + Number(m.detail!.start)).toISOString());
+  }
+  return out;
+}
+
+/**
  * Where an agent's files go: inside the harness home, which its read policy denies except for its own worktree
  * (D-98), as harnessd places a harness agent's worktree and a land's integration worktree. A run's temp root
  * isn't denied, so a worktree or card there would be readable from the other agent's session.
@@ -367,6 +380,7 @@ export async function runBaseline(b: BaselineInput): Promise<{
   const merged = agents.map((a) => a.integratedAt).filter((x): x is number => x !== null).sort((x, y) => x - y);
   const allIn = merged.length === agents.length;
   const integrations = marks.filter((m) => m.what === 'integration');
+  const doneAt = baselineDoneAt(marks, rec.t0);
   const model = b.provider ? `${b.provider.model?.id ?? 'vendor default'}${b.provider.name ? ` (${b.provider.name})` : ''}` : 'scripted';
   return {
     outcome, agents: agents.map((a) => ({ name: a.task.agent, configDir: a.configDir })), commits,
@@ -391,7 +405,10 @@ export async function runBaseline(b: BaselineInput): Promise<{
       m9a: integrations.filter((m) => m.detail?.outcome === 'tests_failed' && m.detail.first === true).length,
       m10_ms: b.console?.m10Ms() ?? 0,
       surfaced: null, base_sha: baseSha, main_sha: mainSha,
-      tasks: agents.map((a) => ({ key: a.task.key, agent: a.task.agent, branch: a.branch, integrated_at: a.integratedAt === null ? null : new Date(rec.t0 + a.integratedAt).toISOString() })),
+      tasks: agents.map((a) => ({
+        key: a.task.key, agent: a.task.agent, branch: a.branch, done_at: doneAt.get(a.task.key) ?? null,
+        integrated_at: a.integratedAt === null ? null : new Date(rec.t0 + a.integratedAt).toISOString(),
+      })),
     },
   };
 }

@@ -20,7 +20,7 @@ function summary(o: Partial<RunSummary> & Pick<RunSummary, 'run_id' | 'arm' | 's
     started_at: '2026-10-05T10:00:00.000Z', ended_at: '2026-10-05T10:10:00.000Z', m1_ms: 600_000, m3_conflicts: 0, sync_conflicts: 0,
     m4: { commits_after_first: 0, ms_to_green: null }, m5: 0, m5b: 0, m5c: 2, m7: {}, m8: { input: 1000, output: 100, cache_read: 0, cache_creation: 0, cost_usd: 0.01 },
     m9a: 0, m10_ms: 60_000, surfaced: null, base_sha: 'b'.repeat(40), main_sha: 'c'.repeat(40),
-    tasks: [{ key: 'T1', agent: 'backend', branch: 't1', integrated_at: null }, { key: 'T2', agent: 'frontend', branch: 't2', integrated_at: null }],
+    tasks: [{ key: 'T1', agent: 'backend', branch: 't1', done_at: null, integrated_at: null }, { key: 'T2', agent: 'frontend', branch: 't2', done_at: null, integrated_at: null }],
     ...o,
   };
 }
