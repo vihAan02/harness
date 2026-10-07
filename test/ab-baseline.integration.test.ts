@@ -12,7 +12,7 @@ import type { EventMessage } from '../packages/protocol/src/index.ts';
 import { startMock } from '../packages/adapters/test/mock-api.ts';
 import { parseConfig, ProjectView } from '../packages/daemon/src/index.ts';
 import { gitIn, makeRepo, tempDir, tempHome, TOKEN } from '../packages/daemon/test/fixtures.ts';
-import { runBaseline } from '../scripts/ab/baseline-arm.ts';
+import { runBaseline, syncTheirs } from '../scripts/ab/baseline-arm.ts';
 import { CoordinatorConsole } from '../scripts/ab/console.ts';
 import { Recorder } from '../scripts/ab/recorder.ts';
 import { checkSummary } from '../scripts/ab/summary.ts';
@@ -182,6 +182,35 @@ test('the harness summary\'s M1 starts when both agents have started work, after
     tasks: [{ key: 'T1', agent: 'a' }, { key: 'T2', agent: 'b' }],
   });
   assert.equal(s.m1_ms, 22_000, 'from the later first session start (8 s) to the last land (30 s), not from the assignment');
+});
+
+test('a sync conflict, step 7: main\'s side wins every conflicting hunk, the agent\'s other work stays, and the merge is its first sync', async () => {
+  const root = path.join(t.dir, 'sync-theirs');
+  const { repo, sha } = makeRepo(root, { 'a.txt': 'one\ntwo\n', 'b.txt': 'b\n', 'c.txt': 'c\n' });
+  const wt = path.join(root, 'agent-wt');
+  gitIn(repo, 'worktree', 'add', '-q', '-b', 'agent', wt, sha);
+  fs.writeFileSync(path.join(wt, 'a.txt'), 'ONE (agent)\ntwo\n'); // conflicts with main's line 1
+  fs.writeFileSync(path.join(wt, 'b.txt'), 'b (agent)\n'); // no conflict: stays
+  gitIn(repo, 'switch', '-q', 'main');
+  fs.writeFileSync(path.join(repo, 'a.txt'), 'ONE (main)\ntwo\n');
+  gitIn(repo, 'commit', '-q', '-am', 'main: line 1');
+  const author = { name: 'Coordinator', email: 'coordinator@harness.invalid' };
+  const r = await syncTheirs(wt, gitIn(repo, 'rev-parse', 'main'), author);
+  assert.deepEqual(r, { replaced: ['a.txt'] });
+  assert.equal(fs.readFileSync(path.join(wt, 'a.txt'), 'utf8'), 'ONE (main)\ntwo\n', 'main\'s side won the conflicting hunk');
+  assert.equal(fs.readFileSync(path.join(wt, 'b.txt'), 'utf8'), 'b (agent)\n', 'the agent\'s other work stays');
+  const head = gitIn(wt, 'rev-parse', 'HEAD');
+  assert.equal(gitIn(wt, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ').length, 3, 'a merge commit');
+  assert.notEqual(independentTip(repo, sha, head), head, 'M3\'s independent diff stops before it, as at any sync');
+  // Negative control: a modify/delete conflict even main-wins merging can't settle leaves the branch as it was.
+  fs.writeFileSync(path.join(wt, 'c.txt'), 'c (agent)\n');
+  gitIn(wt, 'commit', '-q', '-am', 'agent: c');
+  gitIn(repo, 'rm', '-q', 'c.txt');
+  gitIn(repo, 'commit', '-q', '-m', 'main: drop c');
+  const before = gitIn(wt, 'rev-parse', 'HEAD');
+  assert.equal(await syncTheirs(wt, gitIn(repo, 'rev-parse', 'main'), author), null);
+  assert.equal(gitIn(wt, 'rev-parse', 'HEAD'), before, 'the branch is unchanged');
+  assert.equal(gitIn(wt, 'status', '--porcelain'), '', 'no merge left half done');
 });
 
 test('mergeTree is the merge the land step makes; a conflict gives none', () => {

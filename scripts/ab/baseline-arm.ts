@@ -51,6 +51,28 @@ type Agent = {
 };
 
 const COORDINATOR = { name: 'Coordinator', email: 'coordinator@harness.invalid' };
+
+/**
+ * §9 step 7, a sync conflict: main merged into an agent's branch with main's side winning every conflicting
+ * hunk (`-X theirs`), after its work in progress is committed. The other task's integrated work stays whole and
+ * the agent redoes its own part; nobody writes code. Returns the files whose hunks main's side replaced, or
+ * null if even that merge fails (a modify/delete conflict, say), which leaves the branch as it was.
+ */
+export async function syncTheirs(worktree: string, target: string, author: { name: string; email: string }): Promise<{ replaced: string[] } | null> {
+  const g = (...args: string[]) => execFileSync('git', ['-C', worktree, '-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`, ...args], { encoding: 'utf8' }).trim();
+  await commitAll(worktree, 'Work in progress before sync', author);
+  // The files both sides changed since they parted: where main's side may have won.
+  const base = g('merge-base', 'HEAD', target);
+  const ours = new Set(g('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean));
+  const both = g('diff', '--name-only', base, target).split('\n').filter((f) => f && ours.has(f));
+  try {
+    g('merge', '--no-ff', '--no-edit', '-X', 'theirs', '-m', 'Sync with main (main\'s side wins conflicting hunks)', target);
+  } catch {
+    try { g('merge', '--abort'); } catch {}
+    return null;
+  }
+  return { replaced: both.sort() };
+}
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 /** Runs a command in a pseudo-terminal, copying its screen to a log and our stdin to it (text the runner types). */
@@ -223,9 +245,14 @@ export async function runBaseline(b: BaselineInput): Promise<{
       await removeIntegrationWorktree(repo, dir).catch(() => {});
     }
   };
-  /** `sync <agent>`: main into the agent's branch, so it has what's already integrated (harnessd's sync). */
-  const sync = async (a: Agent): Promise<string> => {
+  /** `sync <agent> [--theirs]`: main into the agent's branch, so it has what's already integrated (harnessd's sync). */
+  const sync = async (a: Agent, o: { theirs: boolean } = { theirs: false }): Promise<string> => {
     actions++;
+    if (o.theirs) {
+      const r = await syncTheirs(a.worktree, await branchTip(repo, 'main'), COORDINATOR);
+      mark('sync', a, r ? { outcome: 'synced', theirs: true, replaced: r.replaced } : { outcome: 'conflict', theirs: true });
+      return r ? `synced, main's side winning conflicting hunks; tell the agent which of its files may have lost hunks: ${r.replaced.join(', ') || 'none'}` : 'even main-wins merging fails here; the branch is unchanged';
+    }
     const r = await syncWorktree({ worktree: a.worktree, target: await branchTip(repo, 'main'), taskId: a.task.key, agent: COORDINATOR });
     mark('sync', a, r.ok ? { outcome: 'synced', changed: r.changed } : { outcome: 'conflict', conflicts: r.conflicts });
     return r.ok ? (r.changed.length ? `synced: ${r.changed.length} file(s) from main` : 'already up to date') : `conflicts in ${r.conflicts.join(', ')}; the branch is unchanged`;
@@ -239,7 +266,13 @@ export async function runBaseline(b: BaselineInput): Promise<{
         return merge(byName(words.filter((w) => w !== '--no-tests').join(' ')), { tests: !noTests });
       },
     };
-    b.console.commands.sync = { usage: '<agent>', run: (args) => sync(byName(args)) };
+    b.console.commands.sync = {
+      usage: '<agent> [--theirs]',
+      run: (args) => {
+        const words = args.trim().split(/\s+/);
+        return sync(byName(words.filter((w) => w !== '--theirs').join(' ')), { theirs: words.includes('--theirs') });
+      },
+    };
     rec.log(`baseline: ${b.console.help()}`);
   }
 
