@@ -1218,35 +1218,41 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Hidden checks:** a private repo that only the grader reads (D-94). A self-test proves that each scenario's checks pass on a reference integration and catch the planted failure in a stale-context one.
   - *Why:* every coupling comes from a natural feature request on Shelf, so the agents meet it while doing ordinary work, and the checks test behaviour on real API data rather than the exact code.
   - *Source:* 0B item 9, Q-02, D-58, S10. *Status:* Proposal (frozen with the `ab-v1` tag).
-- **D-121 The protocol and parameters for the counted A/B runs (B10; validation.md §9). Written by stream A, which took B10 over for the night of 2026-10-05 (S12); revised by stream B on 2026-10-06 with the owner's decisions D-122 to D-124 (S13) and the B10 reviews.**
+- **D-121 The protocol and parameters for the counted A/B runs (B10; validation.md §9). Written by stream A, which took B10 over for the night of 2026-10-05 (S12); revised by stream B on 2026-10-06 with the owner's decisions D-122 to D-124 (S13), and again (revision 2) after Daniyal's review of the first revision (S15, D-125).**
   - **Parameters, the same in both arms:**
     - the model is D-104's: `deepseek/deepseek-v4.1-flash` on `parasail/fp8`;
     - a 30-minute time cap, raised to 45 before the freeze if a dry run needs more than 20;
-    - a $2 per-session budget in the harness arm, as a runaway stop. Reaching it stops that session, and the run is scored as it stands, never voided: only the harness arm has the stop, so a void would re-draw only that arm's failures;
+    - a $2 per-session budget in the harness arm, as a runaway stop. Reaching it stops that session, and the run is scored as it stands;
     - the harness as tagged `ab-v1`, with `harness task reopen` (D-122) and wait-cycle refusal (D-123);
     - fresh state per run (its own `HARNESS_HOME`, and the baseline's own Claude Code config directory), and each agent's first message is its card's phrasing, verbatim;
     - one machine; Daniyal coordinates and Vihaan grades (D-94);
-    - the judge for M2 and M6 is `anthropic/claude-sonnet-5.5` through OpenRouter, at temperature 0, with a spot check of at least 20% of runs.
+    - the judge for M2 and M6 is `anthropic/claude-sonnet-5.5` through OpenRouter, at temperature 0, with a spot check of at least 20% of runs, re-judged after grading.
   - **Run order:** rounds by pair, scenarios in a fixed order. Within a pair the two runs are back to back, and the harness arm goes first when the scenario number plus the pair number is even.
-  - **Void runs:** rerun only for machinery failures, a session on another model, or a playbook break noted when it happened; never for a result. Both owners decide each void after the sitting, before grades are joined to the records.
+  - **Failures:**
+    - a failure only the harness arm can have (harnessd, the server, Postgres) is scored as it stands, like a budget stop, never voided;
+    - a run is void only for failures both arms are exposed to, a session on another model, or a playbook break noted when it happened, never for a result;
+    - a void re-runs the whole pair; both owners decide each void before grades are joined;
+    - a harness fix mid-study means a new tag and a restart.
   - **The coordinator's playbook:**
-    - the same triggers for stepping in, in both arms. An agent counts as idle after 5 minutes with no tool call, no output and no open wait;
+    - the same triggers for stepping in, and the same limits, in both arms: never write code, never diff branches or read code, answer only from what the agents have shown. An agent counts as idle after 5 minutes with no tool call, no output and no open wait;
     - integration in finishing order, through `harness land` or the runner's `merge`, which runs the same test command;
     - coupled changes (SC-1 to SC-3): if the first task's first integration fails, it's integrated again with tests skipped (D-124);
     - any other failed integration goes back to its agent: `harness task reopen` in the harness arm (D-122), its terminal in the baseline;
-    - a fixed relay rule for the baseline: relay contract changes named in a finishing agent's summary, never by reading code;
+    - a sync conflict, in either arm: main is merged in with main's side winning every conflicting hunk; the coordinator writes no code;
+    - a fixed relay rule for the baseline: relay contract changes named in a finishing agent's summary;
     - the M10 timer in the runner's console, the same in both arms.
   - **The rubric** for M2, M6, M1, M4, M5, M7 and M8, and P1's "surfaced". Changes to how metrics are measured:
-    - **M3 and M9** are now measured the same way in both arms. M3's overlapping hunks compare each task's independent diff (up to its first sync).
-    - **Sync conflicts** aren't M3, because the baseline has no sync.
+    - **M3:** each task's first textual conflict with the other's integrated work counts once, at a sync or an integration, in both arms. Its overlapping hunks compare each task's independent diff (up to its first sync).
     - **M9** is split into M9a (first-integration test failures) and M9b (hidden checks failing on the final main, without the planted checks).
-    - **M6** covers SC-1 to SC-3. Its "reached" is graded on final main and on the affected task's failed first integration attempt.
-    - **"Surfaced"** means a notice or message naming a planted file, delivered before the task was done.
-  - **The pass bar:** thresholds unchanged. How §9 computes them is recorded as v1.1 in validation.md §5 (D-57's version rules), signed with §9.
-  - **Blinding:** the grader gets only the arm-blinded trees, packed and shuffled into one archive per sitting. Transcripts reveal the arm, so M6's "caught" can't be judged blind; M6 "reached" is reported on its own as well. After grading, the grader audits the baseline coordinator's messages against the relay rule.
+    - **M6** covers SC-1 to SC-3. Its "reached" is graded on final main and on the first red integration attempt whose merge held both tasks' work. Its "caught" is before the task's first completion (`done_at`, D-125).
+    - **"Surfaced"** means a notice from task 1's writes, or a message from task 1's agent, naming a planted file, delivered after task 1 first edited one and before the affected task was first done; never a `claim_conflict`.
+    - **M1** starts when both agents have started work, after setup, in both arms.
+    - **M2's judge** reads each task's own diff, which doesn't give away the arm.
+  - **The pass bar:** thresholds unchanged. How §9 computes them is recorded as v1.1 in validation.md §5 (D-57's version rules), signed with §9. An inconclusive result gets at most one more round.
+  - **Blinding:** the grader gets only the arm-blinded trees, packed and shuffled into one archive per sitting. Transcripts reveal the arm, so M6's "caught" can't be judged blind; M6 "reached" is reported on its own as well. After grading, the grader audits the coordinator's messages to the agents in both arms.
   - **Sign-off:** each owner approves the PR, or, as its author, comments, naming the commit.
   - *Why:* B10 is the last input to the scorer (A9) and to the counted runs (A10). Everything here is fixed before any counted run (§6).
-  - *Source:* 0B item 9, validation.md §3 to §6, D-57, D-94, D-104, S12, S13 (D-122 to D-124). *Status:* **Proposal until both owners sign** (validation.md §9).
+  - *Source:* 0B item 9, validation.md §3 to §6, D-57, D-94, D-104, S12, S13 (D-122 to D-124), S15 (D-125). *Status:* **Proposal until both owners sign** (validation.md §9).
 - **D-122 D-107 is approved: a human can send a done task back to its agent with `harness task reopen` (0B). Decided by an owner, 2026-10-06.**
   - **What's approved:** D-107 as proposed by stream A (branch `daniyal/task-reopen`): `task.reopen { task_id, text }`, for humans, on a `done` task with no land in flight. The task goes back to `in_progress`, and harnessd starts a new session on its branch, opening with the task plus the human's message. A reopen counts as M5.
   - **What doesn't change:** D-96 still holds. A failed land leaves the task `done`, and nothing reopens a task unless a human asks. Resume, which restores the old conversation, is still Phase 1 (D-40).
@@ -1258,7 +1264,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **What stays in Phase 1:** detecting a cycle that has already formed, asking an agent to release, and escalating to a human (D-27; the roadmap's Phase 1 item 7). Waits on answers and leases aren't checked.
   - **Why it comes forward:** in a real SC-1 rehearsal two agents waited on each other's land until the 600 s timeout, twice: 10 of the run's 30 minutes. With the A/B's 30-minute cap, the timeout backstop (D-95) would use up most of a run.
   - **For the A/B:** the harness arm runs with it, as part of the treatment.
-  - *Source:* S13; D-108; the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85); #63 still needs its review.
+  - *Source:* S13; D-108; the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85); built in #63.
 - **D-124 Coupled changes in the counted A/B runs: test-gated integration first, untested only when the first integration fails (SC-1 to SC-3, both arms). Decided by an owner, 2026-10-06.**
   - **The problem:** in SC-1 to SC-3 a change can span both tasks. In SC-1, T-1 changes the login response and T-2's client reads it, so a test-gated land of either task alone can fail type-checking. In the rehearsal both lands failed, and the agents waited on each other.
   - **The rule, the same in both arms:**
@@ -1272,6 +1278,14 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - a "land together" feature: new product work in 0B, which would delay the counted runs.
   - **Where it goes:** validation.md §9's playbook (B10, #59), and the baseline runner's `merge` (B9b). Both owners sign §9 as a whole (D-121).
   - *Source:* S13; HANDOFF's owner decisions (PR #56); the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85).
+- **D-125 "Caught before its task finished" is judged against `done_at`, each task's first completion (validation.md §9; the A9 judge's question on #65). Decided by an owner, 2026-10-06.**
+  - **What it is:** a `done_at` per task in `RunSummary`.
+    - Harness arm: the task's first `task.completed`. With reopen (D-122) a task can be done twice, and the first completion counts.
+    - Baseline: the start of the task's first `merge`, since the coordinator integrates a task as soon as its agent finishes (§9 step 5). That's later by the coordinator's reaction time, which errs toward the baseline, and §9 says so.
+    - Null if the task never finished.
+  - **Who builds it:** stream A adds the field to the contract (`scripts/ab/summary.ts`) and has the judge use it; stream B's runners fill it in.
+  - **Rejected:** keeping "before it was integrated" as an operational stand-in. It's cheaper, but it's looser than §9's text.
+  - *Source:* S15; #65. *Status:* Decided by an owner (`vihAan02`, D-85).
 <!-- Stream B: append new D-IDs (D-120 to D-139) above this line. -->
 
 ## 8. Hypotheses (what we're testing, not assuming)
