@@ -149,10 +149,11 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   const events: HandlerOutput['events'] = [{
     kind: 'wait.started', data: { wait_id: id, task_id: sess.task_id, session_id: args.session_id, agent_id: agentId, on: { kind, id: on.id }, timeout_at: timeoutAt.toISOString() },
   }];
-  // Already happened: resolved at once, in the same transaction.
+  // Already happened: resolved at once, in the same transaction. Marked immediate, because the tool's result says
+  // so and harnessd pushes no outcome for it: the two events' times can differ, even across a millisecond (#70).
   const row = (await ctx.tx.query<WaitRow>(`${OPEN_WAITS} AND w.id = $1`, [id])).rows[0]!;
   const settled = await settle(ctx.tx, row, at);
-  events.push(...settled.map((e) => ({ kind: e.kind, data: e.data })));
+  events.push(...settled.map((e) => ({ kind: e.kind, data: e.kind === 'wait.resolved' ? { ...(e.data as Record<string, unknown>), immediate: true } : e.data })));
   const done = (await ctx.tx.query<{ outcome: string | null; result: unknown }>('SELECT outcome, result FROM waits WHERE id = $1', [id])).rows[0]!;
   return { result: { wait_id: id, outcome: done.outcome ?? 'waiting', ...(done.result ? { result: done.result } : {}) }, events };
 }

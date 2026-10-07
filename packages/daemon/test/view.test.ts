@@ -104,11 +104,14 @@ test('waits fold from wait.* events; a task has at most one open wait (D-95)', (
     ev('wait.started', { wait_id: 'wait_3', task_id: 'T-3', session_id: 's3', agent_id: 'agent_f', on: { kind: 'lease', id: 'ls_1' }, timeout_at: '2026-10-03T12:20:00.000Z' }),
     ev('wait.cancelled', { wait_id: 'wait_3', task_id: 'T-3', agent_id: 'agent_f', on: { kind: 'lease', id: 'ls_1' }, reason: 'task_abandoned' }),
     ev('wait.timed_out', { wait_id: 'wait_unknown', task_id: 'T-9' }), // never started in this view: ignored
+    ev('wait.started', { wait_id: 'wait_4', task_id: 'T-4', session_id: 's4', agent_id: 'agent_f', on: { kind: 'task', id: 'T-5' }, timeout_at: '2026-10-03T12:20:00.000Z' }),
+    ev('wait.resolved', { wait_id: 'wait_4', task_id: 'T-4', agent_id: 'agent_f', on: { kind: 'task', id: 'T-5' }, result: { status: 'done' }, immediate: true }),
   ]) v.apply(e);
   assert.deepEqual([v.waits.get('wait_1')!.outcome, v.waits.get('wait_1')!.result], ['resolved', { answer_id: 'msg_a' }]);
+  assert.deepEqual([v.waits.get('wait_1')!.immediate, v.waits.get('wait_4')!.immediate], [undefined, true], 'wait.start resolved wait_4 itself (#70)');
   assert.deepEqual(v.openWait('T-1')?.id, 'wait_2');
   assert.deepEqual(v.openWait('T-1')?.on, { kind: 'task', id: 'T-2' });
   assert.deepEqual([v.waits.get('wait_3')!.outcome, v.waits.get('wait_3')!.reason], ['cancelled', 'task_abandoned']);
   assert.equal(v.openWait('T-3'), undefined);
-  assert.equal(v.waits.size, 3);
+  assert.equal(v.waits.size, 4);
 });
