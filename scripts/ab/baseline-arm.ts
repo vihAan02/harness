@@ -5,7 +5,9 @@
 // integration worktree, run the setup and test commands there under the same sandbox, and move main only if
 // green (`--no-tests` skips the tests, as `harness land --no-tests` does: D-124). `sync` merges main into an
 // agent's branch, as harnessd's sync does. Setup before the clock starts
-// (worktrees, the setup command, ports) isn't counted, as harnessd's isn't.
+// (worktrees, the setup command, ports) isn't counted, as harnessd's isn't. Each agent's worktree, card and
+// integration worktrees live inside the run's harness home, as harnessd's do, so the read confinement that
+// denies that home keeps each agent out of the other's work, as it does in the harness arm (D-98).
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -52,6 +54,19 @@ type Agent = {
 
 const COORDINATOR = { name: 'Coordinator', email: 'coordinator@harness.invalid' };
 
+
+/**
+ * Where an agent's files go: inside the harness home, which its read policy denies except for its own worktree
+ * (D-98), as harnessd places a harness agent's worktree and a land's integration worktree. A run's temp root
+ * isn't denied, so a worktree or card there would be readable from the other agent's session.
+ */
+export function baselinePaths(home: Home, agent: string): { worktree: string; card: string; integration: (attempt: number) => string } {
+  return {
+    worktree: path.join(home.worktrees, 'baseline', agent),
+    card: path.join(home.root, 'baseline', agent, 'card.txt'),
+    integration: (attempt) => path.join(home.root, 'integration', 'baseline', `${agent}-${attempt}`),
+  };
+}
 /**
  * §9 step 7, a sync conflict: main merged into an agent's branch with main's side winning every conflicting
  * hunk (`-X theirs`), after its work in progress is committed. The other task's integrated work stays whole and
@@ -141,7 +156,7 @@ export async function runBaseline(b: BaselineInput): Promise<{
 
   // Before the clock: each agent's worktree and branch, its setup command, and its port block.
   for (const t of b.tasks) {
-    const worktree = path.join(b.root, 'worktrees', t.agent);
+    const worktree = baselinePaths(home, t.agent).worktree;
     const branch = `ab/${t.key}-${t.agent}`;
     fs.mkdirSync(path.dirname(worktree), { recursive: true });
     git(repo, 'worktree', 'add', '-q', '-b', branch, worktree, baseSha);
@@ -160,7 +175,7 @@ export async function runBaseline(b: BaselineInput): Promise<{
   // The clock starts as both agents get their cards (M1).
   const firstPrompt = new Map<string, string>();
   for (const a of agents) {
-    const promptFile = path.join(b.root, 'prompts', `${a.task.agent}.txt`);
+    const promptFile = baselinePaths(home, a.task.agent).card;
     fs.mkdirSync(path.dirname(promptFile), { recursive: true });
     firstPrompt.set(a.task.agent, b.prompt(a.task, a.worktree));
     fs.writeFileSync(promptFile, firstPrompt.get(a.task.agent)!);
@@ -169,7 +184,7 @@ export async function runBaseline(b: BaselineInput): Promise<{
   const clockStart = rec.ms();
   for (const a of agents) {
     rec.mark('assigned', { task: a.task.key, agent: a.task.agent, branch: a.branch });
-    const cmd = [`cd ${sq(b.harnessRoot)}`, `HARNESS_HOME=${sq(home.root)} node scripts/ab/baseline-launch.ts --worktree ${sq(a.worktree)} --repo ${sq(repo)} --agent ${a.task.agent} --ports ${a.ports.base}:${a.ports.count} --session-id ${a.sessionId} --prompt-file ${sq(path.join(b.root, 'prompts', `${a.task.agent}.txt`))}`].join(' && ');
+    const cmd = [`cd ${sq(b.harnessRoot)}`, `HARNESS_HOME=${sq(home.root)} node scripts/ab/baseline-launch.ts --worktree ${sq(a.worktree)} --repo ${sq(repo)} --agent ${a.task.agent} --ports ${a.ports.base}:${a.ports.count} --session-id ${a.sessionId} --prompt-file ${sq(baselinePaths(home, a.task.agent).card)}`].join(' && ');
     if (b.launch === 'headless') {
       const env = b.mockUrl ? { ...process.env, ANTHROPIC_API_KEY: DUMMY_KEY } : process.env;
       const spec = { ...await baselineSpec({ worktree: a.worktree, repo, agent: a.task.agent, ports: a.ports, home, env }), sessionId: a.sessionId };
@@ -209,7 +224,7 @@ export async function runBaseline(b: BaselineInput): Promise<{
     await commitAll(a.worktree, `${a.task.title}\n\nAB-Task: ${a.task.key}`, COORDINATOR);
     const head = await branchTip(repo, a.branch);
     const base = await branchTip(repo, 'main');
-    const dir = path.join(b.root, 'integration', `${a.task.agent}-${a.attempts}`);
+    const dir = baselinePaths(home, a.task.agent).integration(a.attempts);
     await addIntegrationWorktree(repo, dir, base);
     // Every integration mark says what was merged and when it started: the grader's first-attempt tree (§9).
     const start = rec.ms();
