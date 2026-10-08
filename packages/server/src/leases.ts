@@ -18,6 +18,7 @@ import { newMessageId } from './messages.ts';
 import { requireAgentOnDevice } from './sessions.ts';
 import { lockTask, normalizeScopePath } from './tasks.ts';
 import { overlaps } from './claims.ts';
+import { reservedBy } from './lands.ts';
 
 const MAX_PATHS = 50;
 const MAX_IDS = 200;
@@ -122,6 +123,9 @@ export async function acquireLease(ctx: HandlerContext, args: Record<string, unk
   const asked = ttlOf(args.ttl_s);
   const ttl = asked ?? TTL.default;
   if (task.status !== 'in_progress' && task.status !== 'blocked') throw new CommandError('conflict', `${task.id} is ${task.status}; only a task in progress or blocked can take a lease`);
+  // An integration in flight reserves its paths until GitHub's outcome is known, force or not (D-115).
+  const reserved = await reservedBy(ctx, task.id, paths);
+  if (reserved) throw new CommandError('conflict', `${reserved.paths.join(', ')}: reserved by the integration of ${reserved.taskId} (land ${reserved.landId}) until GitHub's outcome is known (D-115)`);
 
   const events = await noticeExpired(ctx, at);
   // A path the task already holds keeps its lease and token (pushed out by this ttl); only new paths add rows.

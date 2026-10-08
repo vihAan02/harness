@@ -202,3 +202,22 @@ test('a PR merge another daemon saw first as an outside move of the base still l
   assert.match((await db.pool.query('SELECT source FROM base_advances WHERE new_sha = $1', [SHA('a')])).rows[0].source, /^land:/);
   assert.equal(res(await run('land.external', { task_id: w.task, pr_number: 21, merge_sha: SHA('a'), old_base_sha: tip, changed }, device)).status, 'known');
 });
+
+test('an armed GitHub land fails only on GitHub\'s evidence, can\'t be cancelled, and can\'t complete unless armed', async () => {
+  const w = await finished('agent/g1');
+  await w.complete();
+  await publish(w.task, 31);
+  const tip = (await db.pool.query('SELECT tip_sha FROM project_bases WHERE project_id = $1', [project])).rows[0].tip_sha;
+  const approver = { principal: 'human_test', deviceId: null, authDeviceId: 'dev_1' };
+  const land = res(await run('land.request', { task_id: w.task, mode: 'github', pr_number: 31, head_sha: SHA('2'), base_sha: tip }, approver)).land_id;
+  const accepted = await run('land', { land_id: land, base_branch: 'main', base_sha: tip, merge_base_sha: tip, head_sha: SHA('2'), changed_paths: ['src/g.ts'], lease_tokens: [] }, device);
+  assert.equal(res(accepted).accepted, true);
+  await rejects(run('land.complete', { land_id: land, old_base_sha: tip, new_base_sha: SHA('b'), changed: [] }, device), 'conflict', /never armed/);
+  await rejects(run('land.arm', { land_id: land, head_sha: SHA('3'), base_sha: tip }, device), 'conflict', /approved/);
+  await run('land.arm', { land_id: land, head_sha: SHA('2'), base_sha: tip }, device);
+  await rejects(run('land.cancel', { task_id: w.task }), 'conflict', /can't be cancelled/);
+  await rejects(run('land.fail', { land_id: land, reason: 'error', detail: 'timeout' }, device), 'conflict', /armed/);
+  await rejects(run('land.fail', { land_id: land, reason: 'pr_closed' }, device), 'conflict', /evidence/);
+  const failed = await run('land.fail', { land_id: land, reason: 'pr_closed', evidence: { state: 'closed', merged: false, head_sha: SHA('2') } }, device);
+  assert.deepEqual((await kinds(failed.seqs)).map((e) => e.kind), ['land.failed']);
+});

@@ -26,6 +26,8 @@ export type LandInfo = {
   runTests: boolean; requestedAt: string; finishedAt?: string; reason?: string; detail?: string; changedPaths?: string[]; newBaseSha?: string;
   /** D-114, D-115: `github` lands through the task's PR (a reservation); `external` was merged outside the harness. */
   mode: 'local' | 'github' | 'external'; prNumber?: number; step?: string;
+  /** github: the exact head and base the human approved (D-115). */
+  approvedHead?: string; approvedBase?: string;
 };
 /** A task's PR, as its device last published and polled it (D-114). */
 export type PrInfo = {
@@ -206,6 +208,7 @@ export class ProjectView {
         this.lands.set(s('land_id'), {
           id: s('land_id'), taskId: s('task_id'), deviceId: s('device_id'), status: 'requested', runTests: d.run_tests !== false, requestedAt: e.at,
           mode: d.mode === 'github' ? 'github' : 'local', ...(typeof d.pr_number === 'number' ? { prNumber: d.pr_number } : {}),
+          ...(d.mode === 'github' ? { approvedHead: s('head_sha'), approvedBase: s('base_sha') } : {}),
         });
         break;
       case 'land.progress': {

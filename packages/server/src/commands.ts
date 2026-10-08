@@ -16,7 +16,7 @@ import { ackMessage, sendMessage } from './messages.ts';
 import { observeClaims } from './claims.ts';
 import { addReadset } from './readsets.ts';
 import { reportSync, unblockTask } from './syncs.ts';
-import { cancelLand, completeLand, failLand, reportLand, requestLand, startLand } from './lands.ts';
+import { armLand, cancelLand, completeLand, failLand, reportLand, requestLand, startLand } from './lands.ts';
 import { acquireLease, releaseLeases, renewLeases } from './leases.ts';
 import { startWait } from './waits.ts';
 import { landExternal, observeBase, publishPr, reportPrStatus, reportPublishBlocked } from './integrations.ts';
@@ -46,6 +46,7 @@ const HANDLERS: Record<string, Handler> = {
   'land.complete': completeLand,
   'land.fail': failLand,
   'land.cancel': cancelLand,
+  'land.arm': armLand,
   'sync.report': reportSync,
   'task.unblock': unblockTask,
   'lease.acquire': acquireLease,
