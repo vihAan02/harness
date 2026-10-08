@@ -2,7 +2,7 @@
 // command: hello (the local token, or this device's key, D-111), replay the project's log into a view,
 // then send commands.
 import { randomUUID, type KeyObject } from 'node:crypto';
-import { Handshake, ProjectView, ServerIdentityError, type LocalConfig } from '@harness/daemon';
+import { Handshake, ProjectView, serverFrame, ServerIdentityError, untrustedText, type LocalConfig } from '@harness/daemon';
 import { PROTOCOL_VERSION, type EventMessage, type ServerMessage } from '@harness/protocol';
 
 export class CliError extends Error {}
@@ -24,20 +24,25 @@ export class CliClient {
 
   /** Connects, and resolves once the project's log has been replayed up to its current head. */
   static async connect(config: LocalConfig, projectId: string, timeoutMs = 10_000, deviceKey: KeyObject | null = null): Promise<CliClient> {
-    const hs = new Handshake({ config, deviceKey, clientKind: 'cli', subscribe: [{ project_id: projectId, after_seq: 0 }] });
+    let hs: Handshake;
+    try { hs = new Handshake({ config, deviceKey, clientKind: 'cli', subscribe: [{ project_id: projectId, after_seq: 0 }] }); } catch (e) { throw new CliError((e as Error).message); }
     const ws = new WebSocket(config.serverUrl);
     const c = new CliClient(ws, projectId);
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new CliError(`no answer from the coordination server at ${config.serverUrl}`)), timeoutMs);
+      let unverified = ''; // what an unverified answer said, for the timeout's message
+      const timer = setTimeout(() => reject(new CliError(`no ${hs.deviceKeyAuth ? 'verified ' : ''}answer from the coordination server at ${config.serverUrl}${unverified}`)), timeoutMs);
       let head = -1;
       const done = () => { clearTimeout(timer); resolve(); };
       ws.addEventListener('error', () => { clearTimeout(timer); reject(new CliError(`can't reach the coordination server at ${config.serverUrl}; is it running (npm run server)?`)); });
       ws.addEventListener('open', () => ws.send(JSON.stringify(hs.hello())));
       let verified = !hs.deviceKeyAuth;
       ws.addEventListener('message', (ev) => {
-        const m = JSON.parse(String(ev.data)) as ServerMessage;
+        const m = serverFrame(ev.data);
+        if (!m) return;
         if (!verified) {
-          // With device keys, nothing is trusted until the server proves its pinned key (D-111).
+          // With device keys, nothing is trusted until the server proves its pinned key (D-111), and nothing it sends
+          // before that can crash the CLI: any failure is a CliError.
+          if (m.type === 'error') unverified = ` (an unverified answer said ${untrustedText(m.code, 40)}: ${untrustedText(m.message)})`;
           if (m.type !== 'challenge') return;
           try {
             ws.send(JSON.stringify(hs.answer(m)));
@@ -45,7 +50,7 @@ export class CliClient {
           } catch (e) {
             clearTimeout(timer);
             ws.close();
-            reject(e instanceof ServerIdentityError ? new CliError(e.message) : e);
+            reject(new CliError(e instanceof ServerIdentityError ? e.message : `the server's challenge couldn't be checked: ${untrustedText((e as Error)?.message)}`));
           }
           return;
         }
