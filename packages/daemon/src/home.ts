@@ -18,6 +18,8 @@ export type Home = {
   ports: string;
   state: string; // event cursors
   logs: string;
+  /** The pilot (D-111, D-117): this device's private key; harnessd's `uirpc` socket and token; the UI bridge's secret. All under ~/.harness, which agents and setup sandboxes can't read (D-98, D-69). */
+  deviceKey: string; run: string; ui: string;
 };
 
 export function harnessHome(root = process.env.HARNESS_HOME ?? path.join(os.homedir(), '.harness')): Home {
@@ -26,6 +28,7 @@ export function harnessHome(root = process.env.HARNESS_HOME ?? path.join(os.home
     root, config: at('config.toml'), token: at('token'), secrets: at('secrets.toml'), approvals: at('approvals.json'),
     pending: at('pending-approvals'), worktrees: at('worktrees'), scratch: at('scratch'), sessions: at('sessions'),
     vendor: at('vendor'), ports: at('ports.json'), state: at('state.json'), logs: at('logs'),
+    deviceKey: at('device.key'), run: at('run'), ui: at('ui'),
   };
 }
 
