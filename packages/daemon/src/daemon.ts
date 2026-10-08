@@ -14,7 +14,7 @@ import {
 import type { EventMessage } from '@harness/protocol';
 import { Approvals, setupHash, testHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
-import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, removeWorktree, TASK_ID, taskBranch } from './git.ts';
+import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, guardWorktrees, removeWorktree, TASK_ID, taskBranch } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink, type LinkState } from './link.ts';
 import { checkAuthTarget, Handshake, loadDeviceKey } from './identity.ts';
@@ -188,6 +188,9 @@ export class Daemon {
 
   async start(): Promise<void> {
     for (const d of [this.home.root, this.home.worktrees, this.home.scratch, this.home.sessions, this.home.vendor, this.home.logs, this.home.pending]) ensureDir(d);
+    ensureDir(path.join(this.home.root, 'integration'));
+    // Git in a worktree, a land's integration checkout or scratch never follows the `.git` file there (TH-25).
+    guardWorktrees({ roots: [this.home.worktrees, this.home.scratch, path.join(this.home.root, 'integration')], repos: this.config.projects.map((p) => p.repo) });
     // First, before anything that could touch another harnessd's agents (D-113).
     this.releaseLock = await acquireLock(path.join(this.home.root, 'harnessd.lock'));
     this.orphans = await killOrphans(this.sessions);

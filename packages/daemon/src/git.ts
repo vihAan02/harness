@@ -1,7 +1,17 @@
 // Git operations. harnessd owns every Git write: worktrees, branches and commits (D-50).
 // Every call disables hooks and fsmonitor, so nothing in a repo's .git/hooks, a configured hooksPath
 // or a configured fsmonitor program runs on harnessd's behalf (TH-14).
+//
+// A linked worktree's `.git` file is the agent's to write (it's inside the worktree), so harnessd's Git never
+// follows it (TH-25, D-114). harnessd registers its worktree roots and its projects' repositories
+// (guardWorktrees). Any call whose directory is inside a guarded root is pinned to that worktree's admin
+// directory, found from the main repository's shared .git, which agents can't write. It's pinned with
+// --git-dir and --work-tree, and reads no global or system config, so a redirected `.git` can't hand
+// harnessd another repository's config, filters or hooks. A directory there that isn't a worktree of a
+// project repository is refused.
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -10,9 +20,60 @@ const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 export const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SHA = /^[0-9a-f]{40}$/;
 
-export async function git(cwd: string, ...args: string[]): Promise<string> {
+const guard = { roots: new Set<string>(), repos: new Set<string>() };
+const pins = new Map<string, string>(); // a worktree (real path) → its admin directory
+const commonDirs = new Map<string, string>(); // a project repository → its shared .git
+
+const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+/** harnessd's worktree roots, and the repositories their worktrees belong to (TH-25). Additive; per process. */
+export function guardWorktrees(o: { roots: string[]; repos: string[] }): void {
+  for (const r of o.roots) guard.roots.add(real(r));
+  for (const r of o.repos) guard.repos.add(path.resolve(r));
+}
+
+const guarded = (dir: string) => [...guard.roots].some((r) => dir === r || dir.startsWith(r + path.sep));
+
+/** Whether `admin` (an entry under a shared .git's worktrees/) is `worktree`'s, by its `gitdir` file. */
+function adminOf(admin: string, worktree: string): boolean {
+  try { return real(path.dirname(fs.readFileSync(path.join(admin, 'gitdir'), 'utf8').trim())) === worktree; } catch { return false; }
+}
+
+/** The admin directory of `worktree` in a guarded repository's shared .git, found without reading the worktree's own `.git`. */
+async function adminDirOf(worktree: string): Promise<string> {
+  const known = pins.get(worktree);
+  if (known && adminOf(known, worktree)) return known;
+  for (const repo of guard.repos) {
+    let common = commonDirs.get(repo);
+    if (!common) {
+      try { common = await plainGit(repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'); } catch { continue; }
+      commonDirs.set(repo, common);
+    }
+    const dir = path.join(common, 'worktrees');
+    const admin = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map((n) => path.join(dir, n)).find((a) => adminOf(a, worktree));
+    if (admin) {
+      pins.set(worktree, admin);
+      return admin;
+    }
+  }
+  throw new Error(`refusing to run Git in ${worktree}: it isn't a worktree of a project repository (TH-25)`);
+}
+
+async function plainGit(cwd: string, ...args: string[]): Promise<string> {
   const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' };
   const { stdout } = await run('git', [...SAFE, ...args], { cwd, env, maxBuffer: 64 * 1024 * 1024 });
+  return stdout.replace(/\n$/, '');
+}
+
+export async function git(cwd: string, ...args: string[]): Promise<string> {
+  const dir = real(cwd);
+  if (!guarded(dir)) return plainGit(cwd, ...args);
+  const admin = await adminDirOf(dir);
+  const env = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C',
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  };
+  const { stdout } = await run('git', [...SAFE, '--git-dir', admin, '--work-tree', dir, ...args], { cwd: dir, env, maxBuffer: 64 * 1024 * 1024 });
   return stdout.replace(/\n$/, '');
 }
 
