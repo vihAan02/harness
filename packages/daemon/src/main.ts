@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Runs harnessd in the foreground (D-75): `npm run daemon`. Ctrl-C stops it.
+import path from 'node:path';
 import { loadConfig, type LocalConfig } from './config.ts';
 import { Daemon } from './daemon.ts';
 import { harnessHome } from './home.ts';
@@ -22,7 +23,8 @@ try {
   console.error(`harnessd: ${(e as Error).message}`);
   process.exit(2);
 }
-const daemon = new Daemon({ home, config, provider, log: (m) => console.log(`harnessd: ${m}`) });
+// The UI bridge talks to harnessd over an owner-only socket in ~/.harness/run (D-117).
+const daemon = new Daemon({ home, config, provider, uiSocket: path.join(home.run, 'harnessd.sock'), log: (m) => console.log(`harnessd: ${m}`) });
 try {
   await daemon.start();
 } catch (e) {

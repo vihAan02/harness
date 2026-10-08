@@ -334,7 +334,7 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 
 ## 12. The UI's contract (D-117)
 
-**harnessd's `uirpc`.** A Unix socket at `~/.harness/run/harnessd.sock` (0600, in a 0700 directory). Every request carries the token from `~/.harness/run/uirpc.token`. Newline-delimited JSON, one request per line: `{ id, method, params }` → `{ id, ok, result | error }`.
+**harnessd's `uirpc`** (`packages/daemon/src/uirpc.ts`). A Unix socket at `~/.harness/run/harnessd.sock` (0600, in a 0700 directory). Every request carries the token from `~/.harness/run/uirpc.token`, which is new at each start. A wrong token gets `unauthorized` and the connection is closed. Newline-delimited JSON, one request per line: `{ id, token, method, params }` → `{ id, ok, result | error }`.
 - `snapshot()` → `ProjectSnapshot[]` (`ProjectView.snapshot()`: tasks with their derived state, agents with device and presence, sessions with usage, messages, waits, notices, lands and reservations, PRs with checks, budget totals, connection health).
   - **The type** is `ProjectSnapshot` in `@harness/protocol` (v1), built by `snapshotOf()` in `packages/daemon/src/snapshot.ts` from the project's view and what only this harnessd knows: its pending approvals, the tasks it's publishing, its link state and its budget.
   - **A task's `state`, most specific first:**
@@ -346,12 +346,12 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
     - `open`.
 
     `state_detail` says why, where there's a reason. It's untrusted text, like every string in the snapshot.
-- `events(after_seq)`: a stream of `{ project_id, seq, snapshot_patch }` lines.
-- `health()` → the connection state (`connected`, `reconnecting`, `server_identity_mismatch`, `coordinator_changed`), the dead outbox, the provider circuit.
+- `events()`: subscribes the connection. It answers `{ subscribed: [project ids] }`, then sends `{ stream: <request id>, project_id, seq, snapshot_patch }` lines: the current snapshot of each project at once, then each one that changed. v1's `snapshot_patch` is always `{ op: "replace", value: ProjectSnapshot }`.
+- `health()` → `{ device_id, principal, connection, epoch }`, where `connection` is `connecting`, `connected`, `server_identity_mismatch`, `replaced` or `refused`. PA4b adds `coordinator_changed` and the dead outbox, and PA8 the provider circuit.
 - `pending_approvals()` → the local approvals (`agent_session`, `setup`, `test`, `publish`, `security_review`), each with what the human must see (command and manifests, diff summary and PR text, held message).
-- `approve(id, shown_hash)` and `deny(id)`: harnessd recomputes the hash (setup and test commands with their manifests, the publish head and text) and refuses on a mismatch.
-- `command(name, args, command_id)`: an allowlist of human commands that need no dispatch (`task.create` without an assignee, `message.send`, `task.unblock`, `land.cancel`).
-- `dispatch(kind, task_id, expected)`: harnessd builds and signs the envelope from its own view; for `integrate` it first re-reads the PR's head and base from GitHub and refuses unless they equal `expected`.
+- `approve(id, shown_hash)` and `deny(id)`: the exact request id (never a prefix) and the hash the human was shown, which must equal the request's (`conflict` otherwise). harnessd recomputes the hash of what it's about to run (setup and test commands with their manifests, the publish head and text) before acting on any approval, so a change after the request needs a new one.
+- `command(project_id, name, args, command_id)`: an allowlist of human commands that need no dispatch (`task.create` without an assignee, `message.send`, `task.unblock`, `land.cancel`), sent as this device's human. `command_id` is a UUID, so a retry is idempotent on the server.
+- `dispatch(kind, task_id, expected)`: harnessd builds and signs the envelope from its own view; for `integrate` it first re-reads the PR's head and base from GitHub and refuses unless they equal `expected`. Until PA3 it answers `not_available`.
 
 **The bridge** (`packages/ui`, built through Harness tasks): an HTTP server on a fixed `127.0.0.1` port outside `[limits].port_range`, which fails closed if the port is taken.
 - **No cookies.** `harness ui` checks the running bridge (an HMAC challenge keyed by `~/.harness/ui/bridge.secret`), then opens `http://127.0.0.1:<port>/launch#t=<token>`. The token is single-use, lasts 60 seconds and lives in the URL fragment. The page swaps it for a session token (`POST /api/session`), keeps that in `sessionStorage`, sends it as `Authorization: Bearer` on every `/api/*` call, and reads `/api/stream` with a streaming `fetch()`.
