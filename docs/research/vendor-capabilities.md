@@ -732,12 +732,12 @@ Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider ope
 
 *Impact:* D-115's precheck. A PR behind the base is brought up to date by harnessd (PA7) and approved again once CI is green, and only one PR is integrated at a time (AGENTS.md).
 
-**F-116 ◐ `require_extra_approval_for_unattributed_changes` appears to be the "additional approval for unattributed Copilot pull requests" setting** (checked 2026-10-08, GitHub docs "Available rules for rulesets", and the live ruleset).
+**F-116 ✔ `require_extra_approval_for_unattributed_changes` adds no approval to a PR a human opens, and so none to harnessd's** (checked 2026-10-08: GitHub docs "Available rules for rulesets", the live ruleset, and #94 itself).
 - **The docs** describe "Require an additional approval for unattributed Copilot pull requests": public preview, "enabled by default, for both new and existing rulesets". When Copilot opens a PR not attributed to a person, "the ruleset requires one more approval than the number you configured".
-- **The live ruleset** has `require_extra_approval_for_unattributed_changes: true` beside `required_approving_review_count: 0`. That fits the default-on setting.
-- **Not verified:** that the field is that setting, and that a PR harnessd opens with the human's own `gh` token counts as attributed to the human. That's why it's ◐. The F-116 probe PR (opened by harnessd's code path with a human's token, closed unmerged) settles it.
+- **The live ruleset** has `require_extra_approval_for_unattributed_changes: true` beside `required_approving_review_count: 0`, which fits the default-on setting.
+- **Observed:** #94 was opened with a human's own `gh` token. With its required checks green and no reviews at all, GitHub reports it `mergeable_state: clean` and `mergeStateStatus: CLEAN`. harnessd opens PRs the same way, with the accountable human's `gh` token (D-114), so they're attributed to that human too.
 
-*Impact:* if it applies to harnessd's PRs, every pilot PR needs one approving review before GitHub merges it, and PA6's precheck would report it as `not_mergeable` until then.
+*Impact:* pilot PRs need no approval from GitHub's ruleset. The review gate is the AGENTS.md rule, which D-115's precheck enforces from CODEOWNERS. No probe PR is needed.
 
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
