@@ -186,6 +186,8 @@ export type PilotStack = Awaited<ReturnType<typeof startPilotStack>>;
 export async function startPilotStack(p: {
   files?: Record<string, string>; portRanges?: { a: [number, number]; b: [number, number] };
   daemons?: boolean; daemonOptions?: Partial<DaemonOptions>; fake?: FakeGitHubOptions;
+  /** Options for one side's harnessd only, such as its UI socket. */
+  sideOptions?: { a?: Partial<DaemonOptions>; b?: Partial<DaemonOptions> };
 } = {}) {
   const cleanup: (() => Promise<void> | void)[] = [];
   const errors: unknown[] = [];
@@ -245,7 +247,7 @@ export async function startPilotStack(p: {
         localServices: { check: async () => [] },
         github: { token: async () => fake.token }, // the fake's token stands in for the human's gh login
         log: (m) => logs.push(m), onEvent: (e) => acted.push(e),
-        ...p.daemonOptions,
+        ...p.daemonOptions, ...p.sideOptions?.[s],
       });
       cleanup.push(() => daemon.stop());
       const client = await openDeviceClient(server.url, config, deviceKey, [{ project_id: project, after_seq: 0 }]);

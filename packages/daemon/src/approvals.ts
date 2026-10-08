@@ -63,6 +63,14 @@ export class Approvals {
       .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
   }
 
+  /** Withdraws a pending request without granting it: the task that asked waits for a new one. */
+  deny(id: string): ApprovalRequest {
+    const req = this.pending().find((r) => r.id === id);
+    if (!req) throw new Error(`no pending approval ${id}`);
+    fs.rmSync(path.join(this.home.pending, `${req.projectId}-${req.id}.json`), { force: true });
+    return req;
+  }
+
   /** Grants a pending request by its id (or a unique prefix of it). */
   approve(id: string): ApprovalRequest {
     const matches = this.pending().filter((r) => r.id.startsWith(id));

@@ -85,11 +85,13 @@ export class ServerLink {
   }
 
   /** Sends a command; `asAgent` sends it for one of this human's agents (D-18). */
-  command(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string): Promise<{ seqs: number[]; result: unknown }> {
+  /** `commandId`, when the caller has one (the UI's), makes a retry of the same command idempotent on the server. */
+  command(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string, commandId?: string): Promise<{ seqs: number[]; result: unknown }> {
     if (this.stopped) return Promise.reject(new Error('link stopped'));
     const msg: Command = {
-      v: PROTOCOL_VERSION, type: 'command', command_id: randomUUID(), project_id: projectId, name, args, ...(asAgent ? { as_agent: asAgent } : {}),
+      v: PROTOCOL_VERSION, type: 'command', command_id: commandId ?? randomUUID(), project_id: projectId, name, args, ...(asAgent ? { as_agent: asAgent } : {}),
     };
+    if (this.pending.has(msg.command_id)) return Promise.reject(new CommandFailed('conflict', `command ${msg.command_id} is already in flight`));
     return new Promise((resolve, reject) => {
       this.pending.set(msg.command_id, { msg, resolve, reject });
       if (this.ready) this.ws?.send(JSON.stringify(msg));
