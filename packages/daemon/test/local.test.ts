@@ -20,7 +20,7 @@ test('config: defaults follow D-38 and D-68', () => {
   const c = parseConfig(BASE, TOKEN);
   assert.deepEqual(c.limits, { maxConcurrentAgents: 2, portsPerAgent: 10, portRange: [3100, 3999] });
   assert.equal(c.serverUrl, 'ws://127.0.0.1:7400');
-  assert.deepEqual(c.projects, [{ id: 'prj_a', repo: '/repo', baseBranch: 'main', secrets: ['DB_URL'] }]);
+  assert.deepEqual(c.projects, [{ id: 'prj_a', repo: '/repo', baseBranch: 'main', secrets: ['DB_URL'], integration: 'local', remote: null, githubRepo: null, githubApi: 'https://api.github.com', commitIdentity: null, requireDispatch: false }]);
 });
 
 test('config: refuses port ranges in the ephemeral range, relative repos, and more than 2 agents', () => {

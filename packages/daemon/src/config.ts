@@ -17,13 +17,40 @@
 //             background_model, max_context_tokens, auto_compact_window, max_output_tokens,
 //             strip_experimental_betas, extra_body = { … }, [providers.<name>.prices."<model>"] input/output/cache_read/cache_write (USD per 1M tokens)
 //   [[projects]]  id = "prj_…", repo = "/abs/path", base_branch = "main", secrets = ["DATABASE_URL"]
+//
+// The two-Mac pilot adds (D-110 to D-117; docs/protocol.md §2, §11, §12):
+//   auth = "device-key" | "local-token"   (default "local-token": loopback test and demo stacks)
+//   server_key = "ed25519:…"              (device-key: the coordinator's key, pinned out of band, D-111)
+//   [trust.devices]  "<device_id>" = { human = "human_…", key = "ed25519:…" }   (who may dispatch here, D-112;
+//             pinned out of band, never written from server data; this device's own entry is required)
+//   [agents]  daily_budget_usd = 0.25     (device-key: required with max_budget_usd, D-116)
+//   [ui]      port = 7480                 (the UI bridge's fixed loopback port, outside limits.port_range, D-117)
+//   [[projects]]  integration = "local" | "github"   (default "local"; must match the server's, D-114)
+//             remote = "https://github.com/<owner>/<repo>.git"   (github: no userinfo, query or fragment)
+//             github_api = "https://api.github.com"   (only HARNESS_TEST=1 may point it, or the remote, elsewhere)
+//             commit_name = "…", commit_email = "…@users.noreply.github.com"   (github: who task commits are by)
+//             require_dispatch = true   (forced on with device-key or github, D-112)
 import fs from 'node:fs';
 import path from 'node:path';
 import { isModelAlias, isReservedEnvName, MODEL_ID, priceOf, type Prices } from '@harness/adapters';
-import { parse } from 'smol-toml';
+import type { IntegrationMode } from '@harness/protocol';
+import { KeyError, parsePublicKey } from '@harness/protocol/signing';
+import { parse, stringify } from 'smol-toml';
 import { readPrivateFile, type Home } from './home.ts';
 
-export type ProjectConfig = { id: string; repo: string; baseBranch: string; secrets: string[] };
+export type ProjectConfig = {
+  id: string; repo: string; baseBranch: string; secrets: string[];
+  /** D-114. `local` keeps 0B's local land; `github` integrates through PRs. */
+  integration: IntegrationMode;
+  /** github only: the remote harnessd fetches from and pushes task branches to, and the repo's `owner/name`. */
+  remote: string | null; githubRepo: string | null; githubApi: string;
+  /** github only: the identity task commits are authored and committed as (the accountable human's, D-114). */
+  commitIdentity: { name: string; email: string } | null;
+  /** D-112: lifecycle events without a valid dispatch are refused. */
+  requireDispatch: boolean;
+};
+export type AuthScheme = 'device-key' | 'local-token';
+export type TrustedDeviceConfig = { humanId: string; key: string };
 /** One model endpoint (D-87). Product code knows no provider by name; these come only from the local config. */
 export type ProviderConfig = {
   name: string;
@@ -40,11 +67,19 @@ export type ProviderConfig = {
   prices: Record<string, Prices>;
 };
 export type LocalConfig = {
-  deviceId: string; principal: string; serverUrl: string; token: string;
+  deviceId: string; principal: string; serverUrl: string;
+  /** The local token (local-token only; empty with device-key). */
+  token: string;
+  auth: AuthScheme;
+  /** device-key: the coordinator's pinned public key. */
+  serverKey: string | null;
+  /** The devices whose dispatches this daemon accepts, with their humans and keys (D-112). */
+  trustedDevices: Record<string, TrustedDeviceConfig>;
+  ui: { port: number | null };
   projects: ProjectConfig[];
   limits: { maxConcurrentAgents: number; portsPerAgent: number; portRange: [number, number] };
   setup: { allowedDomains: string[]; timeoutSeconds: number };
-  agents: { provider: string | null; model: string | null; maxBudgetUsd: number | null; readAllow: string[] };
+  agents: { provider: string | null; model: string | null; maxBudgetUsd: number | null; dailyBudgetUsd: number | null; readAllow: string[] };
   providers: Record<string, ProviderConfig>;
 };
 
@@ -63,7 +98,8 @@ export function loadConfig(home: Home): LocalConfig {
   } catch (e) {
     throw new Error(`can't read ${home.config}: ${(e as Error).message}`);
   }
-  return parseConfig(raw, loadToken(home));
+  // With device keys there is no shared token (D-111).
+  return parseConfig(raw, raw.auth === 'device-key' ? '' : loadToken(home));
 }
 
 function loadToken(home: Home): string {
@@ -72,7 +108,42 @@ function loadToken(home: Home): string {
   return token;
 }
 
-export function parseConfig(raw: Record<string, unknown>, token: string): LocalConfig {
+export type ParseOptions = { env?: Record<string, string | undefined> };
+
+const GITHUB_API = 'https://api.github.com';
+const ID_TEXT = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Rejects keys a section doesn't know, so a typo can't silently fall back to local mode or no trust. */
+function onlyKeys(t: Record<string, unknown>, known: string[], where: string): void {
+  const unknown = Object.keys(t).filter((k) => !known.includes(k));
+  if (unknown.length) throw new Error(`config: ${where} has unknown keys: ${unknown.join(', ')}`);
+}
+
+function publicKeyAt(v: unknown, where: string): string {
+  if (typeof v !== 'string') throw new Error(`config: ${where} must be an "ed25519:…" public key`);
+  try {
+    parsePublicKey(v);
+  } catch (e) {
+    if (e instanceof KeyError) throw new Error(`config: ${where}: ${e.message}`);
+    throw e;
+  }
+  return v;
+}
+
+/** A GitHub remote: https, no userinfo, query or fragment; its `owner/name`. Elsewhere only under HARNESS_TEST=1 (fake GitHub). */
+function githubRemote(v: unknown, where: string, test: boolean): { remote: string; repo: string } {
+  let u: URL;
+  try { u = new URL(String(v)); } catch { throw new Error(`config: ${where}.remote is not a URL`); }
+  if (u.protocol !== 'https:') throw new Error(`config: ${where}.remote must be https`);
+  if (u.username || u.password || u.search || u.hash) throw new Error(`config: ${where}.remote may not carry credentials, a query or a fragment`);
+  if (u.hostname !== 'github.com' && !test) throw new Error(`config: ${where}.remote must be on github.com`);
+  const m = /^\/([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100}?)(?:\.git)?$/.exec(u.pathname);
+  if (!m) throw new Error(`config: ${where}.remote must be https://<host>/<owner>/<repo>.git`);
+  return { remote: String(v), repo: `${m[1]}/${m[2]}` };
+}
+
+export function parseConfig(raw: Record<string, unknown>, token: string, opts: ParseOptions = {}): LocalConfig {
+  const test = (opts.env ?? process.env).HARNESS_TEST === '1';
   const str = (v: unknown, name: string, re?: RegExp) => {
     if (typeof v !== 'string' || !v || (re && !re.test(v))) throw new Error(`config: ${name} is missing or malformed`);
     return v;
@@ -97,8 +168,33 @@ export function parseConfig(raw: Record<string, unknown>, token: string): LocalC
 
   const setup = table(raw.setup);
   const agents = table(raw.agents);
+  onlyKeys(agents, ['provider', 'model', 'max_budget_usd', 'daily_budget_usd', 'read_allow'], '[agents]');
   const budget = agents.max_budget_usd;
   if (budget !== undefined && (typeof budget !== 'number' || !(budget > 0) || budget > 1000)) throw new Error('config: agents.max_budget_usd must be a number above 0, at most 1000');
+  const daily = agents.daily_budget_usd;
+  if (daily !== undefined && (typeof daily !== 'number' || !(daily > 0) || daily > 1000)) throw new Error('config: agents.daily_budget_usd must be a number above 0, at most 1000');
+
+  const auth = raw.auth ?? 'local-token';
+  if (auth !== 'device-key' && auth !== 'local-token') throw new Error('config: auth must be "device-key" or "local-token"');
+  const deviceKey = auth === 'device-key';
+  const serverKey = deviceKey ? publicKeyAt(raw.server_key, 'server_key') : null;
+  if (!deviceKey && raw.server_key !== undefined) throw new Error('config: server_key is for auth = "device-key"');
+  if (deviceKey && (budget === undefined || daily === undefined)) throw new Error('config: auth = "device-key" needs agents.max_budget_usd and agents.daily_budget_usd (D-116)');
+
+  const trust = table(raw.trust);
+  onlyKeys(trust, ['devices'], '[trust]');
+  const trustedDevices: Record<string, TrustedDeviceConfig> = Object.create(null) as Record<string, TrustedDeviceConfig>;
+  for (const [id, v] of Object.entries(table(trust.devices))) {
+    if (!ID_TEXT.test(id)) throw new Error(`config: trust.devices has a malformed device id "${id}"`);
+    const d = table(v);
+    onlyKeys(d, ['human', 'key'], `trust.devices.${id}`);
+    if (typeof d.human !== 'string' || !ID_TEXT.test(d.human)) throw new Error(`config: trust.devices.${id}.human is missing or malformed`);
+    trustedDevices[id] = { humanId: d.human, key: publicKeyAt(d.key, `trust.devices.${id}.key`) };
+  }
+
+  const ui = table(raw.ui);
+  onlyKeys(ui, ['port'], '[ui]');
+  const uiPort = ui.port === undefined ? null : int(ui.port, 'ui.port', 0, 1024, 65535);
   const providers: Record<string, ProviderConfig> = Object.assign(Object.create(null) as Record<string, ProviderConfig>,
     Object.fromEntries(Object.entries(table(raw.providers)).map(([name, v]) => [name, parseProvider(name, table(v))])));
   const provider = agents.provider === undefined ? null : str(agents.provider, 'agents.provider', PROVIDER_NAME);
@@ -107,26 +203,66 @@ export function parseConfig(raw: Record<string, unknown>, token: string): LocalC
   const serverUrl = str(raw.server_url ?? 'ws://127.0.0.1:7400', 'server_url');
   if (!/^wss?:\/\//.test(serverUrl)) throw new Error('config: server_url must be ws:// or wss://');
 
-  const projects = (Array.isArray(raw.projects) ? raw.projects : []).map((p, i) => {
+  const projects = (Array.isArray(raw.projects) ? raw.projects : []).map((p, i): ProjectConfig => {
     const t = table(p);
-    const repo = str(t.repo, `projects[${i}].repo`);
-    if (!path.isAbsolute(repo)) throw new Error(`config: projects[${i}].repo must be an absolute path`);
+    const where = `projects[${i}]`;
+    onlyKeys(t, ['id', 'repo', 'base_branch', 'secrets', 'integration', 'remote', 'github_api', 'commit_name', 'commit_email', 'require_dispatch'], where);
+    const repo = str(t.repo, `${where}.repo`);
+    if (!path.isAbsolute(repo)) throw new Error(`config: ${where}.repo must be an absolute path`);
+    const integration = t.integration ?? 'local';
+    if (integration !== 'local' && integration !== 'github') throw new Error(`config: ${where}.integration must be "local" or "github"`);
+    const github = integration === 'github';
+    for (const k of ['remote', 'github_api', 'commit_name', 'commit_email']) {
+      if (!github && t[k] !== undefined) throw new Error(`config: ${where}.${k} is for integration = "github"`);
+    }
+    const remote = github ? githubRemote(t.remote, where, test) : null;
+    let githubApi = GITHUB_API;
+    if (t.github_api !== undefined) {
+      if (!test && t.github_api !== GITHUB_API) throw new Error(`config: ${where}.github_api must be ${GITHUB_API}`);
+      githubApi = str(t.github_api, `${where}.github_api`).replace(/\/+$/, '');
+    }
+    const commitIdentity = github ? {
+      name: str(t.commit_name, `${where}.commit_name`, /^[^\u0000-\u001f<>]{1,100}$/),
+      email: str(t.commit_email, `${where}.commit_email`, /^[^\s@<>]{1,100}@[^\s@<>]{1,100}$/),
+    } : null;
+    // D-112: forced on with device keys or GitHub integration; only loopback local-token stacks may leave it off.
+    if (t.require_dispatch !== undefined && typeof t.require_dispatch !== 'boolean') throw new Error(`config: ${where}.require_dispatch must be true or false`);
+    if (t.require_dispatch === false && (deviceKey || github)) throw new Error(`config: ${where}.require_dispatch can't be false with device keys or GitHub integration (D-112)`);
     return {
-      id: str(t.id, `projects[${i}].id`, ID),
+      id: str(t.id, `${where}.id`, ID),
       repo: path.resolve(repo),
-      baseBranch: str(t.base_branch ?? 'main', `projects[${i}].base_branch`, /^[A-Za-z0-9._/-]{1,200}$/),
-      secrets: strings(t.secrets, `projects[${i}].secrets`, SECRET_NAME).map((n) => {
-        if (isReservedEnvName(n)) throw new Error(`config: projects[${i}].secrets can't include ${n}: the agent CLI reads that name (D-87)`);
+      baseBranch: str(t.base_branch ?? 'main', `${where}.base_branch`, /^[A-Za-z0-9._/-]{1,200}$/),
+      secrets: strings(t.secrets, `${where}.secrets`, SECRET_NAME).map((n) => {
+        if (isReservedEnvName(n)) throw new Error(`config: ${where}.secrets can't include ${n}: the agent CLI reads that name (D-87)`);
         return n;
       }),
+      integration,
+      remote: remote?.remote ?? null,
+      githubRepo: remote?.repo ?? null,
+      githubApi,
+      commitIdentity,
+      requireDispatch: deviceKey || github || t.require_dispatch === true,
     };
   });
 
+  const deviceId = str(raw.device_id, 'device_id', ID);
+  const principal = str(raw.principal, 'principal', ID);
+  if (deviceKey) {
+    const own = trustedDevices[deviceId];
+    if (!own) throw new Error(`config: trust.devices must pin this device (${deviceId}) too`);
+    if (own.humanId !== principal) throw new Error(`config: trust.devices.${deviceId}.human must be this device's principal (${principal})`);
+  }
+  if (uiPort !== null && uiPort >= start && uiPort <= end) throw new Error('config: ui.port must lie outside limits.port_range (agents may bind those ports)');
+
   return {
-    deviceId: str(raw.device_id, 'device_id', ID),
-    principal: str(raw.principal, 'principal', ID),
+    deviceId,
+    principal,
     serverUrl,
-    token,
+    token: deviceKey ? '' : token,
+    auth,
+    serverKey,
+    trustedDevices,
+    ui: { port: uiPort },
     projects,
     limits: {
       maxConcurrentAgents: int(limits.max_concurrent_agents, 'limits.max_concurrent_agents', 2, 1, 2), // fixed at 2 in 0A (D-38)
@@ -141,6 +277,7 @@ export function parseConfig(raw: Record<string, unknown>, token: string): LocalC
       provider,
       model: agents.model === undefined ? null : noAlias(str(agents.model, 'agents.model', MODEL_ID), 'agents.model'),
       maxBudgetUsd: (budget as number | undefined) ?? null,
+      dailyBudgetUsd: (daily as number | undefined) ?? null,
       // Absolute, or ~/ for the home directory. Never a credential path: readPolicyFor drops those (D-98).
       readAllow: strings(agents.read_allow, 'agents.read_allow', /^(~\/|\/)[^\u0000-\u001f\u007f]{1,1000}$/),
     },
@@ -228,6 +365,15 @@ export function parseProvider(name: string, t: Record<string, unknown>): Provide
     extraBody,
     prices,
   };
+}
+
+/**
+ * Writes a config as TOML after checking it the way harnessd will read it (`harness setup` writes only through this).
+ * `token` is only for checking a local-token config; it's never written here (it lives in ~/.harness/token).
+ */
+export function renderConfig(raw: Record<string, unknown>, opts: ParseOptions & { token?: string } = {}): string {
+  parseConfig(raw, opts.token ?? (raw.auth === 'device-key' ? '' : 'x'.repeat(32)), opts);
+  return stringify(raw);
 }
 
 /**
