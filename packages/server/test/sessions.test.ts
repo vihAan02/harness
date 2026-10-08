@@ -58,6 +58,7 @@ test('only harnessd reports sessions, only for the assigned agent, and only its 
   await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'idle' }, agentB)), 'forbidden');
   await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: randomUUID(), status: 'idle' }, agentA)), 'bad_request');
   await rejects(executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'idle', usage: { input: -1 } }, agentA)), 'bad_request');
+  await executeCommand(db.pool, device, cmd('session.report', { session_id: id, status: 'ended' }, agentA)); // one live session per task (D-113)
 });
 
 test('a session records its configured model and provider, and usage says which models and prices it counted (D-87)', async () => {
