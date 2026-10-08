@@ -33,6 +33,11 @@ export async function reportSync(ctx: HandlerContext, args: Record<string, unkno
     [args.session_id, ctx.projectId])).rows[0];
   if (!sess) throw new CommandError('not_found', `no session ${String(args.session_id)} in this project`);
   if (sess.agent_id !== agentId || sess.device_id !== deviceId) throw new CommandError('forbidden', 'that session belongs to another agent or device');
+  if (args.event === 'fetch_failed') {
+    // GitHub mode (D-114): the base couldn't be fetched, so the sync waits; held notices stay held (fetch_pending).
+    const reason = typeof args.reason === 'string' ? args.reason.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 300) : 'unknown';
+    return { result: null, events: [{ kind: 'worktree.sync_fetch_failed', data: { task_id: sess.task_id, session_id: args.session_id, reason } }] };
+  }
   const oldBase = sha(args.old_base_sha, 'old_base_sha');
   const newBase = sha(args.new_base_sha, 'new_base_sha');
   const task = await lockTask(ctx, sess.task_id);
@@ -46,7 +51,7 @@ export async function reportSync(ctx: HandlerContext, args: Record<string, unkno
     await ctx.tx.query('UPDATE tasks SET base_sha = $2, base_set_at = now() WHERE id = $1', [task.id, newBase]);
     return { result: { stale }, events: [{ kind: 'worktree.synced', data: { ...base, changed_paths: changed, ...(all ? { all_changed: true } : {}), stale_paths: stale } }] };
   }
-  if (args.event !== 'conflict') throw new CommandError('bad_request', 'event must be synced or conflict');
+  if (args.event !== 'conflict') throw new CommandError('bad_request', 'event must be synced, conflict or fetch_failed');
   const conflicts = pathList(args.conflict_paths, 'conflict_paths');
   if (!conflicts.length) throw new CommandError('bad_request', 'a conflict report names the conflicting paths');
   if (task.status !== 'in_progress' && task.status !== 'blocked') throw new CommandError('conflict', `${task.id} is ${task.status}`);
