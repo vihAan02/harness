@@ -19,6 +19,11 @@ import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink, type LinkState } from './link.ts';
 import { checkAuthTarget, Handshake, loadDeviceKey } from './identity.ts';
 import { Journal } from './journal.ts';
+import { advanceBaseRef, baseRef, fetchBase, gitRemote, pushBranch } from './remote.ts';
+import { ghToken, GitHubClient } from './github.ts';
+import { publishHash, scanPublish } from './publish.ts';
+import { prBody, prTitle } from './prbody.ts';
+import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
@@ -117,6 +122,8 @@ export type DaemonOptions = {
   faults?: { leases?: LeaseFaults; crashAt?: string };
   /** This device's key, with device-key auth (D-111). Default: ~/.harness/device.key. */
   deviceKey?: KeyObject;
+  /** GitHub for a GitHub-mode project (D-114). Default: the human's own `gh` login. Tests point it at a fake. */
+  github?: { token?: () => Promise<string> };
   /** The D-119 check for loopback Postgres that takes password-less logins (TH-22), for tests. Default: findTrustPostgres. */
   localServices?: { check?: () => Promise<TrustLogin[]> };
 };
@@ -149,6 +156,8 @@ export class Daemon {
   recovering = true;
   buffered = new Map<string, EventMessage[]>();
   recovered: Promise<void> = Promise.resolve();
+  githubToken: (() => Promise<string>) | null = null;
+  githubLogin: string | null = null;
   trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
 
   constructor(o: DaemonOptions) {
@@ -369,8 +378,12 @@ export class Daemon {
       this.ports.release(taskId);
       if (commit) await this.report(projectId, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: taskBranch(taskId), commit });
       this.log(`${taskId}: recovered its completion: ${commit ? `committed ${commit.slice(0, 12)}` : 'nothing to commit'}`);
-      return;
     }
+    if (task.status === 'done' && hasWorktree && this.project(projectId).integration === 'github' && !j.has(projectId, taskId, 'pr') && !j.has(projectId, taskId, 'no_change')) {
+      // Committed, not yet published (or published before the crash, without the record): publish, idempotently.
+      return this.publishTask(projectId, taskId);
+    }
+    if (task.status === 'done') return;
     if (task.status === 'abandoned' && hasWorktree) {
       await this.teardownTask({ projectId, taskId }, { force: true });
       j.append(projectId, taskId, 'abandoned');
@@ -400,7 +413,8 @@ export class Daemon {
     if (e.kind === 'task.assigned') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return; // already running here: a replayed or duplicate assignment starts nothing
-      const baseSha = await branchTip(project.repo, project.baseBranch);
+      // A GitHub project's tasks start from the base as the remote has it, fetched and verified (D-114).
+      const baseSha = project.integration === 'github' ? await this.fetchProjectBase(project) : await branchTip(project.repo, project.baseBranch);
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha, agentId: agent.id });
       if (this.stopping) return;
       await this.startAgent(ws, ref, { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId });
@@ -440,6 +454,7 @@ export class Daemon {
       this.ports.release(taskId);
       if (commit) await this.report(project.id, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: `harness/task/${taskId}`, commit });
       this.log(`${taskId} done: ${commit ? `committed ${commit.slice(0, 12)} on harness/task/${taskId}` : 'nothing to commit'}`);
+      if (project.integration === 'github') await this.publishTask(project.id, taskId);
     } else {
       if (this.running.has(taskId)) await this.stopAgent(taskId, 'kill');
       this.leases.untrack(taskId);
@@ -808,7 +823,10 @@ export class Daemon {
         // A merge left unfinished in the worktree (after an unblock, or a human's own) is never committed as the agent's work.
         const left = await unresolved(worktree);
         if (left) return void await blockOn(opts.since ?? target, left);
-        const r = await syncWorktree({ worktree, target, taskId: run.taskId, agent: { name: run.agent.name, email: `${run.agent.id}@harness.invalid` } });
+        const r = await syncWorktree({
+          worktree, target, taskId: run.taskId, agent: { name: run.agent.name, email: `${run.agent.id}@harness.invalid` },
+          ...(project.commitIdentity ? { identity: project.commitIdentity } : {}),
+        });
         if (!r.ok) return void await blockOn(opts.since ?? r.oldBase, r.conflicts);
         const since = opts.since ?? r.oldBase;
         const changed = since === r.oldBase ? r.changed : await changedBetween(worktree, since, r.newBase);
@@ -967,7 +985,9 @@ export class Daemon {
   async finishTask(t: { projectId: string; taskId: string; agent: { id: string; name: string }; summary?: string }): Promise<string | null> {
     this.project(t.projectId);
     const message = `${t.summary?.trim() || `Task ${t.taskId}`}\n\nHarness-Task: ${t.taskId}\nHarness-Agent: ${t.agent.id}`;
-    return commitAll(this.worktreeOf(t.projectId, t.taskId), message, { name: t.agent.name, email: `${t.agent.id}@harness.invalid` });
+    // A GitHub project's commits are its accountable human's, with the agent named in the trailer (D-114).
+    const human = this.project(t.projectId).commitIdentity;
+    return commitAll(this.worktreeOf(t.projectId, t.taskId), message, human ?? { name: t.agent.name, email: `${t.agent.id}@harness.invalid` }, human ?? undefined);
   }
 
   /**
@@ -999,7 +1019,7 @@ export class Daemon {
     const provider = this.provider();
     const sessionId = randomUUID();
     const record: SessionRecord = {
-      sessionId, agentId: agent.id, taskId: ws.taskId, projectId: ws.projectId, worktree: ws.worktree, baseBranch: project.baseBranch,
+      sessionId, agentId: agent.id, taskId: ws.taskId, projectId: ws.projectId, worktree: ws.worktree, baseBranch: this.diffBase(ws.projectId),
       pid: null, pidStart: null, configDir: ws.configDir, startedAt: new Date().toISOString(), vendor: agent.vendor,
     };
     this.sessions.save(record);
@@ -1068,6 +1088,110 @@ export class Daemon {
     await run.adapter.stopSession(run.handle, mode);
     await run.done;
     await run.sync.running; // never let finishTask or teardown race a sync's Git writes
+  }
+
+  // ---------- GitHub integration: the base, publishing (D-114) ----------
+
+  /**
+   * What a task's edits are measured against: the local base branch, or in a GitHub project harnessd's own base ref,
+   * which only moves forward and always contains every base a worktree started from (D-114; never the human's branch).
+   */
+  diffBase(projectId: string): string {
+    const project = this.project(projectId);
+    return project.integration === 'github' ? baseRef(project.id) : project.baseBranch;
+  }
+
+  /** Fetches the remote base and moves the base ref to it; returns its tip. */
+  async fetchProjectBase(project: ProjectConfig): Promise<string> {
+    const tip = await fetchBase(project.repo, project.remote!, project.baseBranch, project.id);
+    await advanceBaseRef(project.repo, project.id, tip);
+    return tip;
+  }
+
+  github(project: ProjectConfig): GitHubClient {
+    this.githubToken ??= this.o.github?.token ?? ghToken();
+    return new GitHubClient({ api: project.githubApi, repo: project.githubRepo!, token: this.githubToken });
+  }
+
+  /** The task's branch on the remote: per project and coordinator epoch, so a reset coordinator's T-1 never meets an old one's (D-114). */
+  remoteBranch(projectId: string, taskId: string): string {
+    return `harness/${projectId}/${(this.link?.epoch ?? 'none').slice(0, 8)}/${taskId}`;
+  }
+
+  /** Values harnessd holds that must never be published: the model key, the project's secrets, the local token. */
+  heldSecrets(projectId: string): string[] {
+    const auth = this.provider().auth as { apiKey?: string } | undefined;
+    const project = this.project(projectId);
+    return [auth?.apiKey, this.config.token, ...Object.values(resolveSecrets(this.home, project.secrets))].filter((v): v is string => typeof v === 'string' && v.length >= 8);
+  }
+
+  /**
+   * Publishes a finished task of a GitHub project (D-114): the gate scans every commit the push would send and the PR
+   * text; its human approves the exact head and text locally; harnessd pushes with an explicit lease and finds or
+   * opens the PR. Each step is journaled first, so a crash anywhere resumes here without a second push or a second PR.
+   */
+  async publishTask(projectId: string, taskId: string): Promise<void> {
+    const project = this.project(projectId);
+    const view = this.view(projectId);
+    const task = view.tasks.get(taskId);
+    if (!task || task.status !== 'done') return;
+    const j = this.journal();
+    const branch = this.remoteBranch(projectId, taskId);
+    const head = await branchTip(project.repo, taskBranch(taskId));
+    const base = await this.fetchProjectBase(project);
+    // Nothing to publish: the task's branch adds nothing to the base. Its land is a no-op (D-106 waits still end, PA6).
+    if (!(await git(project.repo, 'diff', '--name-only', `${base}...${head}`))) {
+      j.append(projectId, taskId, 'no_change', { head, base });
+      this.log(`${taskId}: nothing to publish: its branch adds nothing to ${project.baseBranch}`);
+      return;
+    }
+    const gh = this.github(project);
+    this.githubLogin ??= await gh.call<{ login: string }>('GET', '/user').then((u) => u.login, () => null);
+    const changed = (await git(project.repo, 'diff', '--name-only', '-z', `${base}...${head}`)).split('\0').filter(Boolean);
+    const agent = view.agents.get(task.assignee!)!;
+    const sessions = [...view.sessions.values()].filter((s) => s.taskId === taskId);
+    const usage = sessions.map((s) => view.usage.get(s.id)).filter((u) => u !== undefined);
+    const title = prTitle({ taskId, title: task.title });
+    const body = prBody({
+      taskId, title: task.title, summary: task.summary ?? null, scope: task.scope, agent: { id: agent.id, name: agent.name },
+      human: { id: this.config.principal, login: this.githubLogin }, changed, diffStat: await git(project.repo, 'diff', '--stat', `${base}...${head}`),
+      cost: { usd: usage.reduce((a, u) => a + u.costUsd, 0), sessions: sessions.length, models: [...new Set(usage.flatMap((u) => u.models ?? []))], provider: this.provider().name ?? null },
+      reviewers: requiredReviewers(await codeownersAt(project.repo, base), changed, this.githubLogin), closes: null,
+    });
+    const pushed = (j.last(projectId, taskId, 'pushed')?.head as string | undefined) ?? null;
+    const gate = await scanPublish(project.repo, { head, base, pushed, prText: `${title}\n${body}`, secrets: this.heldSecrets(projectId) });
+    if (gate.blocked.length) {
+      j.append(projectId, taskId, 'publish_blocked', { head, reasons: gate.blocked.length });
+      await this.report(projectId, 'publish.blocked', { task_id: taskId, reasons: gate.blocked.slice(0, 50) });
+      this.log(`${taskId}: not published: ${gate.blocked.map((b) => `${b.rule}${b.path ? ` (${b.path})` : ''}`).join(', ')}`);
+      return;
+    }
+    // The human approves this exact head and text (D-114). A dependency change is named in what they approve.
+    const hash = publishHash(head, `${title}\n${body}`);
+    if (!this.approvals.isApproved(project.id, hash)) {
+      const what = [
+        `publish ${taskId} to ${project.githubRepo} as ${branch} @ ${head.slice(0, 12)}`,
+        ...(gate.held.length ? [`dependency changes: ${gate.held.map((h) => h.path).join(', ')}`] : []),
+        `PR: ${title}`, await git(project.repo, 'diff', '--stat', `${base}...${head}`),
+      ].join('\n');
+      const req = this.approvals.request({ projectId, taskId, command: what, manifests: [], hash, kind: 'publish' });
+      this.log(`${taskId} is ready to publish. Review it with: harness approve ${req.id}`);
+      await this.waitForApproval(project.id, hash);
+    }
+    // Push, unless the remote branch already has this head (a crash after the push).
+    const remoteTip = await gitRemote(project.repo, 'ls-remote', '--', project.remote!, `refs/heads/${branch}`).then((o) => o.split('\t')[0] || null);
+    if (remoteTip !== head) {
+      j.append(projectId, taskId, 'pushing', { head, branch });
+      this.crashPoint('during_push');
+      // The lease: the branch must be absent, or hold exactly what harnessd last pushed; anyone else's push stops this one.
+      await pushBranch(project.repo, project.remote!, head, branch, remoteTip === null ? null : pushed);
+    }
+    j.append(projectId, taskId, 'pushed', { head, branch });
+    const open = (await gh.pullsForBranch(branch)).find((p) => p.state === 'open');
+    const pr = open ?? await gh.createPull({ title, body, head: branch, base: project.baseBranch });
+    j.append(projectId, taskId, 'pr', { number: pr.number, head });
+    await this.report(projectId, 'pr.publish', { task_id: taskId, pr_number: pr.number, url: pr.html_url, head_sha: head, base_sha: base, remote_ref: `refs/heads/${branch}` });
+    this.log(`${taskId} published: ${pr.html_url}`);
   }
 
   // ---------- loopback services (D-119, TH-22) ----------
@@ -1162,7 +1286,7 @@ export class Daemon {
     if (afterSync && run.sync.running) return run.sync.running.then(() => this.diffNow(run, true));
     const next = (run.diff.running ?? Promise.resolve()).then(async () => {
       try {
-        const paths = this.reportablePaths(run, await changedPaths(run.workspace.worktree, this.project(run.projectId).baseBranch));
+        const paths = this.reportablePaths(run, await changedPaths(run.workspace.worktree, this.diffBase(run.projectId)));
         const key = paths.join('\n');
         if (key === run.diff.last && !run.diff.hooksSince) return;
         run.diff.hooksSince = false;
@@ -1287,7 +1411,7 @@ export class Daemon {
     const fresh = paths.filter((p) => !run.reads.knows(p));
     if (!fresh.length) return;
     try {
-      const base = await git(run.workspace.worktree, 'merge-base', 'HEAD', this.project(run.projectId).baseBranch);
+      const base = await git(run.workspace.worktree, 'merge-base', 'HEAD', this.diffBase(run.projectId));
       const blobs = await blobsAt(run.workspace.worktree, base, fresh);
       const entries: ReadReport[] = fresh.map((p) => ({ path: p, hash: blobs.get(p) ?? null, source: 'edit_base', confidence: 'high' }));
       run.reads.recordHashed(entries.filter((e) => e.hash !== null)); // a new file has no base to depend on

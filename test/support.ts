@@ -243,6 +243,7 @@ export async function startPilotStack(p: {
         auth: { mode: 'api-key', apiKey: DUMMY_KEY }, // never the environment's key: the stand-in adapter calls no model
         // The stand-in adapter runs nothing in a sandbox, so D-119's loopback-Postgres probe has nothing to protect here.
         localServices: { check: async () => [] },
+        github: { token: async () => fake.token }, // the fake's token stands in for the human's gh login
         log: (m) => logs.push(m), onEvent: (e) => acted.push(e),
         ...p.daemonOptions,
       });
