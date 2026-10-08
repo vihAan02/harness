@@ -17,14 +17,15 @@ const MAX_TEXT_PATHS = 20;
 
 type Stage = 'in_progress' | 'landed';
 export type NoticePath = { path: string; readHash: string | null; newHash?: string | null };
-type Writer = { task: string; agent: string | null; agentName: string | null; landId?: string; newBase?: string };
+/** Who changed the files. `task` is null for a merge made outside the harness (D-114): a human's PR, say. */
+type Writer = { task: string | null; agent: string | null; agentName: string | null; landId?: string; newBase?: string };
 
 const short = (h: string | null | undefined) => (h ? h.slice(0, 7) : 'unknown');
 const listed = (paths: string[]) => paths.length <= MAX_TEXT_PATHS ? paths.join(', ') : `${paths.slice(0, MAX_TEXT_PATHS).join(', ')} and ${paths.length - MAX_TEXT_PATHS} more`;
 
 /** The notice text: a fact about the files (F-10). The landed form's first sentence per path is the exact S3 wording. */
 export function noticeText(stage: Stage, paths: NoticePath[], w: Writer): string {
-  const who = w.agentName ? `${w.agentName} (task ${w.task})` : `task ${w.task}`;
+  const who = w.task === null ? `a merge outside the harness (commit ${short(w.newBase)})` : w.agentName ? `${w.agentName} (task ${w.task})` : `task ${w.task}`;
   if (stage === 'in_progress') {
     const one = paths.length === 1;
     const hashes = one ? ` at hash ${short(paths[0]!.readHash)}` : '';
@@ -44,7 +45,7 @@ export function noticeText(stage: Stage, paths: NoticePath[], w: Writer): string
 export async function sendNotice(ctx: HandlerContext, reader: { task: string; agent: string }, stage: Stage, paths: NoticePath[], w: Writer): Promise<HandlerOutput['events']> {
   const sorted = [...new Map(paths.map((p) => [p.path, p])).values()].sort((a, b) => (a.path < b.path ? -1 : 1));
   const already = new Set((await ctx.tx.query<{ path: string }>(
-    `SELECT path FROM dependency_notices WHERE reader_task = $1 AND path = ANY($2) AND stage = $3 AND writer_task = $4 AND coalesce(land_id, '') = $5`,
+    `SELECT path FROM dependency_notices WHERE reader_task = $1 AND path = ANY($2) AND stage = $3 AND writer_task IS NOT DISTINCT FROM $4 AND coalesce(land_id, '') = $5`,
     [reader.task, sorted.map((p) => p.path), stage, w.task, w.landId ?? ''])).rows.map((r) => r.path));
   const fresh = sorted.filter((p) => !already.has(p.path));
   if (!fresh.length) return [];
@@ -103,12 +104,19 @@ export async function lockInvalidation(ctx: HandlerContext): Promise<void> {
  */
 export async function noticeReadsAfterLands(ctx: HandlerContext, reader: { task: string; agent: string }, reads: { path: string; hash: string | null }[]): Promise<HandlerOutput['events']> {
   if (!reads.length) return [];
-  const lands = (await ctx.tx.query<{ id: string; task_id: string; agent_id: string | null; new_base_sha: string; changed_blobs: Record<string, string | null> }>(
-    `SELECT l.id, l.task_id, w.assignee_agent_id AS agent_id, l.new_base_sha, l.changed_blobs
-     FROM lands l JOIN tasks r ON r.id = $2 JOIN tasks w ON w.id = l.task_id
-     WHERE l.project_id = $1 AND l.status = 'completed' AND l.task_id <> $2 AND l.changed_blobs IS NOT NULL
-       AND r.base_set_at IS NOT NULL AND l.finished_at > r.base_set_at
-     ORDER BY l.finished_at`, [ctx.projectId, reader.task])).rows;
+  // Lands, and base moves made outside the harness (D-114), after the reader's base was set.
+  const lands = (await ctx.tx.query<{ id: string; task_id: string | null; agent_id: string | null; new_base_sha: string; changed_blobs: Record<string, string | null> }>(
+    `SELECT id, task_id, agent_id, new_base_sha, changed_blobs FROM (
+       SELECT l.id, l.task_id, w.assignee_agent_id AS agent_id, l.new_base_sha, l.changed_blobs, l.finished_at AS at
+       FROM lands l JOIN tasks r ON r.id = $2 JOIN tasks w ON w.id = l.task_id
+       WHERE l.project_id = $1 AND l.status = 'completed' AND l.task_id <> $2 AND l.changed_blobs IS NOT NULL
+         AND r.base_set_at IS NOT NULL AND l.finished_at > r.base_set_at
+       UNION ALL
+       SELECT 'base:' || b.new_sha, NULL, NULL, b.new_sha, b.changed_blobs, b.created_at
+       FROM base_advances b JOIN tasks r ON r.id = $2
+       WHERE b.project_id = $1 AND b.source = 'external' AND b.status = 'applied' AND b.changed_blobs IS NOT NULL
+         AND r.base_set_at IS NOT NULL AND b.created_at > r.base_set_at
+     ) x ORDER BY at`, [ctx.projectId, reader.task])).rows;
   // The latest land wins per path.
   const latest = new Map<string, (typeof lands)[number]>();
   for (const l of lands) for (const p of Object.keys(l.changed_blobs)) latest.set(p, l);
@@ -158,13 +166,16 @@ export async function noticeReadsOfEdits(ctx: HandlerContext, reader: { task: st
   return events;
 }
 
-/** Trigger 3: `writer`'s land changed these paths on the base. Readers whose hash differs hear it landed. */
-export async function noticeLanded(ctx: HandlerContext, writer: { task: string; agent: string | null; landId: string; newBase: string }, changed: { path: string; newHash: string | null }[]): Promise<HandlerOutput['events']> {
+/**
+ * Trigger 3: `writer`'s land changed these paths on the base. Readers whose hash differs hear it landed. A merge made
+ * outside the harness (D-114) has no writing task: `task` null, and `landId` names the base move (`base:<sha>`).
+ */
+export async function noticeLanded(ctx: HandlerContext, writer: { task: string | null; agent: string | null; landId: string; newBase: string }, changed: { path: string; newHash: string | null }[]): Promise<HandlerOutput['events']> {
   if (!changed.length) return [];
   const next = new Map(changed.map((c) => [c.path, c.newHash]));
   const rows = (await ctx.tx.query<{ task_id: string; agent_id: string; path: string; content_hash: string | null }>(
     `SELECT r.task_id, t.assignee_agent_id AS agent_id, r.path, r.content_hash FROM read_entries r JOIN tasks t ON t.id = r.task_id
-     WHERE r.project_id = $1 AND r.path = ANY($2) AND r.task_id <> $3 AND t.status = ANY($4) AND t.assignee_agent_id IS NOT NULL
+     WHERE r.project_id = $1 AND r.path = ANY($2) AND ($3::text IS NULL OR r.task_id <> $3) AND t.status = ANY($4) AND t.assignee_agent_id IS NOT NULL
      ORDER BY r.task_id, r.path`, [ctx.projectId, [...next.keys()], writer.task, LANDED_READERS])).rows
     // The exact rule: notify if the new content isn't what the reader read. An unknown hash always counts as changed.
     .filter((r) => r.content_hash === null || r.content_hash !== next.get(r.path));
@@ -183,7 +194,7 @@ async function byReader(ctx: HandlerContext, rows: { task_id: string; agent_id: 
   return events;
 }
 
-async function writerInfo(ctx: HandlerContext, task: string, agent: string | null): Promise<Writer> {
+async function writerInfo(ctx: HandlerContext, task: string | null, agent: string | null): Promise<Writer> {
   if (!agent) return { task, agent: null, agentName: null };
   const name = (await ctx.tx.query<{ name: string }>('SELECT name FROM agent_principals WHERE id = $1', [agent])).rows[0]?.name ?? null;
   if (name === null) throw new CommandError('internal', `agent ${agent} vanished`);
