@@ -3,7 +3,7 @@
 // commands sandboxed, hands out ports and agent config dirs, tracks agent processes, and keeps a
 // connection to the coordination server. It runs agent sessions only through @harness/adapters
 // (D-17). Acting on task assignments arrives with the lifecycle (item 9).
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -47,6 +47,7 @@ import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { readPolicyFor } from './readpolicy.ts';
 import { ProjectView, type MessageInfo, type WaitInfo } from './view.ts';
 import { snapshotOf } from './snapshot.ts';
+import { screenText } from './screen.ts';
 import { MIN_START_USD, ProviderCircuit, RATE_LIMIT_STOP, SpendLedger } from './budget.ts';
 import { UiRpc } from './uirpc.ts';
 
@@ -144,6 +145,11 @@ export type DaemonOptions = {
   localServices?: { check?: () => Promise<TrustLogin[]> };
 };
 
+/** What a security review releases (D-118): one message, its exact text. */
+function reviewHash(id: string, text: string): string {
+  return createHash('sha256').update(JSON.stringify({ v: 1, kind: 'security_review', id, text })).digest('hex');
+}
+
 /** Whether `p` settled (either way) within `ms`. Never rejects; leaves no timer behind. */
 async function settledWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
@@ -178,6 +184,9 @@ export class Daemon {
   landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
   /** Aborted when harnessd stops: setup commands and land tests are killed at once (#74). */
   stopSignal = new AbortController();
+  /** T-5 (D-118): messages held for review now, and ones their human denied (never delivered). */
+  reviewing = new Set<string>();
+  screenDenied = new Set<string>();
   /** Setup and test commands running now, by name; their process groups are recorded in ~/.harness/procs. */
   procsRunning = new Set<string>();
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
@@ -511,6 +520,8 @@ export class Daemon {
     if (e.kind === 'task.assigned') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return; // already running here: a replayed or duplicate assignment starts nothing
+      // T-5 (D-118): a task another human wrote is screened like a peer's message, before anything is prepared.
+      if (task.ownerHumanId !== this.config.principal && !(await this.taskScreenedOk(project.id, taskId, `${task.title}\n${task.text}`, task.ownerHumanId))) return;
       // A GitHub project's tasks start from the base as the remote has it, fetched and verified (D-114).
       const baseSha = project.integration === 'github' ? await this.fetchProjectBase(project) : await branchTip(project.repo, project.baseBranch);
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha, agentId: agent.id });
@@ -573,6 +584,68 @@ export class Daemon {
   }
 
   /**
+   * The T-5 screen for one message (D-118): true when it may be delivered (nothing matched, or its human released it).
+   * Otherwise it's held: a `security_review` request names the rules, the sender and the exact text, and a watcher
+   * delivers it once released. A denied one is never delivered.
+   */
+  async screenedOk(run: RunningAgent, m: MessageInfo, from: string): Promise<boolean> {
+    const hits = screenText(m.text);
+    if (!hits.length) return true;
+    const hash = reviewHash(m.id, m.text);
+    if (this.approvals.isApproved(run.projectId, hash)) return true;
+    if (this.screenDenied.has(m.id)) return false;
+    const req = this.approvals.request({
+      projectId: run.projectId, taskId: run.taskId, manifests: [], hash, kind: 'security_review',
+      command: `a message from ${from} to ${run.agent.name} (${run.taskId}) asks to ${hits.map((h) => h.rule).join(', ')}; it's held until you release it. The exact text:\n${m.text}`,
+    });
+    if (!this.reviewing.has(m.id)) {
+      this.reviewing.add(m.id);
+      this.log(`held message ${m.id} from ${from} for ${run.agent.name}: ${hits.map((h) => `${h.rule} ("${h.excerpt}")`).join('; ')}. Review it with: harness approve ${req.id}`);
+      void this.awaitReview(run, m, hash, req.id).finally(() => this.reviewing.delete(m.id));
+    }
+    return false;
+  }
+
+  /** The screen for a task's text when another human wrote it (D-118): waits for the review; false when it's denied or unanswered. */
+  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string): Promise<boolean> {
+    const hits = screenText(text);
+    if (!hits.length) return true;
+    const hash = reviewHash(`task:${taskId}`, text);
+    if (this.approvals.isApproved(projectId, hash)) return true;
+    const req = this.approvals.request({
+      projectId, taskId, manifests: [], hash, kind: 'security_review',
+      command: `task ${taskId}, written by ${owner}, asks to ${hits.map((h) => h.rule).join(', ')}; your agent starts it only once you release it. The exact text:\n${text}`,
+    });
+    this.log(`held task ${taskId} from ${owner}: ${hits.map((h) => `${h.rule} ("${h.excerpt}")`).join('; ')}. Review it with: harness approve ${req.id}`);
+    const deadline = Date.now() + (this.o.approvalTimeoutMs ?? 30 * 60_000);
+    while (!this.stopping && Date.now() < deadline) {
+      if (this.approvals.isApproved(projectId, hash)) return true;
+      if (!this.approvals.pending().some((r) => r.id === req.id && r.projectId === projectId)) {
+        this.log(`${taskId}: not started; its human denied the review`);
+        return false;
+      }
+      await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
+    }
+    this.log(`${taskId}: not started; nobody released it`);
+    return false;
+  }
+
+  async awaitReview(run: RunningAgent, m: MessageInfo, hash: string, id: string): Promise<void> {
+    while (this.running.get(run.taskId) === run && !this.stopping) {
+      if (this.approvals.isApproved(run.projectId, hash)) {
+        this.log(`message ${m.id}: released by its human; delivering it to ${run.agent.name}`);
+        return this.deliver(run, m);
+      }
+      if (!this.approvals.pending().some((r) => r.id === id && r.projectId === run.projectId)) {
+        this.screenDenied.add(m.id);
+        this.log(`message ${m.id} to ${run.agent.name}: not delivered; its human denied it`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
+    }
+  }
+
+  /**
    * Injects a message into the recipient's live session at its next safe boundary (D-26), rendered in
    * its envelope (D-25), then acknowledges where it landed. A high-priority harness notice goes to the
    * adapter's notice queue instead (D-99). Held (over-budget) messages are never delivered. Messages for
@@ -600,6 +673,9 @@ export class Daemon {
       };
       const text = renderMessage(msg);
       const origin = msg.sender.kind === 'harness' ? 'coordinator' : msg.sender.kind === 'human' && msg.sender.local ? 'human' : 'peer';
+      // T-5 (D-118): a peer's or another human's ask to disable checks, read or send outside the task, or widen its
+      // scope waits for this human's review; released, it's delivered verbatim (D-63).
+      if (origin === 'peer' && !(await this.screenedOk(run, m, msg.sender.kind === 'agent' ? msg.sender.name : m.from))) return;
       // The harness's own high-priority notices ride the agent's next tool results (D-99); everything else is injected.
       const notice = msg.sender.kind === 'harness' && m.priority === 'high';
       const receipt = await (notice ? run.adapter.queueNotice(run.handle, { id: m.id, text, origin }) : run.adapter.injectMessage(run.handle, { id: m.id, text, origin }));
