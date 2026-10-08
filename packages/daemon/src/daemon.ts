@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec, type SessionStatus,
 } from '@harness/adapters';
-import type { EventMessage } from '@harness/protocol';
+import type { EventMessage, ProjectSnapshot } from '@harness/protocol';
 import { Approvals, setupHash, testHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
 import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, guardWorktrees, removeWorktree, TASK_ID, taskBranch } from './git.ts';
@@ -46,6 +46,7 @@ import { waitOutcomeText } from './tools/waits.ts';
 import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { readPolicyFor } from './readpolicy.ts';
 import { ProjectView, type MessageInfo, type WaitInfo } from './view.ts';
+import { snapshotOf } from './snapshot.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -256,6 +257,22 @@ export class Daemon {
       });
       this.poller.start();
     }
+  }
+
+  /** The UI's read model of one project (D-117): its view, plus this harnessd's approvals, publishing, link and budget. */
+  snapshot(projectId: string): ProjectSnapshot {
+    const project = this.project(projectId);
+    const view = this.view(projectId);
+    const j = this.journal();
+    // Committed for publishing, with no PR and no "nothing to publish" yet: the push and the PR are under way (D-114).
+    const publishing = new Set([...view.tasks.values()]
+      .filter((t) => t.status === 'done' && j.has(projectId, t.id, 'committed') && !j.has(projectId, t.id, 'pr') && !j.has(projectId, t.id, 'no_change'))
+      .map((t) => t.id));
+    return snapshotOf(view, {
+      deviceId: this.config.deviceId, principal: this.config.principal, integrationMode: project.integration, connection: this.linkState,
+      approvals: this.approvals.pending().filter((r) => r.projectId === projectId).map((r) => ({ taskId: r.taskId, kind: r.kind ?? 'setup' })),
+      publishing, budget: { dailyBudgetUsd: this.config.agents.dailyBudgetUsd, sessionCapUsd: this.config.agents.maxBudgetUsd },
+    });
   }
 
   view(projectId: string): ProjectView {

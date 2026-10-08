@@ -336,6 +336,16 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 
 **harnessd's `uirpc`.** A Unix socket at `~/.harness/run/harnessd.sock` (0600, in a 0700 directory). Every request carries the token from `~/.harness/run/uirpc.token`. Newline-delimited JSON, one request per line: `{ id, method, params }` → `{ id, ok, result | error }`.
 - `snapshot()` → `ProjectSnapshot[]` (`ProjectView.snapshot()`: tasks with their derived state, agents with device and presence, sessions with usage, messages, waits, notices, lands and reservations, PRs with checks, budget totals, connection health).
+  - **The type** is `ProjectSnapshot` in `@harness/protocol` (v1), built by `snapshotOf()` in `packages/daemon/src/snapshot.ts` from the project's view and what only this harnessd knows: its pending approvals, the tasks it's publishing, its link state and its budget.
+  - **A task's `state`, most specific first:**
+    - `abandoned`, `landed`;
+    - a land in flight: `outcome_unknown`, else `integrating`;
+    - done: `publish_blocked`, `publish_pending_approval`, `publishing`, `pr_open`, else `done`;
+    - `blocked`;
+    - in progress: `fetch_pending` (its last sync couldn't fetch the base), `starting` or `running` (a live session), `awaiting_approval` (a local setup or session approval), `stopped` (its last session ended), else `starting`;
+    - `open`.
+
+    `state_detail` says why, where there's a reason. It's untrusted text, like every string in the snapshot.
 - `events(after_seq)`: a stream of `{ project_id, seq, snapshot_patch }` lines.
 - `health()` → the connection state (`connected`, `reconnecting`, `server_identity_mismatch`, `coordinator_changed`), the dead outbox, the provider circuit.
 - `pending_approvals()` → the local approvals (`agent_session`, `setup`, `test`, `publish`, `security_review`), each with what the human must see (command and manifests, diff summary and PR text, held message).
