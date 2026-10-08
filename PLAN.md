@@ -1243,6 +1243,16 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     - a "land together" feature: new product work in 0B, which would delay the counted runs.
   - **Where it goes:** validation.md §9's playbook (B10, #59), and the baseline runner's `merge` (B9b). Both owners sign §9 as a whole (D-121).
   - *Source:* S13; HANDOFF's owner decisions (PR #56); the B11 rehearsal (2026-10-05). *Status:* Decided by an owner (`vihAan02`, D-85).
+- **D-126 Development and the live demos run on Anthropic's Haiku 5.5 through OpenRouter, pinned to Anthropic, within $0.50 a day of real-model spend (supersedes D-104's model for development and demos; the A/B's model stays §9's, which both owners sign). Decided by an owner, 2026-10-07.**
+  - **The provider:** the `openrouter-haiku55` table in `docs/examples/providers.toml`: `anthropic/claude-haiku-5.5`, `provider.only = ["anthropic"]`, fallbacks off. The demos take `--provider openrouter-haiku55`.
+  - **Not `:batch`, which the owner named.** It's OpenRouter's asynchronous Batch API: results within 24 hours, and no streaming. It can't drive a Claude Code session (F-120). The live variant is the same model, and cheaper than DeepSeek on Parasail.
+  - **The budget, $0.50 a day,** read as dollars: half a cent wouldn't cover one provider check.
+    - **The hard cap** is the owner's: a daily-reset credit limit on the OpenRouter key (F-120).
+    - **Per session:** the demos' `--budget-usd`, 0.25 in stream B's runs.
+    - **Before each paid run,** stream B's Claude adds up the day's spend from the runs' cost reports, and stops before the limit.
+  - **The A/B:** §9 (D-121) still pins D-104's DeepSeek until both owners sign a change. Moving the A/B to Haiku 5.5 is proposed in §9's revision 3.
+  - **What a real run showed:** Haiku 5.5 reported `task_blocked` rather than edit a test fixture outside its scope (F-120). So the 0B demo's backend scope now covers what its change needs.
+  - *Source:* S16; F-120. *Status:* Decided by an owner (`vihAan02`, D-85).
 <!-- Stream B: append new D-IDs (D-120 to D-139) above this line. -->
 
 ## 8. Hypotheses (what we're testing, not assuming)

@@ -11,6 +11,7 @@
 //                                           docs/examples/providers.toml; needs that provider's key variable
 //   options: --bench <path|url>  the Shelf repo (default: github.com/vihAan02/harness-bench)
 //            --providers <file>  where --provider looks;  --keep  keep the temp dir for inspection
+//            --budget-usd <d>    with --real, each agent session's budget (default 2)
 //
 // Needs Postgres (README "Running locally") and network for the clone and Shelf's `npm ci`.
 import { execFile, execFileSync } from 'node:child_process';
@@ -35,12 +36,14 @@ const KEEP = argv.includes('--keep');
 const BENCH = opt('bench') ?? 'https://github.com/vihAan02/harness-bench.git';
 const PROVIDER = opt('provider');
 const PROVIDERS_FILE = opt('providers') ?? path.resolve(import.meta.dirname, '../docs/examples/providers.toml');
+const BUDGET = Number(opt('budget-usd') ?? '2');
+if (!(BUDGET > 0)) throw new Error('--budget-usd must be a positive number of dollars');
 if (PROVIDER && !REAL) { console.error('--provider needs --real.'); process.exit(2); }
 const agentsConfig: Record<string, unknown> = !REAL ? {} : PROVIDER ? {
-  agents: { provider: PROVIDER, max_budget_usd: 2 },
+  agents: { provider: PROVIDER, max_budget_usd: BUDGET },
   providers: { [PROVIDER]: ((parseToml(fs.readFileSync(PROVIDERS_FILE, 'utf8')) as { providers?: Record<string, unknown> }).providers ?? {})[PROVIDER]
     ?? (() => { console.error(`no [providers.${PROVIDER}] in ${PROVIDERS_FILE}`); process.exit(2); })() },
-} : { agents: { max_budget_usd: 2 } };
+} : { agents: { max_budget_usd: BUDGET } };
 
 const t0 = Date.now();
 const say = (msg: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s] ${msg}`);
@@ -84,7 +87,7 @@ async function main() {
   let provider: ResolvedProvider | null = null;
   if (REAL) {
     provider = resolveProvider(config, { ...process.env, HARNESS_PROVIDER: PROVIDER ?? '' });
-    say(`agents run on ${provider.model?.id ?? "the vendor's default model"}${provider.name ? ` via provider "${provider.name}"` : ''}, capped at $2 per session`);
+    say(`agents run on ${provider.model?.id ?? "the vendor's default model"}${provider.name ? ` via provider "${provider.name}"` : ''}, capped at $${BUDGET} per session`);
   }
   const observed: { run: RunningAgent; o: Observation }[] = [];
   const daemon = new Daemon({
@@ -112,7 +115,14 @@ async function main() {
   };
   const until = async (what: string, pred: () => boolean, ms: number) => {
     const end = Date.now() + ms;
-    while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await new Promise((r) => setTimeout(r, 100)); }
+    while (!pred()) {
+      // A real agent may stop and ask its human (task_blocked, D-105). This demo has no human to answer, so it
+      // stops here with the agent's words, rather than waiting out the deadline.
+      const blocked = view.events.find((e) => e.kind === 'message.sent' && (e.data as { kind?: string }).kind === 'task_blocked');
+      if (blocked) throw new Error(`an agent reported it's blocked, and the demo has no human to answer it, while waiting for ${what}: ${(blocked.data as { text?: string }).text ?? ''}`);
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
   };
   const turnEnds = (task: string) => observed.filter((x) => x.run.taskId === task && x.o.kind === 'turn.ended').length;
   const ev = (kind: string, task?: string) => view.events.filter((e) => e.kind === kind && (!task || (e.data as { task_id?: string }).task_id === task));
@@ -170,7 +180,9 @@ async function main() {
   await until('agent/frontend to read the contract', () => ev('readset.added', T_WEB).some((e) => JSON.stringify(e.data).includes(TYPES)), REAL ? 600_000 : 180_000);
   say('agent/frontend has read src/shared/types.ts');
   if (!REAL) await until('agent/frontend to finish its first turn', () => turnEnds(T_WEB) >= 1, 120_000);
-  console.log(`$ harness task add "Add expiresAt to the login response" --scope src/server/,src/shared/types.ts,test/contract/ --assign backend …\n${indent(await cli('task', 'add', 'Add expiresAt to the login response', '--scope', 'src/server/,src/shared/types.ts,test/contract/', '--assign', 'backend', '--text', backendText))}`);
+  // The scope covers what the change needs: a unit test builds a LoginResponse, and the README documents the endpoint.
+  const API_SCOPE = 'src/server/,src/shared/types.ts,test/contract/,test/unit/,README.md';
+  console.log(`$ harness task add "Add expiresAt to the login response" --scope ${API_SCOPE} --assign backend …\n${indent(await cli('task', 'add', 'Add expiresAt to the login response', '--scope', API_SCOPE, '--assign', 'backend', '--text', backendText))}`);
   await until('agent/backend to finish', () => ev('worktree.committed', T_API).length > 0, REAL ? 15 * 60_000 : 180_000);
   say('agent/backend finished; harnessd committed its work');
 
