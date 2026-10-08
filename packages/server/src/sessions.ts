@@ -2,6 +2,7 @@
 // (`as_agent`), from its device connection. The first report creates the session; later ones change its
 // status, record the vendor's ids on the row (protocol.md §10), and report usage. These events are the "which agents are alive"
 // part of the 0A exit criteria, and usage.reported feeds A/B metric M8.
+import { isUniqueViolation } from './db.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 
 const STATUSES = ['starting', 'working', 'idle', 'waiting', 'suspended', 'errored', 'ended'];
@@ -89,15 +90,27 @@ export async function reportSession(ctx: HandlerContext, args: Record<string, un
     const worktree = short(args.worktree, 'worktree', 1024);
     const branch = short(args.branch, 'branch', 255);
     if (!worktree?.startsWith('/') || !branch) throw new CommandError('bad_request', 'a new session needs an absolute worktree and a branch');
+    // The task's row lock serializes starts: two devices (or a replayed event) can't both see no live session (D-113).
     const task = (await ctx.tx.query<{ assignee_agent_id: string | null }>(
-      'SELECT assignee_agent_id FROM tasks WHERE id = $1 AND project_id = $2', [taskId, ctx.projectId])).rows[0];
+      'SELECT assignee_agent_id FROM tasks WHERE id = $1 AND project_id = $2 FOR NO KEY UPDATE', [taskId, ctx.projectId])).rows[0];
     if (!task) throw new CommandError('not_found', `no task ${taskId} in this project`);
     if (task.assignee_agent_id && task.assignee_agent_id !== agentId) throw new CommandError('forbidden', `${taskId} is assigned to another agent`);
     if (status === 'ended') throw new CommandError('bad_request', 'a session cannot start ended');
-    await ctx.tx.query(
-      `INSERT INTO agent_sessions (id, agent_id, device_id, task_id, worktree_path, branch, vendor_session_id, vendor_version, status, model, provider, last_heartbeat_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())`,
-      [sessionId, agentId, deviceId, taskId, worktree, branch, vendorSessionId ?? null, vendorVersion ?? null, status, model ?? null, provider ?? null]);
+    // An agent bound to a device runs only there (D-113).
+    const bound = (await ctx.tx.query<{ device_id: string | null }>('SELECT device_id FROM agent_principals WHERE id = $1', [agentId])).rows[0]?.device_id;
+    if (bound && bound !== deviceId) throw new CommandError('forbidden', `wrong_device: ${agentId} runs on ${bound}, not ${deviceId}`);
+    const live = (await ctx.tx.query<{ id: string; device_id: string }>(
+      "SELECT id, device_id FROM agent_sessions WHERE task_id = $1 AND status <> 'ended' LIMIT 1", [taskId])).rows[0];
+    if (live) throw new CommandError('conflict', `live_session_exists: ${live.id} on ${live.device_id}`);
+    try {
+      await ctx.tx.query(
+        `INSERT INTO agent_sessions (id, agent_id, device_id, task_id, worktree_path, branch, vendor_session_id, vendor_version, status, model, provider, last_heartbeat_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())`,
+        [sessionId, agentId, deviceId, taskId, worktree, branch, vendorSessionId ?? null, vendorVersion ?? null, status, model ?? null, provider ?? null]);
+    } catch (e) {
+      if (isUniqueViolation(e, 'agent_sessions_one_live_per_task')) throw new CommandError('conflict', `live_session_exists: another session for ${taskId}`);
+      throw e;
+    }
     events.push({ kind: 'session.started', data: {
       session_id: sessionId, agent_id: agentId, task_id: taskId, device_id: deviceId, worktree, branch, status,
       ...(model ? { model } : {}), ...(provider ? { provider } : {}),
