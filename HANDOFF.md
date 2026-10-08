@@ -1,4 +1,12 @@
-# Handoff: harness, Phase 0B (state as of 2026-10-06)
+# Handoff: harness, Phase 0B (state as of 2026-10-06; the pilot sprint from 2026-10-08)
+
+## Update (2026-10-08): the two-Mac pilot sprint (D-110). Read this first
+- **Who and when:** written by Daniyal's Claude (stream A), 2026-10-08, with PC0.
+- **What changed:** the owner put a two-Mac private pilot and its thin UI ahead of the counted A/B (S17, D-110). The design is D-111 to D-119. The A/B gate is not passed; the `ab-v1` freeze and counted runs come after the pilot candidate, and the open A/B PRs (#80, #83, #84, #65) wait unchanged.
+- **Where the work is:** the workboard (#4) and the `P…` issues: cards, dependencies, acceptance tests, owners and an ops log per card. AGENTS.md's "Pilot sprint" section has the added ownership rows and rules; product agents read the block at the top of AGENTS.md.
+- **The baseline (`main` @ `818ccef`, Node 24.21.0, Postgres 18 on 5433, this Mac):** `npm run check` 360 tests, 359 pass, 0 fail, 1 skipped (1 min 47 s); `npm run demo` and `npm run demo:0b` pass (scripted).
+- **This file is updated at the sprint's checkpoints** (T+24, T+48, T+72). The sections below describe 0B before the sprint.
+
 
 ## Update (2026-10-06): the functional MVP is declared (D-109); the A/B freeze is next. Read this first
 - **Who and when:** written by Daniyal's Claude (stream A) at about 23:15 UTC on 2026-10-06.

@@ -2,13 +2,21 @@
 
 These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE.md` imports this file.
 
+## Harness task sessions (product agents): read this first
+If your first message begins with `[harness task]`, you are a Harness product agent working in a Harness task worktree. This block replaces the rest of this file for you:
+- **Your task text is your go-ahead.** The pilot, including `packages/ui/**` and the `harness ui` launcher, is authorized by D-110; the phase and "don't build past the current phase" rules below don't block your task.
+- **Read only** the files your task names and the files you edit. Don't read PLAN.md or the other docs unless the task names a section.
+- **Edit only inside your task's SCOPE line.** Never run `git`, `gh`, `npm install`, `npx` or `npm run check`; run only the test commands your task lists. harnessd commits, pushes and opens the PR.
+- **Skip** the session-start commands, the stream and file-ownership rules, and the PR rules below.
+- **If something outside your scope blocks you,** report it with `task_blocked` instead of working around it.
+
 ## What this repo is
 - **The product:** the **harness**, a multiplayer coordination layer for humans and AI agents working across machines, models, and eventually data sources (D-01).
 - **The first wedge:** several humans, each with their own agents on their own machines, coordinating on one repo.
 
 ## Current state
 - **The owners:** GitHub `vihAan02`, who owns the repo, and Daniyal Mughal (GitHub `DaniyalMughal1`), co-owner (D-85, superseding D-71's owner line). A gate marked "owner" needs the approval of either one. Daniyal continues the work from [HANDOFF.md](HANDOFF.md).
-- **Phase:** 0B, approved 2026-10-03 by a co-owner (D-86). 0A is built (D-59 to D-84).
+- **Phase:** 0B, approved 2026-10-03 by a co-owner (D-86), **plus the two-Mac pilot sprint (D-110, 2026-10-08)**. 0A is built (D-59 to D-84).
   - **Done:**
     - the adapter spike (roadmap 0A item 0), in `spikes/0a-adapter/`, accepted by the owner (D-71). Results are in [docs/research/spike-0a.md](docs/research/spike-0a.md); the architecture changes are D-60 to D-70.
     - item 1, the repo skeleton, in `packages/` (D-72);
@@ -25,14 +33,14 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
   - **Real-model checks:** U-1 and U-2 are verified, and U-3 measured, on the configured model (2026-10-05, #58; spike-0a.md §5).
   - **0B so far (D-86):** provider integration (D-87, D-90), read capture (D-91), invalidation and sync (D-92) and the land step (D-93); then items 3 to 8 (D-95 to D-106): hook delivery and the Stop gate, `wait_for`, leases and fencing, the message kinds, read confinement, and T-1, T-1b and T-2.
   - **The rest of 0B (D-94):** approved 2026-10-03 and built in two parallel workstreams. See "Parallel development (0B)" below before touching any file.
-  - **The functional MVP is declared (D-109, 2026-10-06):** items 3 to 8 are merged, EC2 passed three times, and a real-model end-to-end run on Shelf works, with CI green on `main` @ `ab9eba8`. Next comes the `ab-v1` freeze (B9b, §9 signed by both owners, and D-107 (#76) and D-108 (#63) built), then the counted A/B runs (Milestone 2).
+  - **The functional MVP is declared (D-109, 2026-10-06):** items 3 to 8 are merged, EC2 passed three times, and a real-model end-to-end run on Shelf works, with CI green on `main` @ `ab9eba8`. After the pilot sprint (D-110) comes the `ab-v1` freeze (B9b, §9 signed by both owners, and D-107 (#76) and D-108 (#63) built), then the counted A/B runs (Milestone 2).
   - **Environment caveat:** if the checkout is inside an iCloud-synced folder (such as `~/Desktop`), real-CLI tests flake and iCloud can create `name 2.ext` duplicate files; run them from a clone outside iCloud (see HANDOFF.md).
 - **Code:**
   - Product code lives in `packages/{protocol,server,daemon,adapters,cli}`, an npm workspace that runs from TypeScript source (D-72). Run `npm run check` (type-check + tests) before handing work back. The server tests need Postgres running: see "Running locally" in [README.md](README.md). The adapter tests run the real pinned Claude Code CLI against a scripted stand-in for the model, so they need no API key.
   - `test/structure.test.ts` enforces three architecture rules: no imports of the spike, agent-vendor SDKs only in `adapters`, and dependencies only in the allowed direction.
   - The spike is throwaway, and product code never imports it.
 - **Stack:** TypeScript (D-55) on Node 24+ (D-72). Experiments use API keys or provider tokens from pay-as-you-go accounts, never subscription login (D-56, D-87). The model endpoint is configured, never hardcoded (D-87).
-- **Next step, and what must happen first:** see [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a). That's the only canonical copy.
+- **Next step, and what must happen first:** see [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a). That's the only canonical copy. In short: the two-Mac private pilot and its thin UI (D-110 to D-119), before the `ab-v1` freeze and the counted A/B runs. The A/B gate is not passed. See "Pilot sprint (D-110)" below before touching any file.
 
 ## Read in this order before doing anything
 1. [PLAN.md](PLAN.md): the source of truth. Vision, principles, decisions (D), hypotheses (H), risks (R), sequence.
@@ -61,7 +69,7 @@ These instructions apply to every agent: Claude Code, Codex, and others. `CLAUDE
 11. The product vision stays ambitious; the implementation sequence stays disciplined.
 
 ## Rules
-- **Don't build past the current phase,** and don't pull deferred items forward (PLAN.md §10). Phase 0's small size doesn't shrink the vision. Never "simplify" the vision in the docs.
+- **Don't build past the current phase,** and don't pull deferred items forward (PLAN.md §10), except what D-110 pulls forward for the pilot. Phase 0's small size doesn't shrink the vision. Never "simplify" the vision in the docs.
 - **No product code without the owner's go-ahead** for that phase (D-44). A throwaway verification spike in a scratch directory is covered by the phase's go-ahead.
 - **PLAN.md wins on any conflict.** If a doc disagrees with it, fix the doc.
 - **Decisions are superseded, never silently edited.** Add a new D-ID with the date, the reason, and which ID it supersedes.
@@ -170,6 +178,27 @@ gh issue list -R vihAan02/harness --label status:active --label status:blocked
   - notes for the other stream.
 
   Only Daniyal edits HANDOFF.md, at milestones.
+
+## Pilot sprint (D-110, from 2026-10-08)
+Both owners' Macs run one pinned candidate as two humans with one execution device each, coordinate through GitHub PRs, and share a thin local UI built by Harness agents. The decisions are D-110 to D-119; the cards, their dependencies and acceptance tests are on the workboard (#4) and in issues named `P…` (`PC*` contracts, `PA*` stream A, `PB*` stream B, `PU*` UI tasks). The 0B rules above still apply, with these additions.
+
+**More file ownership** (rows added to the table above; the same review rules apply):
+
+| Area | Stream A (Daniyal) | Stream B (Vihaan) |
+|---|---|---|
+| Packages | `protocol/**` incl. `signing.ts`; `adapters/**` | `ui/**` (app, style and test files only through Harness tasks) |
+| Server | `server, main`, `lands`, new `integrations`; migrations `0014`, `0016`, `0018` | `tasks, agents, sessions` dispatch handling, new `admin`; migrations `0015`, `0017` |
+| Daemon | `identity, dispatch, journal, recovery, lockfile, remote, github, publish, prpoll, integrate-remote, localsvc, uirpc`, `config.ts` (the pilot schema) | none (the UI talks to harnessd through `uirpc`) |
+| Tests | `test/pilot/**` except `bootstrap*`, `test/fake-github.ts`, `test/security/{t1-localhost,t3,t4,t5}*` | `test/pilot/bootstrap*`, `test/fixtures/ui-contract/**` |
+| Scripts and repo | `harness.yaml`, `packages/ui/package.json` with its lockfile entry and the `ui` structure row, `packages/ui/tsconfig.web.json` | `scripts/pilot/**` |
+
+**Rules for the sprint:**
+- **IDs:** after each stream's original range, stream A uses D-140 to D-149 and F-140 to F-149, and stream B D-150 to D-159 and F-150 to F-159.
+- **Dogfood:** every app, style and test file under `packages/ui/**` comes from a Harness task session and lands through its PR. Repo plumbing (manifests, the lockfile, `tsconfig`, the structure test, `harness.yaml`, CODEOWNERS) is written by the owners. Never write UI code directly in a development session.
+- **Harness task PRs** (branches `harness/<project>/<epoch>/<task>`) follow the same template, review and CI rules as `daniyal/*` and `vihaan/*` PRs. They are opened by harnessd; a human approves the exact head before harnessd merges it (D-115).
+- **One PR in flight for every branch kind:** harnessd runs the same "one PR in flight" check as above before it reserves or refreshes a PR. Core-fix PRs merge in a batch before each promotion of the pinned runtime, never while a GitHub reservation is active.
+- **The pinned runtime:** harnessd and the UI bridge run from `~/harness-runtime/<sha>`, never from a development checkout; the harnessd project repo is a dedicated clone. Agents never replace a running daemon; a new SHA is promoted with sessions stopped and their work preserved.
+- **Real-model spend:** each human uses only their own provider key, capped at $0.25 a day on the provider's side; record every run's cost in its PR. No cap changes without an owner.
 
 ## Glossary and IDs
 See PLAN.md §13 (glossary) and §7–§9 (D, H and R registers).

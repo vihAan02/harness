@@ -293,7 +293,7 @@ The owner reviews the A/B results and records go or no-go as a new D-ID.
 
 ## Phase 2: everyday use
 
-- **A dashboard** for the board, presence, notices, approvals and metrics.
+- **A dashboard** for the board, presence, notices, approvals and metrics. *D-110 pulls a thin local UI (D-117) forward for the two-Mac pilot; this full dashboard stays here.*
 - **Full policy compilation** into each vendor's native sandbox, permission config and hooks (D-35).
 - **Worktree bootstrap (D-39):**
   - dependency cache;
