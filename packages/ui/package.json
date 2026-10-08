@@ -1,0 +1,11 @@
+{
+  "name": "@harness/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The thin local UI (D-117): a bridge that talks to harnessd's socket, and browser modules served by it. Its app, style and test files come from Harness task sessions (D-110).",
+  "dependencies": {
+    "@harness/daemon": "0.0.0",
+    "@harness/protocol": "0.0.0"
+  }
+}

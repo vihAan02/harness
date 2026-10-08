@@ -10,7 +10,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "typecheck": "tsc -p .",
+    "typecheck": "tsc -p . && tsc -p packages/ui/tsconfig.web.json",
     "test": "node --test \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
     "test:unit": "node --test \"packages/server/test/*.test.ts\" \"packages/daemon/test/{envelope,git,instructions,integrate,leases,local,metrics,provider,reads,supervision,sync,tools,view}.test.ts\" \"packages/adapters/test/{policy,shim}.test.ts\" \"packages/cli/test/*.test.ts\" \"test/structure.test.ts\"",
     "test:ci": "node --test --test-concurrency=2 \"test/**/*.test.ts\" \"packages/*/test/**/*.test.ts\"",
