@@ -113,6 +113,8 @@ export type DaemonOptions = {
   heartbeatMs?: number; approvalPollMs?: number;
   /** How long a setup or test command waits for `harness approve` before giving up. Default 30 minutes. */
   approvalTimeoutMs?: number;
+  /** How long stop() waits for agents, lifecycles and lands before closing the link anyway (#74). Default 30 s. */
+  stopDeadlineMs?: number;
   /** After `task.completed`, how long to let the agent finish its turn before stopping it. Default 60 s. */
   finishGraceMs?: number;
   /** How often a running agent's worktree is diffed for edits the hooks missed (D-70). Default 15 s; also at every turn end. */
@@ -142,6 +144,17 @@ export type DaemonOptions = {
   localServices?: { check?: () => Promise<TrustLogin[]> };
 };
 
+/** Whether `p` settled (either way) within `ms`. Never rejects; leaves no timer behind. */
+async function settledWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), ms); });
+  try {
+    return await Promise.race([p.then(() => true, () => true), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class Daemon {
   home: Home;
   config: LocalConfig;
@@ -163,6 +176,8 @@ export class Daemon {
   lifecycles = new Map<string, Promise<void>>(); // per task while in flight, so assigned → completed never overlap
   landing = new Map<string, Promise<void>>(); // per project: lands run one at a time (D-93)
   landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
+  /** Aborted when harnessd stops: setup commands and land tests are killed at once (#74). */
+  stopSignal = new AbortController();
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
   linkState: LinkState = 'connecting'; // for status and health (D-111)
   ui: UiRpc | null = null;
@@ -284,6 +299,7 @@ export class Daemon {
     await this.recovered;
     this.logTrustPostgres();
     this.recoverLands();
+    void this.cleanLeftovers().catch((e: Error) => this.log(`cleaning up after the last run: ${e.message}`));
     this.leases.start();
     const github = () => this.config.projects.filter((p) => p.integration === 'github');
     if (github().length && !this.poller) {
@@ -731,8 +747,9 @@ export class Daemon {
         const timeout = Math.min(repo.test.timeoutSeconds ?? this.config.setup.timeoutSeconds, this.config.setup.timeoutSeconds);
         const result = await runSetup({
           home: this.home, worktree: dir, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, `land-${landId}`),
-          command: repo.test.command, allowedDomains: [], allowLocalBinding: true, timeoutMs: timeout * 1000, logFile,
+          command: repo.test.command, allowedDomains: [], allowLocalBinding: true, timeoutMs: timeout * 1000, logFile, signal: this.stopSignal.signal,
         });
+        if (result.aborted || this.stopping) throw new Error('harnessd stopped during the tests');
         if (result.exitCode !== 0) {
           const tail = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').slice(-20).join('\n') : '';
           return void await fail('tests', `${result.timedOut ? 'timed out' : `exit ${result.exitCode}`}\n${tail}`);
@@ -754,7 +771,7 @@ export class Daemon {
       else {
         this.log(`land of ${taskId}: the base moved, but reporting it failed (${(e as Error).message}); retrying`);
         const saved = readJson<{ merge: string | null } | null>(this.landFile(landId), null);
-        for (let i = 1; i <= 3 && saved?.merge; i++) {
+        for (let i = 1; i <= 3 && saved?.merge && !this.link?.stopped; i++) {
           await new Promise((r) => setTimeout(r, 1000 * i));
           try { await this.completeLand(projectId, landId, taskId, baseSha, saved.merge, head); moved = false; break; } catch { /* retried at the next start */ }
         }
@@ -789,6 +806,45 @@ export class Daemon {
     // Only if the base, as it is now, contains the branch.
     const baseNow = await branchTip(project.repo, project.baseBranch).catch(() => null);
     if (baseNow) await deleteMergedBranch(project.repo, taskBranch(taskId), head, baseNow);
+  }
+
+  /**
+   * What a kill left behind (#74): integration checkouts and land scratch that no land in flight owns, and a landed
+   * task's worktree that a kill after the land kept. That worktree goes only under the never-destroy-work checks: it's
+   * clean, nothing runs there, and its branch is already in the base (a local land) or is exactly the approved head (a
+   * GitHub land's squash shares no ancestry with it).
+   */
+  async cleanLeftovers(): Promise<void> {
+    for (const p of this.config.projects) {
+      const view = this.view(p.id);
+      const live = new Set([...view.lands.values()].filter((l) => l.status === 'requested' || l.status === 'accepted').map((l) => l.id));
+      const kept = (landId: string) => live.has(landId) || fs.existsSync(this.landFile(landId));
+      const integration = path.join(this.home.root, 'integration', p.id);
+      for (const id of fs.existsSync(integration) ? fs.readdirSync(integration) : []) {
+        if (kept(id)) continue;
+        await removeIntegrationWorktree(p.repo, path.join(integration, id)).catch(() => {});
+        fs.rmSync(path.join(integration, id), { recursive: true, force: true });
+        this.log(`removed ${path.join(integration, id)}, left by a land that isn't running`);
+      }
+      const scratch = path.join(this.home.scratch, p.id);
+      for (const d of fs.existsSync(scratch) ? fs.readdirSync(scratch).filter((x) => x.startsWith('land-')) : []) {
+        if (!kept(d.slice('land-'.length))) fs.rmSync(path.join(scratch, d), { recursive: true, force: true });
+      }
+      const base = p.integration === 'github' ? null : await branchTip(p.repo, p.baseBranch).catch(() => null);
+      for (const l of view.lands.values()) {
+        if (l.status !== 'completed' || l.deviceId !== this.config.deviceId || l.mode === 'external') continue;
+        const wt = this.worktreeOf(p.id, l.taskId);
+        if (!fs.existsSync(wt) || this.running.has(l.taskId) || view.tasks.get(l.taskId)?.status !== 'landed') continue;
+        const tip = await branchTip(p.repo, taskBranch(l.taskId)).catch(() => null);
+        const merged = !!tip && (l.mode === 'github'
+          ? tip === l.approvedHead
+          : !!base && await git(p.repo, 'merge-base', '--is-ancestor', tip, base).then(() => true, () => false));
+        if (!merged) { this.log(`kept ${wt}: its branch has commits the land didn't include`); continue; }
+        if (await git(wt, 'status', '--porcelain', '--untracked-files=all').catch(() => 'unknown')) { this.log(`kept ${wt}: it has changes made after the land`); continue; }
+        await this.teardownTask({ projectId: p.id, taskId: l.taskId }, { force: false }).catch((e: Error) => this.log(`kept ${wt}: ${e.message.split('\n')[0]}`));
+        if (l.mode === 'github') await git(p.repo, 'update-ref', '-d', `refs/heads/${taskBranch(l.taskId)}`, tip!).catch(() => {});
+      }
+    }
   }
 
   /**
@@ -1036,16 +1092,28 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.stopSignal.abort(); // setup commands and land tests end now, and their lands are interrupted (#74)
     await this.ui?.stop();
     await this.poller?.stop();
     this.leases.stop();
-    await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
-    await Promise.all(this.lifecycles.values()); // with no agents left running, these finish promptly
     // The land in flight finishes before the link closes: it reports through it, and once the server hears it
     // landed it still removes worktrees. One waiting for an approval, or not yet past its tests, is interrupted.
-    if (this.landsInFlight) this.log('stopping: waiting for the land in flight to finish');
-    await Promise.all(this.landing.values());
-    await Promise.all(this.lifecycles.values()); // any that events started meanwhile
+    const drain = (async () => {
+      await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
+      await Promise.all(this.lifecycles.values()); // with no agents left running, these finish promptly
+      if (this.landsInFlight) this.log('stopping: waiting for the land in flight to finish');
+      await Promise.all(this.landing.values());
+      await Promise.all(this.lifecycles.values()); // any that events started meanwhile
+    })();
+    // Every step above reports through the link. With the server unreachable, a report waits for a reconnect that may
+    // never come, so the wait is bounded (#74): then the link stops, what's pending fails at once, and the local
+    // cleanup finishes. A land whose base moved keeps its record, and the next start completes it (recoverLands).
+    const deadline = this.o.stopDeadlineMs ?? 30_000;
+    if (!(await settledWithin(drain, deadline))) {
+      this.log(`stopping: still waiting after ${Math.round(deadline / 1000)} s (is the server unreachable?); closing the link and finishing locally`);
+      await this.link?.stop();
+      await settledWithin(drain, 10_000);
+    }
     await this.link?.stop();
     this.releaseLock?.();
     this.releaseLock = null;
@@ -1683,6 +1751,7 @@ export class Daemon {
       home: this.home, worktree, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, scratchName),
       command: setup.command, allowedDomains: this.config.setup.allowedDomains, timeoutMs: this.config.setup.timeoutSeconds * 1000, logFile,
       npmCache: path.join(this.home.root, 'cache', 'npm'), // shared by this device's setups (D-116)
+      signal: this.stopSignal.signal,
     });
     if (result.exitCode !== 0) {
       await report('failed', { exit_code: result.exitCode });

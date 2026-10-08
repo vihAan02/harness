@@ -37,6 +37,8 @@ export type SetupRun = {
    * check every package against its integrity hash, so one task can't hand another a different package through it.
    */
   npmCache?: string;
+  /** harnessd stopping (#74): kills the command's process group at once; the result says it was aborted. */
+  signal?: AbortSignal;
 };
 
 const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -60,7 +62,7 @@ export function sandboxSettings(r: SetupRun) {
   };
 }
 
-export async function runSetup(r: SetupRun): Promise<{ exitCode: number; timedOut: boolean }> {
+export async function runSetup(r: SetupRun): Promise<{ exitCode: number; timedOut: boolean; aborted: boolean }> {
   for (const d of [path.join(r.scratch, 'home'), path.join(r.scratch, 'tmp'), path.dirname(r.logFile), ...(r.npmCache ? [r.npmCache] : [])]) ensureDir(d);
   const settings = path.join(r.scratch, 'srt-settings.json');
   fs.writeFileSync(settings, JSON.stringify(sandboxSettings(r), null, 2), { mode: 0o600 });
@@ -82,13 +84,21 @@ export async function runSetup(r: SetupRun): Promise<{ exitCode: number; timedOu
       child.stdout.pipe(log, { end: false });
       child.stderr.pipe(log, { end: false });
       let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
+      let aborted = false;
+      const end = (grace: number) => {
         try { process.kill(-child.pid!, 'SIGTERM'); } catch {}
-        setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} }, 5000).unref();
-      }, r.timeoutMs);
-      child.once('error', (e) => { clearTimeout(timer); reject(e); });
-      child.once('close', (code, signal) => { clearTimeout(timer); resolve({ exitCode: code ?? (signal ? 128 : 1), timedOut }); });
+        setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL'); } catch {} }, grace).unref();
+      };
+      const timer = setTimeout(() => { timedOut = true; end(5000); }, r.timeoutMs);
+      const onAbort = () => { aborted = true; end(1000); };
+      if (r.signal?.aborted) onAbort();
+      else r.signal?.addEventListener('abort', onAbort, { once: true });
+      child.once('error', (e) => { clearTimeout(timer); r.signal?.removeEventListener('abort', onAbort); reject(e); });
+      child.once('close', (code, signal) => {
+        clearTimeout(timer);
+        r.signal?.removeEventListener('abort', onAbort);
+        resolve({ exitCode: code ?? (signal ? 128 : 1), timedOut, aborted });
+      });
     });
   } finally {
     await new Promise<void>((resolve) => log.end(resolve));
