@@ -25,6 +25,8 @@ export type UiRpcHost = {
   health(): Record<string, unknown>;
   approvals: Approvals;
   command(projectId: string, name: string, args: Record<string, unknown>, commandId: string): Promise<{ seqs: number[]; result: unknown }>;
+  /** Closes the provider circuit (D-116): the human fixed the account. */
+  resetProvider(): void;
   log(m: string): void;
 };
 
@@ -194,6 +196,9 @@ export class UiRpc {
         const r = await this.host.command(project, name, args as Record<string, unknown>, params.command_id);
         return { seqs: r.seqs, result: r.result };
       }
+      case 'provider_reset':
+        this.host.resetProvider();
+        return { reset: true };
       case 'dispatch':
         throw new UiRpcError('not_available', 'signed dispatch (assign, reopen, resume, abandon, complete, integrate) arrives with PA3');
       default:

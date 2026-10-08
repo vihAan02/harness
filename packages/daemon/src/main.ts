@@ -18,7 +18,7 @@ try {
 // The model endpoint and key are checked now, not when the first task arrives (D-87).
 let provider: ResolvedProvider;
 try {
-  provider = resolveProvider(config);
+  provider = resolveProvider(config, process.env, home.secrets);
 } catch (e) {
   console.error(`harnessd: ${(e as Error).message}`);
   process.exit(2);
