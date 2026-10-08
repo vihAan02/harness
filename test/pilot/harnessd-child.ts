@@ -7,12 +7,20 @@ import { harnessHome } from '../../packages/daemon/src/home.ts';
 import { LockHeld } from '../../packages/daemon/src/lockfile.ts';
 import { FakeAdapter } from '../fake-adapter.ts';
 
-const c = JSON.parse(process.env.HARNESS_CHILD ?? '{}') as { home: string; raw: Record<string, unknown>; token: string; crashAt?: string };
+const c = JSON.parse(process.env.HARNESS_CHILD ?? '{}') as {
+  home: string; raw: Record<string, unknown>; token: string; crashAt?: string;
+  /** The pilot stack's GitHub mode: HARNESS_TEST=1 for the fake's hosts, its token, a short reconcile retry, no D-119 probe. */
+  pilot?: { githubToken: string; retryMs: number };
+};
 const out = (m: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(m)}\n`);
 const daemon = new Daemon({
-  home: harnessHome(c.home), config: parseConfig(c.raw, c.token), heartbeatMs: 200,
+  home: harnessHome(c.home), config: parseConfig(c.raw, c.token, c.pilot ? { env: { HARNESS_TEST: '1' } } : {}), heartbeatMs: 200,
   adapters: { claude: new FakeAdapter() }, auth: { mode: 'api-key', apiKey: 'unused-by-the-fake', baseUrl: 'http://127.0.0.1:9' },
   ...(c.crashAt ? { faults: { crashAt: c.crashAt } } : {}),
+  ...(c.pilot ? {
+    github: { token: async () => c.pilot!.githubToken, retryMs: c.pilot.retryMs }, pollMs: 200,
+    localServices: { check: async () => [] }, // the stand-in adapter runs nothing in a sandbox (as in startPilotStack)
+  } : {}),
   log: (m) => out({ log: m }),
 });
 try {

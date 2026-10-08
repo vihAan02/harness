@@ -12,16 +12,18 @@ import { startServer } from '../../packages/server/src/server.ts';
 import { TestClient } from '../../packages/server/test/client.ts';
 import { freshSchema, seedProject, TEST_DATABASE_URL } from '../../packages/server/test/helpers.ts';
 import type { EventMessage } from '../../packages/protocol/src/index.ts';
+import { Approvals } from '../../packages/daemon/src/approvals.ts';
+import { execFileSync } from 'node:child_process';
 
 const CHILD = path.resolve(import.meta.dirname, 'harnessd-child.ts');
 
-async function stack() {
+async function stack(files: Record<string, string> = { 'README.md': 'hi\n' }) {
   const db = await freshSchema();
   const project = await seedProject(db.pool);
   await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_test', 'human_test', 'laptop')");
   const server = await startServer({ pool: db.pool, databaseUrl: TEST_DATABASE_URL, schema: db.schema, localToken: TOKEN, port: 0 });
   const t = tempDir('crash');
-  const { repo } = makeRepo(t.dir, { 'README.md': 'hi\n' });
+  const { repo } = makeRepo(t.dir, files);
   const home = tempHome(t.dir);
   const raw = { device_id: 'dev_test', principal: 'human_test', server_url: server.url, limits: { port_range: [31800, 31899] }, projects: [{ id: project, repo }] };
   const human = await TestClient.open(server.url);
@@ -139,5 +141,71 @@ test('one harnessd per home: a second one exits (75) and never touches the first
     assert.ok(second.lines.some((l) => typeof l.locked === 'string'));
     assert.equal(first.proc.exitCode, null, 'the first is still running');
     assert.equal(s.events.filter((e) => e.kind === 'session.ended').length, 0, 'and its agent still runs');
+  } finally { await s.stop(); }
+});
+
+const SETUP_FILES = {
+  'README.md': 'hi\n', 'package.json': '{}\n',
+  'slow-setup.mjs': "import fs from 'node:fs'; fs.appendFileSync('setup-runs.txt', 'run\\n'); setTimeout(() => {}, 60_000);\n",
+  'harness.yaml': 'setup:\n  command: node slow-setup.mjs\n  manifests: [package.json]\n',
+};
+const setupPids = () => { try { return execFileSync('pgrep', ['-f', 'slow-setup.mjs'], { encoding: 'utf8' }).split('\n').filter(Boolean).map(Number); } catch { return []; } };
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test('killed while a setup approval is pending: the next start stops the task for its human; nothing runs, nothing is lost', async () => {
+  const s = await stack(SETUP_FILES);
+  try {
+    const first = await s.harnessd('during_approval');
+    const t = await s.assign('agent/e');
+    assert.equal((await first.exited).signal, 'SIGKILL');
+    assert.equal(new Approvals(s.home).pending().length, 1, 'the request survived');
+    const second = await s.harnessd();
+    await s.until(() => second.logged(/its session was interrupted/), 'recovery to stop the task');
+    assert.equal(of(s.events, 'session.started', t.task).length, 0, 'no session started without its setup');
+    assert.ok(fs.existsSync(t.worktree), 'the worktree stays, for the resume');
+    assert.ok(!fs.existsSync(path.join(t.worktree, 'setup-runs.txt')), 'setup never ran unapproved');
+    assert.equal(s.journal(t.task).at(-1), 'stopped');
+  } finally { await s.stop(); }
+});
+
+test('killed while setup runs: the next start kills the setup it left running, and stops the task for its human', async () => {
+  const s = await stack(SETUP_FILES);
+  try {
+    const first = await s.harnessd();
+    const t = await s.assign('agent/f');
+    await s.until(() => new Approvals(s.home).pending().length === 1, 'the setup request');
+    new Approvals(s.home).approve(new Approvals(s.home).pending()[0]!.id);
+    await s.until(() => setupPids().length > 0 && fs.existsSync(path.join(s.home.root, 'procs')) && fs.readdirSync(path.join(s.home.root, 'procs')).length === 1, 'setup to run, recorded');
+    const orphans = setupPids();
+    first.proc.kill('SIGKILL');
+    await first.exited;
+    assert.ok(orphans.some(alive), 'a kill of harnessd leaves its detached setup running');
+    const second = await s.harnessd();
+    assert.ok(second.logged(/killed the process group \d+ a crash left running/), 'the next start killed it');
+    await s.until(() => orphans.every((p) => !alive(p)), 'the orphaned setup to be gone');
+    assert.equal(fs.readdirSync(path.join(s.home.root, 'procs')).length, 0);
+    await s.until(() => second.logged(/its session was interrupted/), 'recovery to stop the task');
+    assert.ok(s.journal(t.task).includes('setup_started') && !s.journal(t.task).includes('setup_ok'));
+    assert.equal(of(s.events, 'session.started', t.task).length, 0);
+  } finally { await s.stop(); }
+});
+
+test('killed as the session ended, before its result was saved: reported ended once, and the work committed once', async () => {
+  const s = await stack();
+  try {
+    const first = await s.harnessd('before_result_persist');
+    const t = await s.assign('agent/g');
+    await s.until(() => of(s.events, 'session.started', t.task).length === 1, 'the session');
+    const session = (of(s.events, 'session.started', t.task)[0]!.data as { session_id: string }).session_id;
+    fs.writeFileSync(path.join(t.worktree, 'result.txt'), 'the result\n');
+    await s.command('task.complete', { task_id: t.task, summary: 'did g' });
+    assert.equal((await first.exited).signal, 'SIGKILL');
+    await s.harnessd();
+    await s.until(() => of(s.events, 'worktree.committed', t.task).length === 1, 'the commit');
+    await s.until(() => s.events.some((e) => e.kind === 'session.ended' && (e.data as { session_id: string }).session_id === session), 'the session reported ended');
+    await new Promise((r) => setTimeout(r, 600)); // a few heartbeats: nothing is reported twice
+    assert.equal(s.events.filter((e) => e.kind === 'session.ended' && (e.data as { session_id: string }).session_id === session).length, 1);
+    assert.equal(of(s.events, 'worktree.committed', t.task).length, 1);
+    assert.equal(of(s.events, 'session.started', t.task).length, 1, 'no second session');
   } finally { await s.stop(); }
 });
