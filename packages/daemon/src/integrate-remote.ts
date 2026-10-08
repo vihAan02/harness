@@ -101,10 +101,15 @@ async function precheck(c: Ctx): Promise<string[]> {
   if (pr.state !== 'open' || pr.merged) throw new LandFailure('pr_closed', `PR #${c.pr} is ${pr.merged ? 'merged' : 'closed'}`);
   if (pr.head.sha !== c.head) throw new LandFailure('head_changed', `PR #${c.pr}'s head is ${pr.head.sha.slice(0, 12)}, not the approved ${c.head.slice(0, 12)}`);
   const tip = await lsRemoteBase(c.project.repo, c.project.remote!, c.project.baseBranch);
-  if (tip !== c.base) throw new LandFailure('base_moved', `${c.project.baseBranch} moved to ${tip.slice(0, 12)} since the approval; update the PR and approve again`);
   await fetchBase(c.project.repo, c.project.remote!, c.project.baseBranch, c.project.id);
-  if (!(await git(c.project.repo, 'merge-base', '--is-ancestor', c.base, c.head).then(() => true, () => false))) throw new LandFailure('head_behind', `PR #${c.pr} doesn't contain the base: update it`);
-  if (pr.mergeable_state === 'behind') throw new LandFailure('head_behind', `PR #${c.pr} is behind ${c.project.baseBranch}`);
+  const contained = await git(c.project.repo, 'merge-base', '--is-ancestor', tip, c.head).then(() => true, () => false);
+  if (tip !== c.base || !contained || pr.mergeable_state === 'behind') {
+    // Behind the base (D-115): bring the PR up to date, then the human approves the new head once CI is green.
+    const refreshed = await c.d.refreshPr(c.project.id, c.land.taskId).catch((e: Error & { conflicts?: string[] }) => {
+      throw new LandFailure(e.conflicts ? 'conflict' : 'base_moved', e.conflicts ? e.message : `${c.project.baseBranch} moved to ${tip.slice(0, 12)} since the approval, and updating PR #${c.pr} failed: ${e.message}`);
+    });
+    throw new LandFailure('base_moved', `${c.project.baseBranch} moved to ${tip.slice(0, 12)} since the approval; PR #${c.pr} is updated to ${refreshed.slice(0, 12)}: approve that head once its checks are green`);
+  }
   if (pr.mergeable_state !== 'clean') {
     const runs = await c.gh.checkRuns(c.head);
     const red = runs.filter((r) => REQUIRED_CHECKS.includes(r.name) && r.status === 'completed' && !['success', 'neutral', 'skipped'].includes(r.conclusion ?? ''));
