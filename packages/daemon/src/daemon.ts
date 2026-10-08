@@ -4,6 +4,7 @@
 // connection to the coordination server. It runs agent sessions only through @harness/adapters
 // (D-17). Acting on task assignments arrives with the lifecycle (item 9).
 import { randomUUID } from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,7 +16,8 @@ import { Approvals, setupHash, testHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
 import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, removeWorktree, TASK_ID, taskBranch } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
-import { ServerLink } from './link.ts';
+import { ServerLink, type LinkState } from './link.ts';
+import { Handshake, loadDeviceKey } from './identity.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
@@ -105,6 +107,8 @@ export type DaemonOptions = {
   leaseRenewMs?: number;
   /** Fault injection, for tests only (T-2). */
   faults?: { leases?: LeaseFaults };
+  /** This device's key, with device-key auth (D-111). Default: ~/.harness/device.key. */
+  deviceKey?: KeyObject;
 };
 
 export class Daemon {
@@ -127,6 +131,7 @@ export class Daemon {
   landing = new Map<string, Promise<void>>(); // per project: lands run one at a time (D-93)
   landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
+  linkState: LinkState = 'connecting'; // for status and health (D-111)
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -156,13 +161,19 @@ export class Daemon {
       this.log(`killed orphaned agent process ${o.pid} (session ${o.sessionId}, task ${o.taskId}); changed: ${o.changedPaths.join(', ') || 'nothing'}`);
     }
     const saved = readJson<{ cursors: Record<string, number> }>(this.home.state, { cursors: {} }).cursors;
+    const deviceKey = this.config.auth === 'device-key' ? (this.o.deviceKey ?? loadDeviceKey(this.home)) : null;
     this.link = new ServerLink({
-      url: this.config.serverUrl, token: this.config.token, principal: this.config.principal, deviceId: this.config.deviceId,
+      url: this.config.serverUrl,
+      handshake: (subscribe) => new Handshake({ config: this.config, deviceKey, clientKind: 'harnessd', subscribe }),
       cursors: Object.fromEntries(this.config.projects.map((p) => [p.id, saved[p.id] ?? 0])),
       onEvent: (e, replayed) => this.onEvent(e, replayed),
       onCursor: () => writeJsonAtomic(this.home.state, { cursors: this.link!.cursors }),
       ...(this.o.heartbeatMs ? { heartbeatMs: this.o.heartbeatMs } : {}),
       log: this.log,
+      onState: (state) => {
+        this.linkState = state;
+        if (state === 'server_identity_mismatch') this.log('the coordinator did not prove its pinned key: nothing from it is trusted until one that does answers (D-111)');
+      },
     });
     this.link.start();
   }

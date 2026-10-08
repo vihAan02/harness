@@ -1,7 +1,8 @@
 // The CLI's connection to the coordination server (protocol.md §2). One short-lived WebSocket per
-// command: hello with the local token, replay the project's log into a view, then send commands.
-import { randomUUID } from 'node:crypto';
-import { ProjectView, type LocalConfig } from '@harness/daemon';
+// command: hello (the local token, or this device's key, D-111), replay the project's log into a view,
+// then send commands.
+import { randomUUID, type KeyObject } from 'node:crypto';
+import { Handshake, ProjectView, ServerIdentityError, type LocalConfig } from '@harness/daemon';
 import { PROTOCOL_VERSION, type EventMessage, type ServerMessage } from '@harness/protocol';
 
 export class CliError extends Error {}
@@ -22,7 +23,8 @@ export class CliClient {
   }
 
   /** Connects, and resolves once the project's log has been replayed up to its current head. */
-  static async connect(config: LocalConfig, projectId: string, timeoutMs = 10_000): Promise<CliClient> {
+  static async connect(config: LocalConfig, projectId: string, timeoutMs = 10_000, deviceKey: KeyObject | null = null): Promise<CliClient> {
+    const hs = new Handshake({ config, deviceKey, clientKind: 'cli', subscribe: [{ project_id: projectId, after_seq: 0 }] });
     const ws = new WebSocket(config.serverUrl);
     const c = new CliClient(ws, projectId);
     await new Promise<void>((resolve, reject) => {
@@ -30,12 +32,23 @@ export class CliClient {
       let head = -1;
       const done = () => { clearTimeout(timer); resolve(); };
       ws.addEventListener('error', () => { clearTimeout(timer); reject(new CliError(`can't reach the coordination server at ${config.serverUrl}; is it running (npm run server)?`)); });
-      ws.addEventListener('open', () => ws.send(JSON.stringify({
-        v: PROTOCOL_VERSION, type: 'hello', client: { kind: 'cli', version: '0.0.0' }, principal: config.principal,
-        auth: { scheme: 'local-token', token: config.token }, subscribe: [{ project_id: projectId, after_seq: 0 }],
-      })));
+      ws.addEventListener('open', () => ws.send(JSON.stringify(hs.hello())));
+      let verified = !hs.deviceKeyAuth;
       ws.addEventListener('message', (ev) => {
         const m = JSON.parse(String(ev.data)) as ServerMessage;
+        if (!verified) {
+          // With device keys, nothing is trusted until the server proves its pinned key (D-111).
+          if (m.type !== 'challenge') return;
+          try {
+            ws.send(JSON.stringify(hs.answer(m)));
+            verified = true;
+          } catch (e) {
+            clearTimeout(timer);
+            ws.close();
+            reject(e instanceof ServerIdentityError ? new CliError(e.message) : e);
+          }
+          return;
+        }
         if (m.type === 'welcome') {
           head = m.projects.find((p) => p.project_id === projectId)?.head_seq ?? 0;
           if (head === 0) done();

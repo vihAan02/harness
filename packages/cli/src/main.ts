@@ -3,7 +3,7 @@
 // server, the local token and the human principal, the same files harnessd uses.
 import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { Approvals, computeMetrics, harnessHome, loadConfig, renderHumanStatus, renderMetrics, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
+import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
 import { PROTOCOL_VERSION, type EventMessage } from '@harness/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { CliClient, CliError } from './client.ts';
@@ -69,8 +69,9 @@ function agentId(c: CliClient, ref: string): string {
 }
 
 async function withServer<T>(a: Args, fn: (c: CliClient) => Promise<T>): Promise<T> {
-  const config = loadConfig(harnessHome());
-  const c = await CliClient.connect(config, projectOf(config, a));
+  const home = harnessHome();
+  const config = loadConfig(home);
+  const c = await CliClient.connect(config, projectOf(config, a), undefined, config.auth === 'device-key' ? loadDeviceKey(home) : null);
   try { return await fn(c); } finally { c.close(); }
 }
 
