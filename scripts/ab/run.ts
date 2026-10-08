@@ -27,7 +27,7 @@
 //                  baseline uses `merge`; either counts as M5c
 //   --dry          scripted stand-in agents that make a trivial change and report done: they check the
 //                  runner, not the task. Counted runs use --real
-//   --cap-min m    the time cap (default 60);  --budget-usd d  per session (default 2)
+//   --cap-min m    the time cap (default 30, validation.md §9);  --budget-usd d  per session (default 2)
 //   --out <dir>    default runs/ (git-ignored);  --bench <path|url>  default: the card's repo
 //   --keep         keep the temp dir and schema;  --help
 //
@@ -62,7 +62,7 @@ import { agentConfigDir } from '../../packages/daemon/src/resources.ts';
 import { runBaseline } from './baseline-arm.ts';
 import { CoordinatorConsole } from './console.ts';
 import { Recorder } from './recorder.ts';
-import { copyTranscripts, harnessSummary, writeDiffs } from './summarize.ts';
+import { copyTranscripts, firstAttempt, harnessAttempts, harnessSummary, mergeTree, untestedRetry, writeDiffs, type IntegrationAttempt } from './summarize.ts';
 import type { RunSummary } from './summary.ts';
 
 export type CardTask = { key: string; agent: string; title: string; scope: string[]; phrasings: string[] };
@@ -99,7 +99,7 @@ if (DRY === REAL) fail('choose --real (a counted or rehearsal run, with --provid
 if (REAL && str('phrasing') === undefined) fail('--real needs --phrasing n: paired run n uses phrasing n in both arms');
 const PHRASING = Number(str('phrasing') ?? '1');
 const REPEAT = Number(str('repeat') ?? '1');
-const CAP_MIN = Number(str('cap-min') ?? '60');
+const CAP_MIN = Number(str('cap-min') ?? '30');
 const BUDGET = Number(str('budget-usd') ?? '2');
 const PHRASINGS = Math.min(...CARD.tasks.map((t) => t.phrasings.length));
 if (!Number.isInteger(PHRASING) || !Number.isInteger(REPEAT) || PHRASING < 1 || REPEAT < 1 || PHRASING + REPEAT - 1 > PHRASINGS) {
@@ -196,16 +196,31 @@ function writeHome(root: string, serverUrl: string, token: string, repo: string)
 
 /**
  * The grader's copy: main's tree and nothing else (no .git, no branch names, no authors), every file dated
- * FIXED_TIME so the tree doesn't tell when the run ended (and with the schedule, which arm it was).
+ * FIXED_TIME so the tree doesn't tell when the run ended (and with the schedule, which arm it was). With
+ * `first`, the tree goes to <run-id>.first/ instead, and the run's own <run-id>.json covers it.
  */
-function saveGradeTree(repo: string, mainSha: string, runId: string): void {
-  const gradeDir = path.join(OUT, 'grade', runId);
+function saveGradeTree(repo: string, treeish: string, runId: string, first = false): void {
+  const gradeDir = path.join(OUT, 'grade', first ? `${runId}.first` : runId);
   fs.mkdirSync(gradeDir, { recursive: true });
-  execFileSync('tar', ['-x', '-C', gradeDir], { input: execFileSync('git', ['-C', repo, 'archive', '--format=tar', '--mtime=2000-01-01 00:00:00 +0000', mainSha], { maxBuffer: 512 * 1024 * 1024 }) });
+  execFileSync('tar', ['-x', '-C', gradeDir], { input: execFileSync('git', ['-C', repo, 'archive', '--format=tar', '--mtime=2000-01-01 00:00:00 +0000', treeish], { maxBuffer: 512 * 1024 * 1024 }) });
   fixTimes(gradeDir);
+  if (first) return;
   const gradeMeta = path.join(OUT, 'grade', `${runId}.json`);
   fs.writeFileSync(gradeMeta, `${JSON.stringify({ run_id: runId, scenario: CARD.scenario }, null, 2)}\n`);
   fs.utimesSync(gradeMeta, FIXED_TIME, FIXED_TIME);
+}
+
+/**
+ * M6 "reached" at the affected task's first integration (validation.md §9): when that attempt merged cleanly
+ * but failed its tests with task 1 already in, the merge it tested goes to the grader as <run-id>.first/.
+ */
+function saveFirstAttemptTree(repo: string, runId: string, attempts: IntegrationAttempt[], rec: Recorder): boolean {
+  const a = firstAttempt(CARD.scenario, attempts);
+  const tree = a && mergeTree(repo, a.base, a.head);
+  if (!tree) return false;
+  saveGradeTree(repo, tree, runId, true);
+  rec.log(`saved: grade/${runId}.first/ (the affected task's failed first integration, for M6 "reached")`);
+  return true;
 }
 
 let stopRequested = false;
@@ -268,9 +283,10 @@ async function runOnce(n: number): Promise<string> {
       const summary: RunSummary = { ...r.summary, run_id: runId, phrasing, cap_ms: CAP_MIN * 60_000, started_at: startedAt, ended_at: endedAt, void: null };
       rec.writeJson('summary.json', summary);
       saveGradeTree(repo, mainSha, runId);
+      const firstTree = saveFirstAttemptTree(repo, runId, r.attempts, rec);
       rec.writeJson('meta.json', {
         run_id: runId, arm: 'baseline', scenario: CARD.scenario, phrasing, dry: DRY, auto_land: AUTO_LAND, launch: LAUNCH, model, cap_min: CAP_MIN,
-        bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: endedAt, outcome,
+        bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: endedAt, outcome, first_attempt_tree: firstTree,
         tasks: summary.tasks.map((t) => ({ ...t, title: CARD.tasks.find((c) => c.key === t.key)?.title })),
       });
       rec.log(`saved: grade/${runId}/ (for the grader) and record/${runId}/ (yours)`);
@@ -345,6 +361,7 @@ async function runOnce(n: number): Promise<string> {
     const has = (kind: string, task: string, pred: (d: Record<string, unknown>) => boolean = () => true) =>
       view.events.some((e) => e.kind === kind && (e.data as { task_id?: string }).task_id === task && pred(e.data as Record<string, unknown>));
     const pendingSeen = new Set<string>();
+    const retried = new Set<string>(); // D-124's untested second land, once per task
     const approvals = new Approvals(home);
     for (;;) {
       const finished = [...ids.values()].map((id) => (has('land.completed', id) ? 'landed' : has('task.abandoned', id) ? 'abandoned' : null));
@@ -360,14 +377,28 @@ async function runOnce(n: number): Promise<string> {
       }
       if (AUTO_LAND) {
         // The runner lands each task once; a land the fencing check rejects, or that fails, would wait for a
-        // human, so an auto-landed run ends there.
-        const ended = [...ids.values()].find((id) => has('land.rejected', id) || has('land.failed', id, (d) => d.reason !== 'cancelled'));
+        // human, so an auto-landed run ends there. The exception is D-124's: in SC-1 to SC-3, the first task to
+        // land goes in again untested when its first land fails its tests.
+        const landsOf = (id: string) => [...view.lands.values()].filter((l) => l.taskId === id && l.reason !== 'cancelled');
+        const retry = [...ids.values()].find((id) => {
+          const ls = landsOf(id);
+          return !retried.has(id) && ls.length === 1 && ls[0]!.status === 'failed'
+            && untestedRetry(CARD.scenario, { anyIntegrated: [...ids.values()].some((x) => has('land.completed', x)), attempts: 1, testsFailed: ls[0]!.reason === 'tests' });
+        });
+        if (retry) {
+          retried.add(retry);
+          rec.mark('land_requested', { task_id: retry, tests: false });
+          rec.log(`landing ${retry} again without tests (D-124): ${(await cliOutput('land', retry, '--no-tests', '--no-wait')).split('\n')[0]}`);
+        }
+        // A retried task has ended only once its second land has failed too (the view may not show that land yet).
+        const ended = [...ids.values()].find((id) => has('land.rejected', id)
+          || (landsOf(id).at(-1)?.status === 'failed' && (!retried.has(id) || landsOf(id).length > 1)));
         if (ended) {
           outcome = has('land.rejected', ended) ? 'land_rejected' : 'land_failed';
           rec.log(`the land of ${ended} ${outcome === 'land_rejected' ? 'was rejected' : 'failed'}`);
           break;
         }
-        const inFlight = [...view.lands.values()].some((l) => l.status === 'requested' || l.status === 'accepted');
+        const inFlight = retry !== undefined || [...view.lands.values()].some((l) => l.status === 'requested' || l.status === 'accepted');
         for (const id of ids.values()) {
           if (inFlight || !has('worktree.committed', id) || has('land.requested', id)) continue;
           rec.mark('land_requested', { task_id: id });
@@ -414,9 +445,10 @@ async function runOnce(n: number): Promise<string> {
     writeDiffs(rec.dir, repo, baseSha, mainSha, CARD.tasks.map((t) => ({ key: t.key, commit: metrics.tasks.find((x) => x.id === ids.get(t.key))?.commit ?? null })));
     copyTranscripts(rec.dir, [...record.agents.values()].map((a) => ({ name: a.name, configDir: agentConfigDir(home, a.id) })));
     saveGradeTree(repo, mainSha, runId);
+    const firstTree = saveFirstAttemptTree(repo, runId, harnessAttempts(record, ids), rec);
     rec.writeJson('meta.json', {
       run_id: runId, arm: 'harness', scenario: CARD.scenario, phrasing, dry: DRY, auto_land: AUTO_LAND, model, cap_min: CAP_MIN, budget_usd: BUDGET,
-      bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: new Date().toISOString(), outcome,
+      bench: BENCH, tag: CARD.tag, base_sha: baseSha, main_sha: mainSha, started_at: startedAt, ended_at: new Date().toISOString(), outcome, first_attempt_tree: firstTree,
       events: events.length, approvals_mid_run: pendingSeen.size, runner_cancelled_lands: cancelledAtEnd,
       tasks: CARD.tasks.map((t) => ({ key: t.key, task_id: ids.get(t.key), agent: `agent/${t.agent}`, title: t.title, scope: t.scope })),
     });

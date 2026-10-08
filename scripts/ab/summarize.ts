@@ -73,26 +73,92 @@ export function copyTranscripts(dir: string, agents: { name: string; configDir: 
 
 const hits = (paths: string[], p: string) => paths.some((x) => (x.endsWith('/') ? p.startsWith(x) : p === x));
 const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+const data = (e: { data: unknown }) => e.data as Record<string, unknown>;
 
 /**
- * P1's first half for a harness run: was the affected agent told of the planted change before its task was
- * done? A dependency notice, a message about those files, or a sync bringing them in all count.
+ * P1's first half for a harness run (validation.md §9): was the affected agent told of task 1's planted change
+ * before its task was first done? That's a `dependency_changed` notice from task 1's writes, or a message from
+ * task 1's agent, naming a planted file and delivered after task 1 first edited one. A `claim_conflict` (harnessd
+ * on the scopes, whatever task 1 did) and a sync on its own (code merged, nothing said) don't count.
  */
 export function surfaced(view: ProjectView, scenario: string, ids: Map<string, string>): RunSummary['surfaced'] {
   const p = PLANTED[scenario];
   if (!p) return null;
   const task = ids.get(p.affected);
-  if (!task) return { planted: 1, surfaced: 0 };
-  const done = view.events.find((e) => e.kind === 'task.completed' && (e.data as { task_id?: string }).task_id === task);
-  const before = (at: string | null | undefined) => !!at && (!done || Date.parse(at) <= Date.parse(done.at));
-  const told = [...view.messages.values()].some((m) => m.toTask === task && before(m.deliveredAt) && m.from !== view.tasks.get(task)?.assignee
-    && [...strings(m.data.paths), ...strings(m.data.about_paths)].some((x) => hits(p.paths, x)))
-    || view.events.some((e) => e.kind === 'worktree.synced' && (e.data as { task_id?: string }).task_id === task && before(e.at)
-      && strings((e.data as { changed_paths?: unknown }).changed_paths).some((x) => hits(p.paths, x)));
+  const upstream = ids.get(p.upstream);
+  if (!task || !upstream) return { planted: 1, surfaced: 0 };
+  const firstEdit = view.events.find((e) => e.kind === 'claim.observed' && data(e).task_id === upstream && strings(data(e).paths).some((x) => hits(p.paths, x)));
+  if (!firstEdit) return { planted: 1, surfaced: 0 };
+  const done = view.events.find((e) => e.kind === 'task.completed' && data(e).task_id === task);
+  const inWindow = (at: string | undefined) => !!at && Date.parse(at) >= Date.parse(firstEdit.at) && (!done || Date.parse(at) <= Date.parse(done.at));
+  const told = [...view.messages.values()].some((m) => m.toTask === task && inWindow(m.deliveredAt)
+    && ((m.kind === 'dependency_changed' && m.data.writer_task === upstream) || (m.fromTask === upstream && m.kind !== 'claim_conflict'))
+    && [...strings(m.data.paths), ...strings(m.data.about_paths), ...strings([m.data.path])].some((x) => hits(p.paths, x)));
   return { planted: 1, surfaced: told ? 1 : 0 };
 }
 
-const data = (e: { data: unknown }) => e.data as Record<string, unknown>;
+/** M3's conflicts (validation.md §9): each task's first textual conflict with the other's integrated work, at a sync or at an integration. */
+export function conflictedTasks(view: ProjectView, taskIds: string[]): number {
+  return new Set(view.events
+    .filter((e) => (e.kind === 'worktree.sync_conflict' || (e.kind === 'land.failed' && data(e).reason === 'conflict')) && taskIds.includes(String(data(e).task_id)))
+    .map((e) => String(data(e).task_id))).size;
+}
+
+/**
+ * D-124: in SC-1 to SC-3 a change can span both tasks, so neither can pass a test-gated integration alone. When
+ * the first task to be integrated fails its tests at its first attempt, it's integrated again at once with tests
+ * skipped. Both arms' auto coordinators ask this; the coordinator's playbook says the same (validation.md §9).
+ */
+export function untestedRetry(scenario: string, o: { anyIntegrated: boolean; attempts: number; testsFailed: boolean }): boolean {
+  return !!PLANTED[scenario] && !o.anyIntegrated && o.attempts === 1 && o.testsFailed;
+}
+
+/** One integration attempt (a land, or the baseline's `merge`): its task's key, how it ended, when, and what it merged. */
+export type IntegrationAttempt = {
+  task: string; outcome: 'merged' | 'tests_failed' | 'conflict' | 'other'; start: number; end: number; base: string | null; head: string | null;
+};
+
+/**
+ * M6 "reached" at integration (validation.md §9): the base and head of the first integration attempt, of either
+ * task, whose merge held both tasks' work (the other task was already integrated) and was clean but failed its
+ * tests. Null otherwise, and for a conflict, which leaves no merge result to grade.
+ */
+export function firstAttempt(scenario: string, attempts: IntegrationAttempt[]): { base: string; head: string } | null {
+  if (!PLANTED[scenario]) return null;
+  const sorted = [...attempts].sort((x, y) => x.start - y.start);
+  const a = sorted.find((x) => x.outcome === 'tests_failed' && x.base && x.head && sorted.some((y) => y.task !== x.task && y.outcome === 'merged' && y.end <= x.start));
+  return a ? { base: a.base!, head: a.head! } : null;
+}
+
+/** The harness arm's integration attempts: each accepted land of a card's task, in order, with how it ended. */
+export function harnessAttempts(view: ProjectView, ids: Map<string, string>): IntegrationAttempt[] {
+  const keyOf = new Map([...ids].map(([key, id]) => [id, key]));
+  const out: IntegrationAttempt[] = [];
+  for (const e of view.events) {
+    const key = e.kind === 'land.accepted' ? keyOf.get(String(data(e).task_id)) : undefined;
+    if (!key) continue;
+    const end = view.events.find((x) => (x.kind === 'land.completed' || x.kind === 'land.failed') && data(x).land_id === data(e).land_id);
+    const reason = end?.kind === 'land.failed' ? data(end).reason : null;
+    out.push({
+      task: key, start: e.seq, end: end?.seq ?? Number.POSITIVE_INFINITY, base: String(data(e).base_sha), head: String(data(e).head_sha),
+      outcome: end?.kind === 'land.completed' ? 'merged' : reason === 'tests' ? 'tests_failed' : reason === 'conflict' ? 'conflict' : 'other',
+    });
+  }
+  return out;
+}
+
+/**
+ * What an integration of `head` into `base` tested, as a tree: the same merge harnessd's land and the baseline's
+ * `merge` make (ort), without a worktree. Null if they conflict.
+ */
+export function mergeTree(repo: string, base: string, head: string): string | null {
+  try {
+    return gitOut(repo, 'merge-tree', '--write-tree', '--no-messages', base, head).split('\n')[0]!.trim();
+  } catch {
+    return null; // exit 1: a conflict
+  }
+}
+
 
 /** The harness arm's summary, from its event log, `harness metrics` and Git. */
 export function harnessSummary(o: {
@@ -102,8 +168,11 @@ export function harnessSummary(o: {
 }): RunSummary {
   const ev = o.view.events;
   const taskIds = [...o.ids.values()];
+  // M1 starts when both agents have started work, after their worktrees and setup, as the baseline's clock does
+  // (validation.md §9). The assignment is the fallback if a session never started.
+  const sessionStarts = taskIds.map((id) => ev.find((e) => e.kind === 'session.started' && data(e).task_id === id)).filter((e) => e !== undefined).map((e) => Date.parse(e.at));
   const assigned = ev.filter((e) => e.kind === 'task.assigned' && taskIds.includes(String(data(e).task_id))).map((e) => Date.parse(e.at));
-  const start = assigned.length ? Math.min(...assigned) : Date.parse(o.startedAt);
+  const start = sessionStarts.length === taskIds.length ? Math.max(...sessionStarts) : assigned.length ? Math.min(...assigned) : Date.parse(o.startedAt);
   const landedAt = new Map<string, number>();
   for (const e of ev) if (e.kind === 'land.completed' && !landedAt.has(String(data(e).task_id))) landedAt.set(String(data(e).task_id), Date.parse(e.at));
   const all = taskIds.every((id) => landedAt.has(id));
@@ -121,7 +190,7 @@ export function harnessSummary(o: {
     v: 1, run_id: o.runId, arm: 'harness', scenario: o.scenario, phrasing: o.phrasing, outcome: o.outcome, void: null,
     models: t.configured, cap_ms: o.capMs, started_at: o.startedAt, ended_at: o.endedAt,
     m1_ms: all ? times.at(-1)! - start : null,
-    m3_conflicts: [...o.view.lands.values()].filter((l) => taskIds.includes(l.taskId) && l.status === 'failed' && l.reason === 'conflict').length,
+    m3_conflicts: conflictedTasks(o.view, taskIds),
     sync_conflicts: o.metrics.lands.syncConflicts,
     m4: { commits_after_first: commitsAfterFirst(o.repo, o.baseSha, o.mainSha, landedAt.size), ms_to_green: all && times.length ? times.at(-1)! - times[0]! : null },
     m5: o.metrics.interventions.total,

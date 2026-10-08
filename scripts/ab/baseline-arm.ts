@@ -3,7 +3,8 @@
 // treatment (A7's launcher). The coordinator relays between the terminals by hand and integrates with the
 // console's `merge`, which does what the land step does without its fencing check: merge into main in an
 // integration worktree, run the setup and test commands there under the same sandbox, and move main only if
-// green. `sync` merges main into an agent's branch, as harnessd's sync does. Setup before the clock starts
+// green (`--no-tests` skips the tests, as `harness land --no-tests` does: D-124). `sync` merges main into an
+// agent's branch, as harnessd's sync does. Setup before the clock starts
 // (worktrees, the setup command, ports) isn't counted, as harnessd's isn't.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -22,7 +23,7 @@ import { baselineSpec } from './baseline-launch.ts';
 import type { CoordinatorConsole } from './console.ts';
 import type { Recorder } from './recorder.ts';
 import type { RunSummary } from './summary.ts';
-import { commitsAfterFirst } from './summarize.ts';
+import { commitsAfterFirst, untestedRetry, type IntegrationAttempt } from './summarize.ts';
 import { readTranscript, transcriptFiles, transcriptUsage } from './transcripts.ts';
 
 type CardTask = { key: string; agent: string; title: string; scope: string[]; phrasings: string[] };
@@ -43,11 +44,35 @@ export type BaselineInput = {
 type Agent = {
   task: CardTask; worktree: string; branch: string; sessionId: string; configDir: string; ports: { base: number; count: number };
   child: ChildProcess | null; integratedAt: number | null; attempts: number; testedOnce: boolean;
+  /** How its latest `merge` ended (the integration mark's outcome). */
+  lastOutcome: string | null;
   /** A message the runner typed and the agent hasn't taken yet: when, and how many prompts its transcript had then. */
   relay: { at: number; prompts: number } | null;
 };
 
 const COORDINATOR = { name: 'Coordinator', email: 'coordinator@harness.invalid' };
+
+/**
+ * §9 step 7, a sync conflict: main merged into an agent's branch with main's side winning every conflicting
+ * hunk (`-X theirs`), after its work in progress is committed. The other task's integrated work stays whole and
+ * the agent redoes its own part; nobody writes code. Returns the files whose hunks main's side replaced, or
+ * null if even that merge fails (a modify/delete conflict, say), which leaves the branch as it was.
+ */
+export async function syncTheirs(worktree: string, target: string, author: { name: string; email: string }): Promise<{ replaced: string[] } | null> {
+  const g = (...args: string[]) => execFileSync('git', ['-C', worktree, '-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`, ...args], { encoding: 'utf8' }).trim();
+  await commitAll(worktree, 'Work in progress before sync', author);
+  // The files both sides changed since they parted: where main's side may have won.
+  const base = g('merge-base', 'HEAD', target);
+  const ours = new Set(g('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean));
+  const both = g('diff', '--name-only', base, target).split('\n').filter((f) => f && ours.has(f));
+  try {
+    g('merge', '--no-ff', '--no-edit', '-X', 'theirs', '-m', 'Sync with main (main\'s side wins conflicting hunks)', target);
+  } catch {
+    try { g('merge', '--abort'); } catch {}
+    return null;
+  }
+  return { replaced: both.sort() };
+}
 const sq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 /** Runs a command in a pseudo-terminal, copying its screen to a log and our stdin to it (text the runner types). */
@@ -96,7 +121,10 @@ function turnEnded(configDir: string, sessionId: string, quietMs: number): boole
   return !content.some((b) => b.type === 'tool_use');
 }
 
-export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSummary['outcome']; summary: Omit<RunSummary, 'run_id' | 'phrasing' | 'cap_ms' | 'started_at' | 'ended_at' | 'void'>; agents: { name: string; configDir: string }[]; commits: { key: string; commit: string | null }[] }> {
+export async function runBaseline(b: BaselineInput): Promise<{
+  outcome: RunSummary['outcome']; summary: Omit<RunSummary, 'run_id' | 'phrasing' | 'cap_ms' | 'started_at' | 'ended_at' | 'void'>;
+  agents: { name: string; configDir: string }[]; commits: { key: string; commit: string | null }[]; attempts: IntegrationAttempt[];
+}> {
   const { rec, repo, home, config } = b;
   const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
   const baseSha = git(repo, 'rev-parse', 'main');
@@ -124,7 +152,7 @@ export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSumma
     const block = await ports.allocate(`baseline-${t.agent}`);
     agents.push({
       task: t, worktree: fs.realpathSync(worktree), branch, sessionId: randomUUID(), configDir: path.join(home.root, 'baseline', t.agent, 'claude-config'),
-      ports: block, child: null, integratedAt: null, attempts: 0, testedOnce: false, relay: null,
+      ports: block, child: null, integratedAt: null, attempts: 0, testedOnce: false, lastOutcome: null, relay: null,
     });
   }
   rec.log(`baseline: worktrees ${agents.map((a) => `${a.task.agent} (${a.branch})`).join(', ')} ready, setup done`);
@@ -171,8 +199,11 @@ export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSumma
     return a;
   };
 
-  /** `merge <agent>`: the land step without fencing. Commits the agent's work, merges it into main in an integration worktree, tests there, and moves main only if green. */
-  const merge = async (a: Agent): Promise<string> => {
+  /**
+   * `merge <agent> [--no-tests]`: the land step without fencing. Commits the agent's work, merges it into main in
+   * an integration worktree, tests there (unless `--no-tests`), and moves main only if green.
+   */
+  const merge = async (a: Agent, o: { tests: boolean } = { tests: true }): Promise<string> => {
     actions++;
     a.attempts++;
     await commitAll(a.worktree, `${a.task.title}\n\nAB-Task: ${a.task.key}`, COORDINATOR);
@@ -180,44 +211,68 @@ export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSumma
     const base = await branchTip(repo, 'main');
     const dir = path.join(b.root, 'integration', `${a.task.agent}-${a.attempts}`);
     await addIntegrationWorktree(repo, dir, base);
+    // Every integration mark says what was merged and when it started: the grader's first-attempt tree (§9).
+    const start = rec.ms();
+    const integrated = (detail: Record<string, unknown> & { outcome: string }) => {
+      a.lastOutcome = detail.outcome;
+      mark('integration', a, { ...detail, start, base, head, tests: o.tests });
+    };
     try {
       const m = await mergeCommit(dir, head, `Merge ${a.branch}: ${a.task.title}`);
-      if (!m.ok) { mark('integration', a, { outcome: 'conflict', conflicts: m.conflicts }); return `conflict in ${m.conflicts.join(', ')}; main is unchanged. Tell the agent, \`sync ${a.task.agent}\`, and merge again once it has fixed it`; }
+      if (!m.ok) { integrated({ outcome: 'conflict', conflicts: m.conflicts }); return `conflict in ${m.conflicts.join(', ')}; main is unchanged. Tell the agent, \`sync ${a.task.agent}\`, and merge again once it has fixed it`; }
       const repoCfg = readRepoConfig(dir);
       if (repoCfg.setup) {
         const s = await setupCmd(dir, repoCfg.setup.command, `integration-${a.task.agent}-${a.attempts}`, false);
-        if (s.exitCode !== 0) { mark('integration', a, { outcome: 'setup_failed' }); return `the setup command failed (exit ${s.exitCode}); main is unchanged`; }
+        if (s.exitCode !== 0) { integrated({ outcome: 'setup_failed' }); return `the setup command failed (exit ${s.exitCode}); main is unchanged`; }
       }
-      if (repoCfg.test) {
+      if (repoCfg.test && o.tests) {
         const log = path.join(home.logs, `baseline-test-${a.task.agent}-${a.attempts}.log`);
         const r = await setupCmd(dir, repoCfg.test.command, `test-${a.task.agent}-${a.attempts}`, true);
         const first = !a.testedOnce;
         a.testedOnce = true;
         if (r.exitCode !== 0) {
           const tail = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').slice(-20).join('\n') : '';
-          mark('integration', a, { outcome: 'tests_failed', first, exit: r.exitCode });
+          integrated({ outcome: 'tests_failed', first, exit: r.exitCode });
           return `tests failed (${r.timedOut ? 'timed out' : `exit ${r.exitCode}`}); main is unchanged. The output's end:\n${tail}`;
         }
       }
       const adv = await advanceBase(repo, 'main', base, m.commit);
-      if (!adv.ok) { mark('integration', a, { outcome: 'base_moved', detail: adv.detail }); return `main couldn't move: ${adv.detail}`; }
+      if (!adv.ok) { integrated({ outcome: 'base_moved', detail: adv.detail }); return `main couldn't move: ${adv.detail}`; }
       a.integratedAt = rec.ms();
-      mark('integration', a, { outcome: 'merged', commit: m.commit, first: a.attempts === 1 });
-      return `merged into main (${m.commit.slice(0, 12)}), tests green`;
+      integrated({ outcome: 'merged', commit: m.commit, first: a.attempts === 1 });
+      return `merged into main (${m.commit.slice(0, 12)})${o.tests ? ', tests green' : ', tests skipped (--no-tests)'}`;
     } finally {
       await removeIntegrationWorktree(repo, dir).catch(() => {});
     }
   };
-  /** `sync <agent>`: main into the agent's branch, so it has what's already integrated (harnessd's sync). */
-  const sync = async (a: Agent): Promise<string> => {
+  /** `sync <agent> [--theirs]`: main into the agent's branch, so it has what's already integrated (harnessd's sync). */
+  const sync = async (a: Agent, o: { theirs: boolean } = { theirs: false }): Promise<string> => {
     actions++;
+    if (o.theirs) {
+      const r = await syncTheirs(a.worktree, await branchTip(repo, 'main'), COORDINATOR);
+      mark('sync', a, r ? { outcome: 'synced', theirs: true, replaced: r.replaced } : { outcome: 'conflict', theirs: true });
+      return r ? `synced, main's side winning conflicting hunks; tell the agent which of its files may have lost hunks: ${r.replaced.join(', ') || 'none'}` : 'even main-wins merging fails here; the branch is unchanged';
+    }
     const r = await syncWorktree({ worktree: a.worktree, target: await branchTip(repo, 'main'), taskId: a.task.key, agent: COORDINATOR });
     mark('sync', a, r.ok ? { outcome: 'synced', changed: r.changed } : { outcome: 'conflict', conflicts: r.conflicts });
     return r.ok ? (r.changed.length ? `synced: ${r.changed.length} file(s) from main` : 'already up to date') : `conflicts in ${r.conflicts.join(', ')}; the branch is unchanged`;
   };
   if (b.console) {
-    b.console.commands.merge = { usage: '<agent>', run: (args) => merge(byName(args)) };
-    b.console.commands.sync = { usage: '<agent>', run: (args) => sync(byName(args)) };
+    b.console.commands.merge = {
+      usage: '<agent> [--no-tests]',
+      run: (args) => {
+        const words = args.trim().split(/\s+/);
+        const noTests = words.includes('--no-tests');
+        return merge(byName(words.filter((w) => w !== '--no-tests').join(' ')), { tests: !noTests });
+      },
+    };
+    b.console.commands.sync = {
+      usage: '<agent> [--theirs]',
+      run: (args) => {
+        const words = args.trim().split(/\s+/);
+        return sync(byName(words.filter((w) => w !== '--theirs').join(' ')), { theirs: words.includes('--theirs') });
+      },
+    };
     rec.log(`baseline: ${b.console.help()}`);
   }
 
@@ -239,8 +294,13 @@ export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSumma
         }
         if (!turnEnded(a.configDir, a.sessionId, 4000)) continue;
         if (a.attempts >= 3) { rec.log(`baseline: ${a.task.agent} can't be integrated after 3 attempts; stopping`); outcome = 'stopped'; break; }
-        const result = await merge(a);
+        let result = await merge(a);
         rec.log(`merge ${a.task.agent} (auto): ${result.split('\n')[0]}`);
+        if (a.integratedAt === null && untestedRetry(b.scenario, { anyIntegrated: agents.some((x) => x.integratedAt !== null), attempts: a.attempts, testsFailed: a.lastOutcome === 'tests_failed' })) {
+          // D-124: the first task's change may need the other's to pass, so it goes in untested.
+          result = await merge(a, { tests: false });
+          rec.log(`merge ${a.task.agent} --no-tests (auto, D-124): ${result.split('\n')[0]}`);
+        }
         if (a.integratedAt === null && a.child?.stdin?.writable) {
           // The robotic coordinator's fix request, typed into the agent's terminal as a human would.
           await sync(a);
@@ -281,10 +341,15 @@ export async function runBaseline(b: BaselineInput): Promise<{ outcome: RunSumma
   const model = b.provider ? `${b.provider.model?.id ?? 'vendor default'}${b.provider.name ? ` (${b.provider.name})` : ''}` : 'scripted';
   return {
     outcome, agents: agents.map((a) => ({ name: a.task.agent, configDir: a.configDir })), commits,
+    attempts: integrations.map((m) => ({
+      task: m.task!, start: Number(m.detail?.start), end: m.t, base: String(m.detail?.base), head: String(m.detail?.head),
+      outcome: m.detail?.outcome === 'merged' || m.detail?.outcome === 'tests_failed' || m.detail?.outcome === 'conflict' ? m.detail.outcome : 'other',
+    })),
     summary: {
       v: 1, arm: 'baseline', scenario: b.scenario, outcome, models: [model],
       m1_ms: allIn ? merged.at(-1)! - clockStart : null,
-      m3_conflicts: integrations.filter((m) => m.detail?.outcome === 'conflict').length,
+      // M3: each task's first textual conflict with the other's integrated work, at a merge or a sync (§9).
+      m3_conflicts: new Set(marks.filter((m) => (m.what === 'integration' || m.what === 'sync') && m.detail?.outcome === 'conflict').map((m) => m.task)).size,
       sync_conflicts: marks.filter((m) => m.what === 'sync' && m.detail?.outcome === 'conflict').length,
       m4: { commits_after_first: commitsAfterFirst(repo, baseSha, mainSha, merged.length), ms_to_green: allIn ? merged.at(-1)! - merged[0]! : null },
       // The runner's own fix requests in a rehearsal are typed into the terminal, so the transcripts count them like a human's.

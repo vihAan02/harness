@@ -95,10 +95,10 @@ test('with the land step, M1 runs until tasks land; M3, M9 and the stale-context
   view.apply(e(31, 'land.completed', { land_id: 'land_3', task_id: 'T-1', new_base_sha: 'c', changed_paths: [] }));
   m = computeMetrics(view);
   assert.equal(m.completionMs, 31_000, 'from the first assignment to the last land');
-  assert.deepEqual(m.lands, { completed: 2, rejected: 0, failed: { tests: 1 }, conflicts: 0, syncConflicts: 1, firstLandTestFailures: 1 }, 'a sync conflict is no M3 conflict');
+  assert.deepEqual(m.lands, { completed: 2, rejected: 0, failed: { tests: 1 }, conflicts: 0, syncConflicts: 1, conflictTasks: 1, firstLandTestFailures: 1 }, 'a sync conflict is an M3 conflict for its task, as a conflicted land would be (validation.md §9)');
   assert.deepEqual(m.notices, { inProgress: { sent: 1, delivered: 1 }, landed: { sent: 1, delivered: 1, beforeReaderFinished: 1 }, superseded: 0 });
   assert.match(renderMetrics(m), /M9a failed tests at first integration: 1/);
-  assert.match(renderMetrics(m), /M3  conflicts at integration: 0 .*\n    sync conflicts during the run: 1 \(a diagnostic, not M3\)/);
+  assert.match(renderMetrics(m), /M3  conflicts: 1 task\(s\) with a textual conflict, at a land or a sync .*\n    conflicted lands 0, sync conflicts 1 \(diagnostics\)/);
   assert.equal(m.notComputed.M3, undefined, 'M3 and M9 come from the land step now');
 });
 

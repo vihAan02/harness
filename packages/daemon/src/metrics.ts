@@ -52,10 +52,11 @@ export type RunMetrics = {
   shimCalls: Record<string, Record<string, number>>;
   overlaps: { observed: number; prospective: number };
   /**
-   * The land step (0B): lands by outcome; M3's conflicts at integration (a land's merge); M9a, test failures at a
-   * task's first land. Sync conflicts during the run are a diagnostic, not M3: the baseline has no sync (validation.md §4).
+   * The land step (0B): lands by outcome; M3's conflicts, each task's first textual conflict with the other's
+   * integrated work, at a land or at a sync (`conflictTasks`, validation.md §9); M9a, test failures at a task's first
+   * land. The raw counts of conflicted lands and sync conflicts are diagnostics.
    */
-  lands: { completed: number; rejected: number; failed: Record<string, number>; conflicts: number; syncConflicts: number; firstLandTestFailures: number };
+  lands: { completed: number; rejected: number; failed: Record<string, number>; conflicts: number; syncConflicts: number; conflictTasks: number; firstLandTestFailures: number };
   /**
    * Stale-context notices (0B; P1 diagnostic): how many of each stage were sent and delivered, and how many
    * landed notices reached their reader before its task finished.
@@ -163,8 +164,9 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     bump(integrationActions.byKind, approval ? 'approval' : e.kind === 'land.failed' ? 'land.cancelled' : e.kind);
   }
 
-  const lands: RunMetrics['lands'] = { completed: 0, rejected: 0, failed: {}, conflicts: 0, syncConflicts: 0, firstLandTestFailures: 0 };
+  const lands: RunMetrics['lands'] = { completed: 0, rejected: 0, failed: {}, conflicts: 0, syncConflicts: 0, conflictTasks: 0, firstLandTestFailures: 0 };
   const firstLand = new Map<string, string>(); // task → outcome of its first land
+  const conflicted = new Set<string>(); // tasks with a textual conflict, at a land or a sync
   for (const e of events) {
     const d = data(e);
     const task = String(d.task_id ?? '');
@@ -172,11 +174,12 @@ export function computeMetrics(view: ProjectView): RunMetrics {
     if (e.kind === 'land.rejected') lands.rejected++;
     if (e.kind === 'land.failed') {
       bump(lands.failed, String(d.reason));
-      if (d.reason === 'conflict') lands.conflicts++;
+      if (d.reason === 'conflict') { lands.conflicts++; conflicted.add(task); }
       if (d.reason !== 'cancelled' && !firstLand.has(task)) firstLand.set(task, String(d.reason));
     }
-    if (e.kind === 'worktree.sync_conflict') lands.syncConflicts++;
+    if (e.kind === 'worktree.sync_conflict') { lands.syncConflicts++; conflicted.add(task); }
   }
+  lands.conflictTasks = conflicted.size;
   lands.firstLandTestFailures = [...firstLand.values()].filter((r) => r === 'tests').length;
 
   const notices: RunMetrics['notices'] = { inProgress: { sent: 0, delivered: 0 }, landed: { sent: 0, delivered: 0, beforeReaderFinished: 0 }, superseded: 0 };
@@ -286,7 +289,7 @@ export function computeMetrics(view: ProjectView): RunMetrics {
       M4: 'semantic rework after integration: post-integration log (0B)',
       M6: 'stale-context incidents reaching integration: hidden checks plus diff review (0B A/B setup)',
       M10: 'human coordination time: the coordinator\'s timer, same method in both arms',
-      ...(landForm ? {} : { M3: 'conflicts at integration: from the land step, once the run lands tasks', M9a: 'failed tests at first integration: from the land step, once the run lands tasks' }),
+      ...(landForm ? {} : { M3: 'conflicts: from lands and syncs, once the run has them', M9a: 'failed tests at first integration: from the land step, once the run lands tasks' }),
     },
   };
 }
@@ -312,8 +315,8 @@ export function renderMetrics(m: RunMetrics): string {
   lines.push(`H-07 harness tool use: ${Object.entries(m.shimCalls).map(([a, c]) => `${a}: ${Object.entries(c).map(([k, n]) => `${k} ${n}`).join(', ')}`).join('; ') || 'none'}`);
   lines.push(`    overlaps: ${m.overlaps.observed} while editing, ${m.overlaps.prospective} between scopes`);
   if (m.completionForm === 'landed') {
-    lines.push(`M3  conflicts at integration: ${m.lands.conflicts} (lands; overlapping hunks are scored from the diffs)`);
-    if (m.lands.syncConflicts) lines.push(`    sync conflicts during the run: ${m.lands.syncConflicts} (a diagnostic, not M3)`);
+    lines.push(`M3  conflicts: ${m.lands.conflictTasks} task(s) with a textual conflict, at a land or a sync (each task once; overlapping hunks are scored from the diffs)`);
+    if (m.lands.conflicts || m.lands.syncConflicts) lines.push(`    conflicted lands ${m.lands.conflicts}, sync conflicts ${m.lands.syncConflicts} (diagnostics)`);
     lines.push(`M9a failed tests at first integration: ${m.lands.firstLandTestFailures}`);
     lines.push(`    lands: ${m.lands.completed} landed, ${m.lands.rejected} rejected by the fencing check, ${Object.entries(m.lands.failed).map(([k, n]) => `${n} failed (${k})`).join(', ') || '0 failed'}`);
   }
