@@ -19,6 +19,7 @@ import { reportSync, unblockTask } from './syncs.ts';
 import { cancelLand, completeLand, failLand, reportLand, requestLand, startLand } from './lands.ts';
 import { acquireLease, releaseLeases, renewLeases } from './leases.ts';
 import { startWait } from './waits.ts';
+import { landExternal, observeBase, publishPr, reportPrStatus, reportPublishBlocked } from './integrations.ts';
 
 export { CommandError, type Caller } from './handler.ts';
 export { EVENTS_CHANNEL } from './events.ts';
@@ -51,6 +52,12 @@ const HANDLERS: Record<string, Handler> = {
   'lease.renew': renewLeases,
   'lease.release': releaseLeases,
   'wait.start': startWait,
+  // GitHub integration (D-114, D-115; protocol.md §11)
+  'pr.publish': publishPr,
+  'pr.status': reportPrStatus,
+  'publish.blocked': reportPublishBlocked,
+  'base.observe': observeBase,
+  'land.external': landExternal,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };

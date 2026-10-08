@@ -24,7 +24,17 @@ export type ReadInfo = { hash: string | null; source: string; confidence: string
 export type LandInfo = {
   id: string; taskId: string; deviceId: string; status: 'requested' | 'accepted' | 'rejected' | 'completed' | 'failed';
   runTests: boolean; requestedAt: string; finishedAt?: string; reason?: string; detail?: string; changedPaths?: string[]; newBaseSha?: string;
+  /** D-114, D-115: `github` lands through the task's PR (a reservation); `external` was merged outside the harness. */
+  mode: 'local' | 'github' | 'external'; prNumber?: number; step?: string;
 };
+/** A task's PR, as its device last published and polled it (D-114). */
+export type PrInfo = {
+  taskId: string; prNumber: number; url: string; headSha: string; baseSha: string; remoteRef: string; deviceId: string;
+  state: 'open' | 'closed'; merged: boolean; mergeSha: string | null; mergeableState: string | null;
+  checks: Record<string, string>; reviews: { login: string; state: string; commit_id: string }[]; publishedAt: string; updatedAt: string;
+};
+/** A move of the base branch made outside the harness (D-114). */
+export type BaseAdvanceInfo = { oldSha: string; newSha: string; changedPaths: string[]; at: string };
 /** Message kinds the `answer` tool replies to (D-105). */
 const ANSWERABLE = ['question', 'contract_request'];
 export type MessageInfo = {
@@ -68,6 +78,9 @@ export class ProjectView {
   lands = new Map<string, LandInfo>();
   leases = new Map<string, LeaseInfo>(); // hard claims, by lease id (D-97)
   waits = new Map<string, WaitInfo>(); // wait_for, by wait id (D-95)
+  prs = new Map<string, PrInfo>(); // by task (D-114)
+  publishBlocked = new Map<string, { reasons: { rule: string; commit?: string; path?: string }[]; at: string }>(); // by task (D-114)
+  baseAdvances: BaseAdvanceInfo[] = []; // outside the harness (D-114)
   events: EventMessage[] = [];
 
   constructor(projectId: string) {
@@ -190,8 +203,16 @@ export class ProjectView {
         this.patchTask(s('task_id'), { status: 'in_progress' });
         break;
       case 'land.requested':
-        this.lands.set(s('land_id'), { id: s('land_id'), taskId: s('task_id'), deviceId: s('device_id'), status: 'requested', runTests: d.run_tests !== false, requestedAt: e.at });
+        this.lands.set(s('land_id'), {
+          id: s('land_id'), taskId: s('task_id'), deviceId: s('device_id'), status: 'requested', runTests: d.run_tests !== false, requestedAt: e.at,
+          mode: d.mode === 'github' ? 'github' : 'local', ...(typeof d.pr_number === 'number' ? { prNumber: d.pr_number } : {}),
+        });
         break;
+      case 'land.progress': {
+        const l = this.lands.get(s('land_id'));
+        if (l && l.mode === 'github') l.step = s('step');
+        break;
+      }
       case 'land.accepted':
       case 'land.rejected': {
         const l = this.lands.get(s('land_id'));
@@ -199,11 +220,43 @@ export class ProjectView {
         break;
       }
       case 'land.completed': {
-        const l = this.lands.get(s('land_id'));
-        if (l) Object.assign(l, { status: 'completed', finishedAt: e.at, newBaseSha: s('new_base_sha'), changedPaths: asStrings(d.changed_paths) });
+        // A PR merged outside the harness completes with no request before it (D-115's honest limit).
+        if (!this.lands.has(s('land_id'))) {
+          this.lands.set(s('land_id'), {
+            id: s('land_id'), taskId: s('task_id'), deviceId: e.actor.device_id ?? '', status: 'requested', runTests: false, requestedAt: e.at,
+            mode: d.external === true ? 'external' : 'local', ...(typeof d.pr_number === 'number' ? { prNumber: d.pr_number } : {}),
+          });
+        }
+        Object.assign(this.lands.get(s('land_id'))!, { status: 'completed', finishedAt: e.at, newBaseSha: s('new_base_sha'), changedPaths: asStrings(d.changed_paths) });
         this.patchTask(s('task_id'), { status: 'landed' });
+        const pr = this.prs.get(s('task_id'));
+        if (pr) Object.assign(pr, { state: 'closed', merged: true, mergeSha: s('new_base_sha') });
         break;
       }
+      case 'pr.published':
+        this.prs.set(s('task_id'), {
+          taskId: s('task_id'), prNumber: d.pr_number as number, url: s('url'), headSha: s('head_sha'), baseSha: s('base_sha'), remoteRef: s('remote_ref'),
+          deviceId: s('device_id'), state: 'open', merged: false, mergeSha: null, mergeableState: null, checks: {}, reviews: [], publishedAt: e.at, updatedAt: e.at,
+        });
+        this.publishBlocked.delete(s('task_id'));
+        break;
+      case 'pr.updated': {
+        const pr = this.prs.get(s('task_id'));
+        if (pr) {
+          Object.assign(pr, {
+            headSha: s('head_sha'), state: d.state === 'closed' ? 'closed' : 'open', merged: d.merged === true, mergeSha: typeof d.merge_sha === 'string' ? d.merge_sha : null,
+            mergeableState: typeof d.mergeable_state === 'string' ? d.mergeable_state : null, checks: (d.checks ?? {}) as Record<string, string>,
+            reviews: Array.isArray(d.reviews) ? d.reviews as PrInfo['reviews'] : [], updatedAt: e.at,
+          });
+        }
+        break;
+      }
+      case 'publish.blocked':
+        this.publishBlocked.set(s('task_id'), { reasons: Array.isArray(d.reasons) ? d.reasons as { rule: string }[] : [], at: e.at });
+        break;
+      case 'base.advanced':
+        this.baseAdvances.push({ oldSha: s('old_sha'), newSha: s('new_sha'), changedPaths: asStrings(d.changed_paths), at: e.at });
+        break;
       case 'land.failed': {
         const l = this.lands.get(s('land_id'));
         if (l) Object.assign(l, { status: 'failed', finishedAt: e.at, reason: s('reason'), ...(d.detail ? { detail: s('detail') } : {}) });

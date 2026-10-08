@@ -53,6 +53,8 @@ export class ServerLink {
   state: LinkState = 'connecting';
   /** The coordinator's epoch from the last welcome (D-113); null before one, or from a server that predates it. */
   epoch: string | null = null;
+  /** Each project's integration mode, from the last welcome (D-114). */
+  modes: Record<string, 'local' | 'github'> = {};
 
   constructor(o: LinkOptions) {
     this.o = o;
@@ -162,6 +164,7 @@ export class ServerLink {
           welcomed = true;
           this.ready = true;
           this.epoch = m.epoch ?? null;
+          this.modes = Object.fromEntries(m.projects.map((p) => [p.project_id, p.integration_mode ?? 'local']));
           this.setState('connected');
           this.heads ??= Object.fromEntries(m.projects.map((p) => [p.project_id, p.head_seq]));
           for (const p of this.pending.values()) send(p.msg); // resend: idempotent on command_id

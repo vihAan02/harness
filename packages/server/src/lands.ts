@@ -53,7 +53,9 @@ async function deviceLand(ctx: HandlerContext, landId: unknown, statuses: string
 export async function requestLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
   requireHumanCaller(ctx, 'land a task');
   // Serialize land requests per project, so the one-in-flight check can't race.
-  await ctx.tx.query('SELECT id FROM projects WHERE id = $1 FOR UPDATE', [ctx.projectId]);
+  const mode = (await ctx.tx.query<{ integration_mode: string }>('SELECT integration_mode FROM projects WHERE id = $1 FOR UPDATE', [ctx.projectId])).rows[0]?.integration_mode;
+  // A GitHub project lands through its PR (D-114, D-115): the local land, --no-tests included, is refused.
+  if (mode === 'github') throw new CommandError('conflict', 'this project integrates through GitHub; land it with `harness integrate` (D-114)');
   const task = await lockTask(ctx, args.task_id);
   if (task.status !== 'done') throw new CommandError('conflict', `${task.id} is ${task.status}; only a finished task can land`);
   const runTests = args.run_tests === undefined ? true : args.run_tests;
@@ -170,18 +172,24 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
   await ctx.tx.query("UPDATE lands SET status = 'completed', new_base_sha = $2, changed_blobs = $3, finished_at = now() WHERE id = $1",
     [land.id, newBase, JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])))]);
   await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
-  // Only its current leases are released. One that ran out is expired, not released: the next lease command
-  // logs it as `lease.expired`, once, as it would any other (D-97).
-  const released = (await ctx.tx.query<{ id: string }>(
-    `UPDATE leases SET released_at = now(), release_reason = 'landed'
-     WHERE task_id = $1 AND released_at IS NULL AND expired_logged_at IS NULL AND expires_at > $2::timestamptz RETURNING id`, [task.id, at])).rows.map((r) => r.id).sort();
   const events: HandlerOutput['events'] = [
     { kind: 'land.completed', data: { land_id: land.id, task_id: task.id, old_base_sha: oldBase, new_base_sha: newBase, changed_paths: changed.map((c) => c.path) } },
-    ...released.map((id) => ({ kind: 'lease.released', data: { lease_id: id, task_id: task.id, reason: 'landed' } })),
+    ...await releaseOnLand(ctx, task.id, at),
   ];
   // Stale context (0B item 2): everyone who read a file this land changed, and read different content, hears it.
   events.push(...await noticeLanded(ctx, { task: task.id, agent: task.assignee_agent_id, landId: land.id, newBase }, changed));
   return { result: null, events };
+}
+
+/**
+ * A landed task's current leases are released. One that ran out is expired, not released: the next lease command
+ * logs it as `lease.expired`, once, as it would any other (D-97). Call with the lease lock held (`at` from lockLeases).
+ */
+export async function releaseOnLand(ctx: HandlerContext, taskId: string, at: string): Promise<HandlerOutput['events']> {
+  const released = (await ctx.tx.query<{ id: string }>(
+    `UPDATE leases SET released_at = now(), release_reason = 'landed'
+     WHERE task_id = $1 AND released_at IS NULL AND expired_logged_at IS NULL AND expires_at > $2::timestamptz RETURNING id`, [taskId, at])).rows.map((r) => r.id).sort();
+  return released.map((id) => ({ kind: 'lease.released', data: { lease_id: id, task_id: taskId, reason: 'landed' } }));
 }
 
 /** `land.fail { land_id, reason, detail?, conflict_paths? }` → `land.failed`. The task stays done; the human decides what's next. */

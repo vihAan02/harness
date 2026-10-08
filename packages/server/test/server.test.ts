@@ -82,7 +82,7 @@ test('welcome reports the head, then events replay from the cursor in order', as
   const p = await seedProject(db.pool);
   await inTransaction(db.pool, (tx) => appendEvents(tx, p, ['a', 'b', 'c'].map((kind) => ({ kind, actor: 'human_test' }))));
   const c = await connect(hello(sub(p, 1)));
-  assert.deepEqual((await c.next('welcome')).projects, [{ project_id: p, head_seq: 3 }]);
+  assert.deepEqual((await c.next('welcome')).projects, [{ project_id: p, head_seq: 3, integration_mode: 'local' }]);
   assert.deepEqual([(await c.next('event')).seq, (await c.next('event')).seq], [2, 3]);
   c.close();
 });
@@ -182,7 +182,7 @@ test('reconnecting from a cursor resumes exactly where the client left off', asy
   await reader.closed;
   for (const n of [3, 4]) { writer.send(command(p, 'agent.create', agent(n))); await writer.next('command_result'); }
   const again = await connect(hello(sub(p, 2)));
-  assert.deepEqual((await again.next('welcome')).projects, [{ project_id: p, head_seq: 4 }]);
+  assert.deepEqual((await again.next('welcome')).projects, [{ project_id: p, head_seq: 4, integration_mode: 'local' }]);
   assert.deepEqual([(await again.next('event')).seq, (await again.next('event')).seq], [3, 4]);
   await sleep(200);
   assert.deepEqual(again.take('event'), [], 'nothing before the cursor is replayed');
@@ -194,7 +194,7 @@ test('a later subscribe replays that project and reports its head', async () => 
   await inTransaction(db.pool, (tx) => appendEvents(tx, q, [{ kind: 'x', actor: 'human_test' }]));
   const c = await joined(p);
   c.send({ v: 1, type: 'subscribe', ...sub(q) });
-  assert.deepEqual((await c.next('subscribed')).projects, [{ project_id: q, head_seq: 1 }]);
+  assert.deepEqual((await c.next('subscribed')).projects, [{ project_id: q, head_seq: 1, integration_mode: 'local' }]);
   assert.equal((await c.next('event', (e) => e.project_id === q)).seq, 1);
   c.close();
 });

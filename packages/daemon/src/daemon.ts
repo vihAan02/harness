@@ -183,6 +183,11 @@ export class Daemon {
   async ready(): Promise<void> {
     if (!this.link) throw new Error('start() first');
     await this.link.whenReady();
+    // The server decides how each project integrates (D-114): a config that disagrees would land work the wrong way.
+    for (const p of this.config.projects) {
+      const mode = this.link.modes[p.id] ?? 'local';
+      if (mode !== p.integration) throw new Error(`${p.id}: config.toml says integration = "${p.integration}", but the coordinator says "${mode}"; fix the config (D-114)`);
+    }
     await this.link.whenCaughtUp();
     this.recoverLands();
     this.leases.start();
