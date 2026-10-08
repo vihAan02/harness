@@ -23,6 +23,7 @@ import { advanceBaseRef, baseRef, fetchBase, gitRemote, pushBranch } from './rem
 import { ghToken, GitHubClient } from './github.ts';
 import { publishHash, scanPublish } from './publish.ts';
 import { prBody, prTitle } from './prbody.ts';
+import { Poller } from './prpoll.ts';
 import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -124,6 +125,8 @@ export type DaemonOptions = {
   deviceKey?: KeyObject;
   /** GitHub for a GitHub-mode project (D-114). Default: the human's own `gh` login. Tests point it at a fake. */
   github?: { token?: () => Promise<string> };
+  /** How often GitHub-mode projects' base and PRs are polled (D-114). Default 60 s. */
+  pollMs?: number;
   /** The D-119 check for loopback Postgres that takes password-less logins (TH-22), for tests. Default: findTrustPostgres. */
   localServices?: { check?: () => Promise<TrustLogin[]> };
 };
@@ -158,6 +161,7 @@ export class Daemon {
   recovered: Promise<void> = Promise.resolve();
   githubToken: (() => Promise<string>) | null = null;
   githubLogin: string | null = null;
+  poller: Poller | null = null;
   trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
 
   constructor(o: DaemonOptions) {
@@ -238,6 +242,16 @@ export class Daemon {
     this.logTrustPostgres();
     this.recoverLands();
     this.leases.start();
+    const github = () => this.config.projects.filter((p) => p.integration === 'github');
+    if (github().length && !this.poller) {
+      this.poller = new Poller({
+        projects: github, view: (id) => this.view(id), deviceId: this.config.deviceId, github: (p) => this.github(p),
+        send: async (projectId, name, args) => (await this.link!.command(projectId, name, args)).result,
+        advanceBase: async (p, tip) => { await advanceBaseRef(p.repo, p.id, tip); },
+        log: (m) => this.log(m), ...(this.o.pollMs ? { intervalMs: this.o.pollMs } : {}),
+      });
+      this.poller.start();
+    }
   }
 
   view(projectId: string): ProjectView {
@@ -939,6 +953,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    await this.poller?.stop();
     this.leases.stop();
     await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
     await Promise.all(this.lifecycles.values()); // with no agents left running, these finish promptly

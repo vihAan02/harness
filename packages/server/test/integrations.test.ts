@@ -186,3 +186,19 @@ test('the project\'s mode decides: no local land in a GitHub project, no GitHub 
   assert.match(landId, /^land_/);
   await run('land.cancel', { task_id: l.task }, human, local);
 });
+
+test('a PR merge another daemon saw first as an outside move of the base still lands its task, once, with no second notice', async () => {
+  const w = await finished('agent/z1');
+  await w.complete();
+  await publish(w.task, 21);
+  const tip = (await db.pool.query('SELECT tip_sha FROM project_bases WHERE project_id = $1', [project])).rows[0].tip_sha;
+  const changed = [{ path: 'src/z.ts', new_hash: SHA('f') }];
+  const seen = await run('base.observe', { old_sha: tip, new_sha: SHA('a'), changed }, other);
+  assert.equal(res(seen).status, 'applied');
+  const r = await run('land.external', { task_id: w.task, pr_number: 21, merge_sha: SHA('a'), old_base_sha: tip, changed }, device);
+  assert.equal(res(r).status, 'landed');
+  assert.deepEqual((await kinds(r.seqs)).map((e) => e.kind), ['land.completed'], 'no second notice, no tip move');
+  assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [w.task])).rows[0].status, 'landed');
+  assert.match((await db.pool.query('SELECT source FROM base_advances WHERE new_sha = $1', [SHA('a')])).rows[0].source, /^land:/);
+  assert.equal(res(await run('land.external', { task_id: w.task, pr_number: 21, merge_sha: SHA('a'), old_base_sha: tip, changed }, device)).status, 'known');
+});
