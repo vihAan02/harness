@@ -24,6 +24,7 @@ import { ghToken, GitHubClient } from './github.ts';
 import { publishHash, scanPublish } from './publish.ts';
 import { prBody, prTitle } from './prbody.ts';
 import { Poller } from './prpoll.ts';
+import { integrateRemote } from './integrate-remote.ts';
 import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -120,11 +121,11 @@ export type DaemonOptions = {
    * Fault injection, for tests only. `leases`: T-2. `crashAt`: harnessd SIGKILLs itself at that named point
    * (D-113's crash windows): `after_assignment_receipt`, `during_setup`, `after_report_done`.
    */
-  faults?: { leases?: LeaseFaults; crashAt?: string };
+  faults?: { leases?: LeaseFaults; crashAt?: string; beforeArm?: () => Promise<void> };
   /** This device's key, with device-key auth (D-111). Default: ~/.harness/device.key. */
   deviceKey?: KeyObject;
   /** GitHub for a GitHub-mode project (D-114). Default: the human's own `gh` login. Tests point it at a fake. */
-  github?: { token?: () => Promise<string> };
+  github?: { token?: () => Promise<string>; retryMs?: number };
   /** How often GitHub-mode projects' base and PRs are polled (D-114). Default 60 s. */
   pollMs?: number;
   /** The D-119 check for loopback Postgres that takes password-less logins (TH-22), for tests. Default: findTrustPostgres. */
@@ -301,8 +302,11 @@ export class Daemon {
       if (w && run && run.projectId === e.project_id && run.sessionId === w.sessionId) void this.deliverWait(run, w);
     }
     if (e.kind === 'land.requested' && (e.data as { device_id?: string }).device_id === this.config.deviceId) {
-      const d = e.data as { land_id: string; task_id: string; run_tests?: boolean };
-      this.queueLand(e.project_id, () => this.land(e.project_id, d.land_id, d.task_id, d.run_tests !== false));
+      const d = e.data as { land_id: string; task_id: string; run_tests?: boolean; mode?: string };
+      // A GitHub project's land is the integration reservation (D-115); the local land never runs there.
+      if (d.mode === 'github') this.queueLand(e.project_id, () => integrateRemote(this, e.project_id, d.land_id));
+      else if (this.project(e.project_id).integration === 'local') this.queueLand(e.project_id, () => this.land(e.project_id, d.land_id, d.task_id, d.run_tests !== false));
+      else void this.report(e.project_id, 'land.fail', { land_id: d.land_id, reason: 'error', detail: 'this project integrates through GitHub' }).catch(() => {});
     }
     if (e.kind === 'task.unblocked') {
       const run = this.running.get((e.data as { task_id: string }).task_id);
@@ -735,6 +739,12 @@ export class Daemon {
     for (const p of this.config.projects) {
       for (const l of this.view(p.id).lands.values()) {
         if (l.deviceId !== this.config.deviceId) continue;
+        if (l.mode === 'github') {
+          // Resumed from its journal and GitHub's state (integrate-remote.ts), never by the local land's rules.
+          if (l.status === 'requested' || l.status === 'accepted') this.queueLand(p.id, () => integrateRemote(this, p.id, l.id));
+          continue;
+        }
+        if (l.mode === 'external') continue;
         if (l.status === 'requested') this.queueLand(p.id, () => this.land(p.id, l.id, l.taskId, l.runTests));
         const cancelled = l.status === 'failed' && l.reason === 'cancelled';
         if (l.status !== 'accepted' && !(cancelled && fs.existsSync(this.landFile(l.id)))) continue;
@@ -1123,6 +1133,16 @@ export class Daemon {
     return tip;
   }
 
+  async advanceProjectBase(project: ProjectConfig, tip: string): Promise<void> {
+    await advanceBaseRef(project.repo, project.id, tip);
+  }
+
+  /** This human's GitHub login (from their own token), for CODEOWNERS and review checks. */
+  async githubLoginFor(project: ProjectConfig): Promise<string | null> {
+    this.githubLogin ??= await this.github(project).call<{ login: string }>('GET', '/user').then((u) => u.login, () => null);
+    return this.githubLogin;
+  }
+
   github(project: ProjectConfig): GitHubClient {
     this.githubToken ??= this.o.github?.token ?? ghToken();
     return new GitHubClient({ api: project.githubApi, repo: project.githubRepo!, token: this.githubToken });
@@ -1161,7 +1181,7 @@ export class Daemon {
       return;
     }
     const gh = this.github(project);
-    this.githubLogin ??= await gh.call<{ login: string }>('GET', '/user').then((u) => u.login, () => null);
+    await this.githubLoginFor(project);
     const changed = (await git(project.repo, 'diff', '--name-only', '-z', `${base}...${head}`)).split('\0').filter(Boolean);
     const agent = view.agents.get(task.assignee!)!;
     const sessions = [...view.sessions.values()].filter((s) => s.taskId === taskId);
