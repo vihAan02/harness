@@ -9,7 +9,8 @@ import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { regularFileIn } from './repo-config.ts';
 
 export type ManifestDigest = { path: string; sha256: string | null }; // null: declared but absent
-export type ApprovalKind = 'setup' | 'test';
+/** `publish`: pushing a finished task to the public repo, bound to its exact head and PR text (D-114). */
+export type ApprovalKind = 'setup' | 'test' | 'publish';
 export type ApprovalRequest = {
   id: string; projectId: string; taskId: string; command: string; manifests: ManifestDigest[]; hash: string; requestedAt: string;
   kind?: ApprovalKind; // absent on requests written before 0B: setup

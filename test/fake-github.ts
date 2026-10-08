@@ -362,6 +362,8 @@ export class FakeGitHub {
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>; } catch { return { status: 400, body: { message: 'Problems parsing JSON' } }; }
       if (typeof body !== 'object' || body === null || Array.isArray(body)) return { status: 400, body: { message: 'Problems parsing JSON' } };
     }
+    // The authenticated user (`GET /user`), as harnessd asks for its human's login.
+    if (url.pathname === '/user' && req.method === 'GET') return { status: 200, body: { login: this.user.login, name: this.user.name } };
     const m = /^\/repos\/([^/]+)\/([^/]+)\/(.+)$/.exec(url.pathname);
     // Owner and repo names are case-insensitive on GitHub.
     if (!m || m[1]!.toLowerCase() !== this.owner.toLowerCase() || m[2]!.toLowerCase() !== this.repo.toLowerCase()) return NOT_FOUND;

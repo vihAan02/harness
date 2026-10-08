@@ -20,10 +20,12 @@ export type MergeResult = { ok: true; commit: string } | { ok: false; conflicts:
  * Merges `commit` into the worktree's HEAD with a merge commit (`--no-ff`), as harnessd. On a conflict the
  * merge is aborted, so the worktree is left exactly as it was, and the conflicting paths are returned.
  */
-export async function mergeCommit(worktree: string, commit: string, message: string): Promise<MergeResult> {
+export async function mergeCommit(worktree: string, commit: string, message: string, identity?: { name: string; email: string }): Promise<MergeResult> {
   requireSha(commit, 'commit');
+  // In a GitHub project, the accountable human's identity: GitHub attributes what reaches it (D-114).
+  const who = identity ? ['-c', `user.name=${identity.name}`, '-c', `user.email=${identity.email}`, '-c', 'commit.gpgsign=false'] : HARNESSD;
   try {
-    await git(worktree, ...HARNESSD, 'merge', '--no-ff', '--no-edit', '-m', message, commit);
+    await git(worktree, ...who, 'merge', '--no-ff', '--no-edit', '-m', message, commit);
   } catch (e) {
     const conflicts = (await git(worktree, 'diff', '--name-only', '-z', '--diff-filter=U').catch(() => '')).split('\0').filter(Boolean).sort();
     await git(worktree, 'merge', '--abort').catch(() => {});

@@ -40,11 +40,15 @@ export async function removeWorktree(repo: string, worktree: string, taskId: str
   return { branchDeleted };
 }
 
-/** Commits everything in the worktree for the agent. Returns the new commit, or null if nothing changed. */
-export async function commitAll(worktree: string, message: string, author: { name: string; email: string }): Promise<string | null> {
+/**
+ * Commits everything in the worktree for the agent. Returns the new commit, or null if nothing changed. The committer
+ * is harnessd, unless `committer` is given: in a GitHub project both are the accountable human (D-114).
+ */
+export async function commitAll(worktree: string, message: string, author: { name: string; email: string }, committer?: { name: string; email: string }): Promise<string | null> {
   await git(worktree, 'add', '-A');
   if (!(await git(worktree, 'diff', '--cached', '--name-only'))) return null;
-  await git(worktree, '-c', 'user.name=harnessd', '-c', 'user.email=harnessd@harness.invalid', '-c', 'commit.gpgsign=false',
+  const by = committer ?? { name: 'harnessd', email: 'harnessd@harness.invalid' };
+  await git(worktree, '-c', `user.name=${by.name}`, '-c', `user.email=${by.email}`, '-c', 'commit.gpgsign=false',
     'commit', '-q', '--no-verify', '--author', `${author.name} <${author.email}>`, '-m', message);
   return git(worktree, 'rev-parse', 'HEAD');
 }
