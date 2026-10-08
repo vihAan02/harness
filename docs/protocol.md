@@ -56,7 +56,27 @@
   - Commands need membership in the project; viewers are read-only.
   - `as_agent` must name an agent accountable to that human. The agent's events carry `on_behalf_of` = the human (D-18).
 - **Retries:** a repeated `command_id` returns the original outcome with `duplicate: true`, and never runs the command twice. The same `command_id` with different content is a `conflict`.
-- **Phase 1:** server → daemon **commands** (start an agent, change policy) are signed with the server key. They're verified against local policy and approvals before they take effect (D-32 to D-34). Commands carry IDs and lease tokens, so stale or replayed instructions are rejected (TH-17).
+- **Phase 1:** server → daemon **commands** (start an agent, change policy) are signed with the server key. They're verified against local policy and approvals before they take effect (D-32 to D-34). Commands carry IDs and lease tokens, so stale or replayed instructions are rejected (TH-17). *For the pilot, D-112 refines this: the issuing **device** signs, not the server (§11).*
+
+**The pilot's handshake (`device-key`, D-111).** Types in `@harness/protocol`; keys and signatures in `@harness/protocol/signing`.
+```jsonc
+// client → server: the first message
+{ "v": 1, "type": "hello", "client": { "kind": "harnessd" | "cli" | "dashboard", "version": "…" },
+  "principal": "human_…", "device_id": "dev_…",            // every client kind names its device
+  "auth": { "scheme": "device-key", "client_nonce": "<32 random bytes, base64url>" }, "subscribe": [ … ] }
+// server → client: its nonce, and its signature over HelloServerProof
+//   { client_nonce, server_nonce, server_key_id, device_id, principal }, context "harness/hello-server/v1"
+{ "v": 1, "type": "challenge", "server_nonce": "…", "server_key_id": "<16 hex>", "sig": "<base64>" }
+// client → server, only after the signature verifies against the server key pinned in config.toml:
+//   its device's signature over HelloDeviceProof = HelloServerProof + { client_kind }, context "harness/hello-device/v1"
+{ "v": 1, "type": "auth", "sig": "<base64>" }
+// server → client: as above, plus the coordinator's epoch and each project's integration mode
+{ "v": 1, "type": "welcome", "server_time": "…", "epoch": "…", "projects": [ { "project_id": "prj_…", "head_seq": 1240, "integration_mode": "github" } ] }
+```
+- **The server** checks the device's signature against `devices.public_key` (not revoked) and requires `devices.human_id` to equal `principal`. Otherwise `unauthorized`.
+- **The client** ignores every frame until the challenge's signature verifies, and treats every error or close before then as transient (backoff, never fatal): a process squatting the port can't make it give up (TH-23). A wrong signature holds harnessd's agents (`server_identity_mismatch`) until a verified server answers.
+- **One harnessd per device:** a newer verified harnessd connection replaces the older one, which is closed with code `4001` (`CLOSE_DEVICE_REPLACED`). On a verified connection that's fatal: another harnessd holds this device's key.
+- **`local-token`** stays for loopback test and demo stacks. A server runs one scheme.
 
 ## 3. Event log and cursors
 
@@ -263,6 +283,8 @@ Your branch was synced with the new base at the end of your last turn. Diff exce
 
 ## 9. Fencing check in Phase 1 (proposal)
 
+*For the pilot's GitHub-mode projects, §11's integration reservation replaces this (D-115): the harness merges one approved head at a time through GitHub's API, and reports no `harness/claims` check.*
+
 On one machine (0B), the local land step checks fencing tokens (D-51). With GitHub (Phase 1), **GitHub does integration, and the harness doesn't run its own merge train in Phase 1** (D-51; a custom merge engine stays deferred, D-06):
 - **The check:** the harness reports a **required status check**, `harness/claims`. It fails if any changed path under a hard claim lacks a current lease with the highest issued token.
   - **With merge queue,** it's reported on the merge-group SHA, triggered by `merge_group` / `gh-readonly-queue/*` (F-51, F-52).
@@ -275,3 +297,51 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 - `v` is bumped on breaking changes, and the server supports N and N-1 during upgrades.
 - Event `kind`s are additive. Consumers ignore kinds they don't recognize.
 - Each session records `vendor_version`. Adapter capability flags are derived per version (D-49).
+
+## 11. The two-Mac pilot: dispatch and GitHub integration (D-110 to D-116)
+
+**Signed dispatch (D-112).** Every command that starts, resumes, reopens, abandons or completes an agent's task, or integrates it, carries `args.dispatch = { envelope, sig }`. The server echoes it in the event's `data.dispatch`.
+- **The envelope** (`DispatchEnvelope`): `v`, `kind`, `project_id`, `task_id`, `agent_id`, `target_device_id`, `issuer_human_id`, `issuer_device_id`, `epoch`, `nonce`, `issued_at`, `expires_at`, `task_sha256` (`taskSha256` over title, text, scope and owner), `message_sha256` (reopen: required; resume: optional), `integrate { pr_number, head_sha, base_sha, paths_sha256 }` (integrate only). Signed with context `harness/dispatch/v1`. Unknown fields are refused; policy-like fields are refused as `policy_widening` (T-5b).
+- **Lifetimes:** 24 hours, except `integrate`, 30 minutes. Five minutes of clock skew is allowed on `issued_at`.
+- **The server** verifies the signature against the issuer device's registered key, requires the issuer device and human to be the connection's own, inserts the nonce once (`dispatches`, migration 0015), and enforces who may act: the task's owner or the agent's accountable human; `integrate` only the accountable human.
+- **The target harnessd** verifies again against its pinned `[trust.devices]`, its own nonce journal, the expiry, the task hash against its view, the epoch, and that it's the target. A remote `start`, `reopen` or `resume` waits for a single-use local approval. A refused or expired dispatch is reported with `dispatch.rejected`, and a start that ends before a session began with `task.start_failed`; both free the agent.
+
+**Commands added for the pilot.** Types in `@harness/protocol`.
+
+| Command | From | → Events |
+|---|---|---|
+| `task.resume { task_id, text?, dispatch }` | A human (the task's owner or the agent's accountable human), on a task whose session ended (`stopped`) | `task.resumed { task_id, assignee_agent_id, text?, by, dispatch }`: harnessd on the target device starts a new session in the preserved worktree, with a handoff (D-113) |
+| `dispatch.rejected { task_id, nonce?, kind?, reason, detail? }` | The dispatch's target harnessd | `task.dispatch_rejected`; the server frees the agent: a start's task goes back to open, a resume or reopen's to stopped or done |
+| `task.start_failed { task_id, nonce, reason, detail? }` | harnessd | `task.start_failed`; as above |
+| `pr.publish { task_id, pr_number, url, head_sha, base_sha, remote_ref }` | The task's harnessd, after the publish gate, the local publish approval and the push | `pr.published` (stored in `task_prs`, migration 0016) |
+| `pr.status { task_id, pr_number, head_sha, state, merged, merge_sha?, mergeable_state, checks, reviews }` | The task's harnessd, when something changed | `pr.updated` |
+| `publish.blocked { task_id, reasons[{commit?, path?, rule}] }` | The task's harnessd | `publish.blocked`; nothing was pushed |
+| `land.request { task_id, mode: "github", dispatch }` | The agent's accountable human (`harness integrate`) | `land.requested { …, mode, pr_number }`. In a GitHub project, a request without `mode: "github"` is refused, `--no-tests` included |
+| `land { land_id, base_sha, head_sha, changed_paths[], … }` | The approver's harnessd | `land.accepted` (the reservation is active) or `land.rejected`. Head, base and paths must equal the approved ones; then the fencing check |
+| `land.arm { land_id, head_sha, base_sha }` | The reserving harnessd, synchronously, never from its outbox, before any merge request | `land.progress { step: "merge_requested" }`. Re-fences; refused if the base advanced. From then on the land can't be cancelled, and `land.fail` needs GitHub's evidence |
+| `land.reconcile { land_id, pr_number, observed_head_sha, observed_base_sha, merged, merge_sha?, changed? }` | Another member device, once the reserving one has been offline 10 minutes | Completes or fails the land from GitHub's evidence |
+| `land.external { task_id, pr_number, merge_sha, old_base_sha, changed[] }` | The task's harnessd: its PR was merged outside the harness | `land.completed { …, external: true }`, landed notices |
+| `base.observe { old_sha, new_sha, changed[] }` | Any harnessd that saw the remote base move | Compare-and-swap on the project's base tip; `base.advanced` and landed notices for a move the harness didn't make. Parked while a land is armed |
+
+**Steps and reasons:** `land.progress` steps add `checking`, `merge_requested` and `outcome_unknown`. `land.failed` reasons add `head_changed`, `head_behind`, `wrong_base`, `checks_failed`, `not_mergeable`, `pr_closed`, `review_required`, `ci_busy`, `protection_missing`, `verification_failed` and `dispatch_rejected`. `session.report` end reasons add `harnessd_restarted`, `start_interrupted`, `start_failed`, `provider_auth`, `provider_billing`, `budget` and `rate_limited`. `sync.report` adds `event: "fetch_failed"`.
+
+**The merge (D-115):** `PUT /repos/{owner}/{repo}/pulls/{n}/merge { sha: <approved head>, merge_method: "squash" }`, from the approver's device with their `gh` credentials. The merged commit M counts only if `M^1` is the approved base and `tree(M) == tree(head)`. A timeout is `outcome_unknown`: the reservation stays until GitHub says what happened.
+
+## 12. The UI's contract (D-117)
+
+**harnessd's `uirpc`.** A Unix socket at `~/.harness/run/harnessd.sock` (0600, in a 0700 directory). Every request carries the token from `~/.harness/run/uirpc.token`. Newline-delimited JSON, one request per line: `{ id, method, params }` → `{ id, ok, result | error }`.
+- `snapshot()` → `ProjectSnapshot[]` (`ProjectView.snapshot()`: tasks with their derived state, agents with device and presence, sessions with usage, messages, waits, notices, lands and reservations, PRs with checks, budget totals, connection health).
+- `events(after_seq)`: a stream of `{ project_id, seq, snapshot_patch }` lines.
+- `health()` → the connection state (`connected`, `reconnecting`, `server_identity_mismatch`, `coordinator_changed`), the dead outbox, the provider circuit.
+- `pending_approvals()` → the local approvals (`agent_session`, `setup`, `test`, `publish`, `security_review`), each with what the human must see (command and manifests, diff summary and PR text, held message).
+- `approve(id, shown_hash)` and `deny(id)`: harnessd recomputes the hash (setup and test commands with their manifests, the publish head and text) and refuses on a mismatch.
+- `command(name, args, command_id)`: an allowlist of human commands that need no dispatch (`task.create` without an assignee, `message.send`, `task.unblock`, `land.cancel`).
+- `dispatch(kind, task_id, expected)`: harnessd builds and signs the envelope from its own view; for `integrate` it first re-reads the PR's head and base from GitHub and refuses unless they equal `expected`.
+
+**The bridge** (`packages/ui`, built through Harness tasks): an HTTP server on a fixed `127.0.0.1` port outside `[limits].port_range`, which fails closed if the port is taken.
+- **No cookies.** `harness ui` checks the running bridge (an HMAC challenge keyed by `~/.harness/ui/bridge.secret`), then opens `http://127.0.0.1:<port>/launch#t=<token>`. The token is single-use, lasts 60 seconds and lives in the URL fragment. The page swaps it for a session token (`POST /api/session`), keeps that in `sessionStorage`, sends it as `Authorization: Bearer` on every `/api/*` call, and reads `/api/stream` with a streaming `fetch()`.
+- **Checks on every request:** Host is exactly `127.0.0.1:<port>`; Origin, when present, is the same; state-changing requests need the bearer token and a JSON body.
+- **Headers:** `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store` on `/api/*`.
+- **Rendering:** every string from a task, an agent, a peer, the server or GitHub is untrusted and goes into the page as text only. The only links are PR and check URLs the bridge builds from the configured repo and PR number.
+- **Static files:** regular files under the pinned runtime's `packages/ui/web`, resolved and kept under it, with a fixed MIME table; `.ts` files are served with `module.stripTypeScriptTypes`, as `text/javascript`. Browser modules import only relative `./x.ts` paths, and `@harness/*` only with `import type`.
+- **Endpoints:** `POST /api/session`, `GET /api/snapshot`, `GET /api/stream`, `GET /api/health`, `GET /api/approvals`, `POST /api/approvals/:id` (with the hash the human was shown), `POST /api/command`, `POST /api/dispatch`. Each maps onto one `uirpc` method, with a `command_id` and a timeout.
