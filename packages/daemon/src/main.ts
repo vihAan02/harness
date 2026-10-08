@@ -3,6 +3,7 @@
 import { loadConfig, type LocalConfig } from './config.ts';
 import { Daemon } from './daemon.ts';
 import { harnessHome } from './home.ts';
+import { LockHeld } from './lockfile.ts';
 import { resolveProvider, type ResolvedProvider } from './provider.ts';
 
 const home = harnessHome();
@@ -22,10 +23,22 @@ try {
   process.exit(2);
 }
 const daemon = new Daemon({ home, config, provider, log: (m) => console.log(`harnessd: ${m}`) });
-await daemon.start();
+try {
+  await daemon.start();
+} catch (e) {
+  // One harnessd per home (D-113): a second one never starts, and never touches the first one's agents.
+  if (e instanceof LockHeld) {
+    console.error(`harnessd: ${e.message}`);
+    process.exit(75);
+  }
+  throw e;
+}
 console.log(`harnessd: device ${config.deviceId}, ${config.projects.length} project(s), server ${config.serverUrl}`);
 console.log(`harnessd: agents run on ${provider.model?.id ?? "the vendor's default model"}${provider.name ? ` via provider "${provider.name}"` : ''}`);
-void daemon.ready().then(() => console.log('harnessd: connected'));
+void daemon.ready().then(() => console.log('harnessd: connected'), (e: Error) => {
+  console.error(`harnessd: ${e.message}`);
+  process.exit(2);
+});
 
 const stop = async () => {
   await daemon.stop();
