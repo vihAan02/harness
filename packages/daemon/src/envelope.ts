@@ -75,6 +75,21 @@ export function renderMessage(m: MessageForAgent): string {
  * A reopened task's text (D-107): its own text, then that it came back and its human's message. The session is
  * new (no conversation is resumed), so the message is what tells the agent what to fix.
  */
+/**
+ * A stopped task's new session (D-113): its earlier session was interrupted (harnessd restarted, the Mac slept). Its
+ * work is in the worktree, maybe uncommitted. Resuming the vendor's own session isn't claimed, so the agent is told
+ * what it needs to carry on: the task, what's changed so far, and its human's message if any.
+ */
+export function resumedText(text: string, message: string, diffStat: string): string {
+  return [
+    text,
+    '',
+    '[Resumed] Your earlier session on this task was interrupted before it finished. Your work so far is in this worktree (some of it may not be committed). Look at it before carrying on; don\'t start over.',
+    ...(diffStat.trim() ? ['Changed so far:', diffStat.trim()] : ['Nothing in the worktree has changed yet.']),
+    ...(message.trim() ? ['Your human\'s message:', message] : []),
+  ].join('\n');
+}
+
 export function reopenedText(text: string, message: string): string {
   return [
     text,

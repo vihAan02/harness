@@ -42,6 +42,11 @@ export class Sessions {
   save(r: SessionRecord): void {
     writeJsonAtomic(this.file(r.sessionId), r);
   }
+  /** A session recovery found ended (D-113): its record says so, so it's never supervised again. */
+  markEnded(id: string, reason: string): void {
+    const r = readJson<SessionRecord | null>(this.file(id), null);
+    if (r && !r.endedAt) this.save({ ...r, pid: null, endedAt: new Date().toISOString(), endReason: reason });
+  }
   list(): SessionRecord[] {
     ensureDir(this.dir);
     return fs.readdirSync(this.dir).filter((f) => f.endsWith('.json'))
