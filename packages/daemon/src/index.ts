@@ -16,3 +16,5 @@ export { harnessTools, HARNESS_TOOL_NAMES } from './tools.ts';
 export { computeMetrics, renderMetrics, type RunMetrics } from './metrics.ts';
 export { readPolicyFor } from './readpolicy.ts';
 export { agentConfigDir, portEnv } from './resources.ts';
+export { createDeviceKey, devicePublicKey, Handshake, loadDeviceKey, ServerIdentityError } from './identity.ts';
+export { type LinkState } from './link.ts';

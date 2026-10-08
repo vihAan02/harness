@@ -6,16 +6,26 @@
 // - Commands wait in an outbox until the server answers. After a reconnect they are resent with the
 //   same command_id, which is safe because commands are idempotent (D-74).
 // - Sends a heartbeat while connected (D-75).
+// - With device keys (D-111), nothing the server sends is trusted until its challenge verifies against the pinned
+//   server key. Until then every error and close is transient: a process squatting the port can't make harnessd
+//   give up (TH-23). A verified close 4001 means another harnessd took this device over, and is fatal.
 import { randomUUID } from 'node:crypto';
-import { PROTOCOL_VERSION, type Command, type EventMessage, type ServerMessage } from '@harness/protocol';
+import { CLOSE_DEVICE_REPLACED, PROTOCOL_VERSION, type Command, type EventMessage, type ServerMessage, type Subscription } from '@harness/protocol';
+import { ServerIdentityError, type Handshake } from './identity.ts';
+
+/** The link's state, for `harness status` and the UI's health (D-111, D-117). */
+export type LinkState = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused';
 
 export type LinkOptions = {
-  url: string; token: string; principal: string; deviceId: string;
+  url: string;
+  /** A fresh handshake for each connection, so each hello has a fresh nonce (D-111). */
+  handshake: (subscribe: Subscription[]) => Handshake;
   cursors: Record<string, number>; // project id → last seq acted on; every key is subscribed
   onEvent: (e: EventMessage, replayed: boolean) => void;
   onCursor?: (projectId: string, seq: number) => void;
   heartbeatMs?: number; // default 10000
   log?: (msg: string) => void;
+  onState?: (state: LinkState) => void;
 };
 type Pending = { msg: Command; resolve: (v: { seqs: number[]; result: unknown }) => void; reject: (e: Error) => void };
 
@@ -40,6 +50,9 @@ export class ServerLink {
   heads: Record<string, number> | null = null; // each project's head at the first welcome
   caughtUpWaiters: (() => void)[] = [];
   running: Promise<void> | null = null;
+  state: LinkState = 'connecting';
+  /** The coordinator's epoch from the last welcome (D-113); null before one, or from a server that predates it. */
+  epoch: string | null = null;
 
   constructor(o: LinkOptions) {
     this.o = o;
@@ -89,6 +102,12 @@ export class ServerLink {
     await this.running;
   }
 
+  setState(s: LinkState): void {
+    if (this.state === s) return;
+    this.state = s;
+    this.o.onState?.(s);
+  }
+
   async run(): Promise<void> {
     let backoff = 250;
     while (!this.stopped && !this.fatal) {
@@ -97,7 +116,10 @@ export class ServerLink {
       backoff = welcomed ? 250 : Math.min(backoff * 2, 10_000);
       await new Promise((r) => setTimeout(r, backoff));
     }
-    if (this.fatal) this.o.log?.(`server refused this daemon (${this.fatal}); not reconnecting`);
+    if (this.fatal) {
+      this.setState(this.fatal === 'replaced' ? 'replaced' : 'refused');
+      this.o.log?.(`server refused this daemon (${this.fatal}); not reconnecting`);
+    }
   }
 
   /** One connection, until it closes. Returns whether the server welcomed us. */
@@ -105,20 +127,37 @@ export class ServerLink {
     return new Promise((resolve) => {
       let welcomed = false;
       let beat: NodeJS.Timeout | undefined;
+      const hs = this.o.handshake(Object.entries(this.seen).map(([project_id, after_seq]) => ({ project_id, after_seq })));
+      // local-token has nothing to verify; with device keys, nothing is trusted before the challenge checks out.
+      let verified = !hs.deviceKeyAuth;
       const ws = new WebSocket(this.o.url);
       this.ws = ws;
       const send = (m: unknown) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m)); };
-      ws.addEventListener('open', () => send({
-        v: PROTOCOL_VERSION, type: 'hello', client: { kind: 'harnessd', version: '0.0.0' },
-        principal: this.o.principal, device_id: this.o.deviceId, auth: { scheme: 'local-token', token: this.o.token },
-        subscribe: Object.entries(this.seen).map(([project_id, after_seq]) => ({ project_id, after_seq })),
-      }));
+      ws.addEventListener('open', () => send(hs.hello()));
       ws.addEventListener('message', (ev) => {
         let m: ServerMessage;
         try { m = JSON.parse(String(ev.data)) as ServerMessage; } catch { return; }
+        if (!verified) {
+          if (m.type === 'challenge') {
+            try {
+              send(hs.answer(m));
+              verified = true;
+            } catch (e) {
+              if (!(e instanceof ServerIdentityError)) throw e;
+              this.setState('server_identity_mismatch');
+              this.o.log?.(e.message);
+              ws.close();
+            }
+          } else if (m.type === 'error') {
+            this.o.log?.(`server error before it proved its key (ignored): ${m.code}: ${m.message}`);
+          }
+          return; // a welcome, an event or a result before the server proved its key is never trusted
+        }
         if (m.type === 'welcome') {
           welcomed = true;
           this.ready = true;
+          this.epoch = m.epoch ?? null;
+          this.setState('connected');
           this.heads ??= Object.fromEntries(m.projects.map((p) => [p.project_id, p.head_seq]));
           for (const p of this.pending.values()) send(p.msg); // resend: idempotent on command_id
           send({ v: PROTOCOL_VERSION, type: 'heartbeat' });
@@ -146,7 +185,9 @@ export class ServerLink {
           if (m.code === 'unauthorized' || m.code === 'unsupported_version' || m.code === 'forbidden') this.fatal = m.code;
         }
       });
-      ws.addEventListener('close', () => {
+      ws.addEventListener('close', (ev) => {
+        if (verified && welcomed && ev.code === CLOSE_DEVICE_REPLACED) this.fatal = 'replaced';
+        else if (this.state === 'connected') this.setState('connecting');
         clearInterval(beat);
         this.ready = false;
         this.ws = null;

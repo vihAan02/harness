@@ -1,15 +1,18 @@
 // The coordination server's WebSocket endpoint (0A item 3; docs/protocol.md §2 to §4).
-// - Phase 0 is loopback only, and every client presents the local token (D-74).
+// - Loopback only. A server runs one auth scheme: the local token every client presents (D-74), or, for the
+//   two-Mac pilot, device keys (D-111): the server proves its key first, then the client proves its device's, and
+//   the principal is the device's human.
 // - The events table is the record. A client learns about the world only from events: replayed
 //   from its cursor when it subscribes, then pushed as they commit, in seq order, at least once.
 // - Postgres LISTEN/NOTIFY only wakes the fan-out up. The payload is a project id, never an event.
 //   The listener reconnects and catches up, and a timer poll covers notifications that never
 //   arrive (D-11, F-54).
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual, type KeyObject } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pg from 'pg';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { PROTOCOL_VERSION, type Command, type ErrorCode, type EventMessage, type Hello, type ProjectHead, type ServerMessage, type Subscription } from '@harness/protocol';
+import { CLOSE_DEVICE_REPLACED, PROTOCOL_VERSION, type ClientKind, type Command, type ErrorCode, type EventMessage, type Hello, type ProjectHead, type ServerMessage, type Subscription } from '@harness/protocol';
+import { HELLO_DEVICE_CONTEXT, HELLO_SERVER_CONTEXT, isNonce, keyId, newNonce, publicKeyText, signPayload, verifyPayload, type HelloServerProof } from '@harness/protocol/signing';
 import { CommandError, EVENTS_CHANNEL, executeCommand } from './commands.ts';
 import { readEvents, type StoredEvent } from './events.ts';
 import { heartbeat, sweepOffline } from './presence.ts';
@@ -20,7 +23,10 @@ export type ServerOptions = {
   /** For the dedicated LISTEN connection, which must be direct, not through a transaction pooler (F-54). */
   databaseUrl: string;
   schema?: string;
-  localToken: string;
+  /** local-token (D-74): the token every client presents. Exactly one of localToken and serverKey. */
+  localToken?: string;
+  /** device-key (D-111): the coordinator's private key. Clients pin its public key and authenticate with their device keys. */
+  serverKey?: KeyObject;
   host?: string; // default 127.0.0.1: Phase 0 never listens beyond loopback
   port?: number; // default 7400; 0 picks a free port
   pollIntervalMs?: number; // default 5000
@@ -37,9 +43,19 @@ const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
 const REPLAY_BATCH = 500;
 
 type Sub = { cursor: number; pumping: boolean; again: boolean };
-type Conn = { ws: WebSocket; principal: string | null; deviceId: string | null; subs: Map<string, Sub>; queue: Promise<void> };
+type Conn = {
+  ws: WebSocket; principal: string | null; deviceId: string | null; subs: Map<string, Sub>; queue: Promise<void>;
+  /** Device-key only: the device this client proved it holds the key of, whatever its kind (D-111). */
+  authDeviceId: string | null; clientKind: ClientKind | null;
+  /** Device-key only: the hello waiting for its `auth`, and what the server signed. */
+  pending: { hello: Hello; proof: HelloServerProof } | null;
+};
 
 export async function startServer(o: ServerOptions): Promise<RunningServer> {
+  if ((o.localToken === undefined) === (o.serverKey === undefined)) throw new Error('startServer: give exactly one of localToken and serverKey');
+  const serverKeyId = o.serverKey ? keyId(publicKeyText(o.serverKey)) : null;
+  // Names this coordinator's database (migration 0014, D-113).
+  const epoch = (await o.pool.query<{ epoch: string }>('SELECT epoch FROM coordinator_epoch')).rows[0]?.epoch;
   const onError = o.onError ?? ((e: unknown) => console.error('harness server:', e));
   const conns = new Set<Conn>();
   let closing = false;
@@ -130,22 +146,58 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
 
   async function hello(c: Conn, m: Record<string, unknown>) {
     if (!isHello(m)) return fail(c, 'bad_request', 'malformed hello', true);
-    if (m.auth.scheme !== 'local-token' || !tokenMatches(m.auth.token, o.localToken)) return fail(c, 'unauthorized', 'bad token', true);
+    if (o.serverKey) {
+      // Device keys (D-111): prove the server's key first, with a fresh nonce, and wait for the device's proof.
+      if (m.auth.scheme !== 'device-key' || !m.device_id || !isNonce(m.auth.client_nonce)) {
+        return fail(c, 'unauthorized', 'this server takes device-key hellos that name a device', true);
+      }
+      const server_nonce = newNonce();
+      const proof: HelloServerProof = { client_nonce: m.auth.client_nonce, server_nonce, server_key_id: serverKeyId!, device_id: m.device_id, principal: m.principal };
+      c.pending = { hello: m, proof };
+      return send(c, { v: PROTOCOL_VERSION, type: 'challenge', server_nonce, server_key_id: serverKeyId!, sig: signPayload(o.serverKey, HELLO_SERVER_CONTEXT, proof) });
+    }
+    if (m.auth.scheme !== 'local-token' || !tokenMatches(m.auth.token, o.localToken!)) return fail(c, 'unauthorized', 'bad token', true);
     if (!(await o.pool.query('SELECT 1 FROM human_principals WHERE id = $1', [m.principal])).rowCount) {
       return fail(c, 'unauthorized', `unknown principal ${m.principal}`, true);
     }
     if (m.device_id && !(await o.pool.query('SELECT 1 FROM devices WHERE id = $1 AND human_id = $2', [m.device_id, m.principal])).rowCount) {
       return fail(c, 'unauthorized', `${m.device_id} is not a device of ${m.principal}`, true);
     }
+    return admit(c, m, m.device_id ?? null, null);
+  }
+
+  /** Device keys: the device's signature over what the server signed, plus its kind. One answer for every failure: no oracle. */
+  async function auth(c: Conn, m: Record<string, unknown>) {
+    const p = c.pending;
+    c.pending = null;
+    if (!p) return fail(c, 'unauthorized', 'auth without a challenge', true);
+    const dev = (await o.pool.query<{ human_id: string; public_key: string | null; revoked_at: Date | null }>(
+      'SELECT human_id, public_key, revoked_at FROM devices WHERE id = $1', [p.proof.device_id])).rows[0];
+    const ok = !!dev && !!dev.public_key && !dev.revoked_at && dev.human_id === p.proof.principal
+      && verifyPayload(dev.public_key, HELLO_DEVICE_CONTEXT, { ...p.proof, client_kind: p.hello.client.kind }, m.sig);
+    if (!ok) return fail(c, 'unauthorized', 'device authentication failed', true);
+    // Only harnessd acts as its device in commands (reports, lands, acks); any kind of client can issue dispatches as it.
+    return admit(c, p.hello, p.hello.client.kind === 'harnessd' ? p.proof.device_id : null, p.proof.device_id);
+  }
+
+  async function admit(c: Conn, m: Hello, deviceId: string | null, authDeviceId: string | null) {
     const subs = m.subscribe ?? [];
     let projects: ProjectHead[];
     try { projects = await headsFor(m.principal, subs); } catch (e) {
       if (e instanceof CommandError) return fail(c, e.code, e.message, true);
       throw e;
     }
+    // One harnessd per device: a newer verified connection replaces the older one (D-113).
+    if (o.serverKey && deviceId) {
+      for (const other of conns) {
+        if (other !== c && other.deviceId === deviceId && other.clientKind === 'harnessd') other.ws.close(CLOSE_DEVICE_REPLACED, 'replaced by a newer harnessd for this device');
+      }
+    }
     c.principal = m.principal;
-    c.deviceId = m.device_id ?? null;
-    send(c, { v: PROTOCOL_VERSION, type: 'welcome', server_time: new Date().toISOString(), projects });
+    c.deviceId = deviceId;
+    c.authDeviceId = authDeviceId;
+    c.clientKind = m.client.kind;
+    send(c, { v: PROTOCOL_VERSION, type: 'welcome', server_time: new Date().toISOString(), projects, ...(epoch ? { epoch } : {}) });
     subscribe(c, subs); // after welcome, so replayed events always follow it
   }
 
@@ -155,8 +207,9 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
     if (!isObject(m)) return fail(c, 'bad_request', 'not a JSON object');
     if (m.v !== PROTOCOL_VERSION) return fail(c, 'unsupported_version', `this server speaks v${PROTOCOL_VERSION}`, true);
     if (!c.principal) {
-      if (m.type !== 'hello') return fail(c, 'unauthorized', 'the first message must be hello', true);
-      return hello(c, m);
+      if (m.type === 'hello' && !c.pending) return hello(c, m);
+      if (m.type === 'auth' && c.pending) return auth(c, m);
+      return fail(c, 'unauthorized', c.pending ? 'expected auth' : 'the first message must be hello', true);
     }
     if (m.type === 'subscribe') {
       if (!isSubscriptions(m.subscribe)) return fail(c, 'bad_request', 'malformed subscribe');
@@ -171,7 +224,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
     if (m.type === 'command') {
       if (!isCommand(m)) return fail(c, 'bad_request', 'malformed command');
       try {
-        const out = await executeCommand(o.pool, { principal: c.principal, deviceId: c.deviceId }, m);
+        const out = await executeCommand(o.pool, { principal: c.principal, deviceId: c.deviceId, authDeviceId: c.authDeviceId, clientKind: c.clientKind ?? undefined }, m);
         send(c, { v: PROTOCOL_VERSION, type: 'command_result', command_id: m.command_id, ok: true, ...out });
       } catch (e) {
         if (!(e instanceof CommandError)) onError(e);
@@ -192,7 +245,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
   await new Promise<void>((resolve, reject) => { wss.once('listening', resolve); wss.once('error', reject); });
   const handling = new Set<Promise<void>>(); // each connection's message chain, until it has run: close() waits for them
   wss.on('connection', (ws) => {
-    const c: Conn = { ws, principal: null, deviceId: null, subs: new Map(), queue: Promise.resolve() };
+    const c: Conn = { ws, principal: null, deviceId: null, subs: new Map(), queue: Promise.resolve(), authDeviceId: null, clientKind: null, pending: null };
     conns.add(c);
     const helloTimer = setTimeout(() => { if (!c.principal) fail(c, 'unauthorized', 'no hello', true); }, o.helloTimeoutMs ?? 10_000);
     // One message at a time per connection, in arrival order.
@@ -246,7 +299,7 @@ function isSubscriptions(x: unknown): x is Subscription[] {
 function isHello(m: Record<string, unknown>): m is Hello {
   return isObject(m.client) && ['harnessd', 'cli', 'dashboard'].includes(m.client.kind as string) && isString(m.client.version)
     && isString(m.principal) && (m.device_id === undefined || isString(m.device_id))
-    && isObject(m.auth) && m.auth.scheme === 'local-token' && typeof m.auth.token === 'string'
+    && isObject(m.auth) && ((m.auth.scheme === 'local-token' && typeof m.auth.token === 'string') || (m.auth.scheme === 'device-key' && typeof m.auth.client_nonce === 'string'))
     && (m.subscribe === undefined || isSubscriptions(m.subscribe));
 }
 function isCommand(m: Record<string, unknown>): m is Command {
