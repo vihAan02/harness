@@ -1,8 +1,8 @@
 # Harness: master plan
 
-> **Status (2026-10-06):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with real-model checks U-1 and U-2 verified and U-3 measured on the configured model (2026-10-05, #58; [Q-18](docs/open-questions.md#q-18)). **The functional MVP is declared (D-109, 2026-10-06).** The model endpoint is configurable, with no provider hardcoded (D-87); real-model runs use OpenRouter, pinned to one model on one provider (D-104, superseding D-87's DeepSeek-first order). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
+> **Status (2026-10-08):** Planning approved as the initial source of truth (S4). **Phase 0A is built** (D-59 to D-84): every 0A exit criterion is met with a scripted model (`npm run demo`, D-84). **Phase 0B is approved (D-86)**, with real-model checks U-1 and U-2 verified and U-3 measured on the configured model (2026-10-05, #58; [Q-18](docs/open-questions.md#q-18)). **The functional MVP is declared (D-109, 2026-10-06).** **The two-Mac private pilot and its thin UI come next, before the counted A/B (D-110, 2026-10-08); the A/B gate is not passed.** The model endpoint is configurable, with no provider hardcoded (D-87); real-model runs use OpenRouter, pinned to one model on one provider (D-104, superseding D-87's DeepSeek-first order). Q-06 and Q-07 are resolved (D-88, D-89). **Owners:** vihAan02 and Daniyal Mughal, either of whom can approve a gate (D-85).
 >
-> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. The rest of 0B is approved and built in two parallel workstreams (D-94; rules in [AGENTS.md](AGENTS.md)), toward the functional MVP, declared on 2026-10-06 (D-109), and then the formal A/B gate. Real-model runs use OpenRouter (D-104; README, "Choosing a model provider").
+> **Next step:** see [§12](#12-what-must-happen-before-and-during-phase-0a). The short version: the pilot sprint (D-110 to D-119; cards on the workboard, #4). Before it: 0B's first stretch is built (D-90 to D-93) and the S3 example passes with the scripted model. The rest of 0B is approved and built in two parallel workstreams (D-94; rules in [AGENTS.md](AGENTS.md)), toward the functional MVP, declared on 2026-10-06 (D-109), and then the formal A/B gate. Real-model runs use OpenRouter (D-104; README, "Choosing a model provider").
 >
 > **This file is the source of truth.** If any other doc disagrees with it, this file wins. Fix the other doc.
 
@@ -42,6 +42,7 @@ These sources define this plan. Later sources win where they sharpen or override
 | **S11** | [Co-owner makes OpenRouter the real-model provider](docs/source/2026-10-04-S11-coowner-openrouter-and-takeover.md) | OpenRouter replaces DeepSeek as the provider for development and real-model runs, with one fixed model, the provider system kept configurable (D-104). Stream A may take over stream B tasks that haven't started, on its own branches. |
 | **S13** | [Owner approves reopen and wait-cycle refusal, and picks the coupled-landing rule](docs/source/2026-10-06-S13-owner-reopen-coupled-landing-wait-cycles.md) | D-107 and D-108 approved for 0B, and the A/B's rule for changes that span both tasks (D-122 to D-124) |
 | **S14** | [Co-owner declares the functional MVP](docs/source/2026-10-06-S14-coowner-functional-mvp-scope.md) | Declared on the A8 evidence, with the real-model run's scope stated; scripted-model coverage accepted for the rest (D-109) |
+| **S17** | [Owner puts the two-Mac pilot first](docs/source/2026-10-08-S17-owner-pilot-sprint.md) | A private pilot on both owners' Macs and its thin UI, built through Harness, come before the counted A/B; the security model, budgets ($0.50 a day in total) and credential rules unchanged (D-110 to D-119) |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
@@ -182,19 +183,19 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
 - **D-03 Ambitious vision, disciplined sequence.** Phase 0's limits are about proving primitives, not about product size.
   - *Source:* S3. *Status:* Locked.
 - **D-04 Sequence:** 0A → 0B → A/B gate → 1 → 2 → 3 → horizon (§6). Nothing is pulled forward "because it's interesting".
-  - *Source:* S1, S2, S3. *Status:* Locked.
+  - *Source:* S1, S2, S3. *Status:* Locked. *The sequence is narrowly superseded by D-110: the two-Mac pilot and its thin UI come before the A/B gate.*
 - **D-05 The A/B test against the baseline gates Phase 1.**
   - **Baseline:** two terminals, two branches or worktrees, and a human relaying context through Slack or Discord.
   - **Success isn't only speed.** Similar time with less duplicated work, fewer broken contracts, fewer interventions and fewer stale-context failures still validates the product.
   - **Pass bar:** proposed in [validation.md](docs/validation.md) and awaiting the owner's approval ([Q-03](docs/open-questions.md#q-03)).
-  - *Source:* S1, S2, S3. *Status:* Locked. *The pass-bar line is superseded by D-57 (approved, versioned).*
+  - *Source:* S1, S2, S3. *Status:* Locked. *The pass-bar line is superseded by D-57 (approved, versioned).* *Narrowly superseded by D-110: the pilot's Phase 1 subset is built before the gate, which is not passed.*
 - **D-06 Deferred until the thesis is validated:**
   - **Storage and files:** R2, a distributed filesystem, Drive and Notion sources, on-demand reads across devices.
   - **Agents:** cloud execution, planner agents, integration agents.
   - **Tooling:** a full dashboard, a full resource scheduler, custom CI, a custom Git merge engine, a VM platform.
   
   These are **deferred, not dropped.** They stay in the vision where appropriate, and come after the coordination thesis is validated (§2, §6, §10).
-  - *Source:* S1, S2, S3. *Status:* Locked.
+  - *Source:* S1, S2, S3. *Status:* Locked. *Narrowly superseded by D-110: a thin local UI (D-117), not the full dashboard, is built for the pilot.*
 - **D-07 Integrate before building, at least until the thesis is validated.**
   - **Use existing systems:** GitHub for merging and CI, Postgres for state and queueing, the vendors' agent runtimes, existing MCP connectors.
   - **Build in-house only** what is the product's differentiator (coordination semantics, stale-context detection, cross-human trust), or what a phase's exit criteria require.
@@ -258,7 +259,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - **0B:** the **human** triggers land (`harness land <task>`). That keeps a human gate before integration, in line with Q-14.
   - **Phase 1:** `harness land <task>` pushes `harness/task/<task-id>`, opens the PR (head = that branch) and can enable auto-merge. A human approves or merges on GitHub (Q-14).
   - *Why:* the Stop gate, observed-claim lifetime, metric M1 and the 0B exit all depend on a defined lifecycle (review finding).
-  - *Status:* Proposal (review-derived).
+  - *Status:* Proposal (review-derived). *For the pilot's GitHub-mode projects, the Phase 1 land bullet (auto-merge) is superseded by D-115 (D-110).*
 
 ### Coordination semantics
 - **D-19 Correctness priority:**
@@ -334,7 +335,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
   - task finished.
   
   Never on every edit. Each task has one branch, `harness/task/<task-id>`. A checkpoint push publishes it to the remote as `harness/wip/<agent>/<task-id>` (WIP visibility and reassignment). The PR is opened from `harness/task/<task-id>` (D-54).
-  - *Source:* S1, S2. *Status:* Locked, Phase 1.
+  - *Source:* S1, S2. *Status:* Locked, Phase 1. *For the pilot's GitHub-mode projects, the branch name is refined by D-114 (D-110).*
 - **D-30 Contract awareness is the eventual direction.**
   - **The goal:** a notice like "the POST /login response contract changed, and Agent B is working on a consumer of POST /login".
   - **Contract kinds:** DB schema, API schema, shared types, function interfaces, events, config schema.
@@ -362,7 +363,7 @@ To change a decision, add a new D-ID that supersedes the old one, with the date 
       - That's per-task sync, not a merge train: GitHub, not the harness, decides merge order and merges.
     - After every merge, the harness verifies that the base contains each PR's diff (F-53).
   - *Why:* the merge queue is limited by plan (F-50). The review caught that a harness-run "land train" would quietly pull forward the integration engine that S1 and S3 deferred (D-06).
-  - *Status:* Locked (review-derived). Step 4 is superseded in 0B by D-96: a failed land leaves the task `done`.
+  - *Status:* Locked (review-derived). Step 4 is superseded in 0B by D-96: a failed land leaves the task `done`. *For the pilot's GitHub-mode projects, the Phase 1 integration bullets are superseded by D-115 (D-110).*
 
 ### Security
 - **D-32 The local daemon is the execution and security boundary, and the root of trust.**
@@ -1203,7 +1204,75 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
     HANDOFF.md's section on the declaration goes in with #56.
   - **Real-model cost of the declaration runs:** about $0.073. That's the three Shelf runs above, plus the provider check's first two stages ($0.0002 and $0.003); stage 3 reports no cost figure.
   - *Source:* S14; workboard #4 §1 (Milestone 1's definition); the A8 runs (2026-10-06). *Status:* Decided by an owner (`DaniyalMughal1`, D-85).
-<!-- Stream A: append new D-IDs (D-95 to D-119) above this line. -->
+- **D-110 The two-Mac private pilot and its thin UI come before the counted A/B (owner, S17), 2026-10-08. Narrowly supersedes D-04 and D-05 (for the Phase 1 subset below only), D-06's deferral of a UI (a thin local UI, not the full dashboard), the Phase 1 integration bullets of D-51 and D-54 (by D-115), and D-29's branch name in GitHub mode (by D-114).**
+  - **What the pilot is:** within 72 hours of 2026-10-08, both owners' Macs run the same pinned candidate, join one project as two humans with one execution device each, approve local work, run their own sandboxed Claude agents, publish task branches, integrate them through GitHub PRs with the required checks, fetch the merged code, warn affected agents, and recover from sleep, restart and disconnect without lost edits or duplicate execution. Both owners use a thin local UI for the workflow.
+  - **Pulled forward from Phase 1, for this pilot only:** per-device identity (D-111), signed dispatch and local approval (D-112, realizing D-33 and D-34), device-owned execution and crash recovery (D-113), GitHub PR integration (D-114, D-115), provider-failure handling (D-116), the thin UI (D-117), the T-5 message screen (D-118) and localhost-exposure checks (D-119).
+  - **Still later work:** public signup and billing, Codex, cloud agents, on-demand remote reads, R2, distributed filesystems, planner agents, a merge train or new merge engine, the full dashboard.
+  - **The A/B:** the gate is **not** passed and isn't claimed. The `ab-v1` freeze, the counted runs and the gate come after the pilot candidate, unchanged. The open A/B PRs (#80, #83, #84, #65), harness-bench's `SC-*` tags and every recorded result stay as they are.
+  - **Unchanged:** the security defaults (D-45, D-48, D-50, D-52, D-60, D-62 to D-64), every budget cap, and the credential rules. No subscription login or credential sharing (D-56, D-87).
+  - **Process:**
+    - The UI's app, style and test files are written only by Harness agents in Harness task sessions and land through the tested PR path. Repository plumbing (package manifests, the lockfile, `tsconfig`, the structure test, `harness.yaml`, CODEOWNERS) is written by the owners.
+    - Harness task branches (`harness/<project>/<epoch>/<task>`, D-114) may open PRs. AGENTS.md's PR, review, CI-queue and merge rules apply to them as to `daniyal/*` and `vihaan/*`.
+    - The sprint's cards, ownership, ranges and dependencies are in the workboard (#4), its issues and AGENTS.md's sprint section. Sprint ID ranges: stream A D-140 to D-149 and F-140 to F-149, stream B D-150 to D-159 and F-150 to F-159, beyond each stream's original range. Migrations: 0014 and 0016 stream A, 0015 stream B, 0017 (B) and 0018 (A) spare.
+  - *Source:* S17. *Status:* Decided by an owner (`DaniyalMughal1`, D-85).
+- **D-111 Identity: a key per device, a mutual handshake, a pinned server key (pilot; realizes Phase 1 identity). Proposal, built in the pilot.**
+  - **Keys:** every device has an Ed25519 key, `~/.harness/device.key` (0600; agents and setup sandboxes are already read-denied there, D-98, D-69). The coordinator has its own key, kept by its service user. Keys are text `ed25519:<base64 SPKI>`, built with `node:crypto` (no new dependency).
+  - **Handshake:** the client's `hello` carries a nonce; the server answers with its own nonce and a signature over both; the client checks it against the server key pinned in `config.toml` before it sends anything else, then signs both nonces with its device key. The server checks that signature against `devices.public_key` and takes the principal from `devices.human_id`. A claimed principal that doesn't match is refused. Nothing in a captured handshake can be replayed.
+  - **Before the server's signature checks out,** every frame is ignored and every error or close is transient: a process squatting the port can't make harnessd give up. A wrong server key holds the agents and shows `server_identity_mismatch`.
+  - **Pins come from people, not the server:** device and server public keys are exchanged out of band, with fingerprints read aloud. No tool writes a pin from data it received over the connection.
+  - **Transport:** the server stays on loopback. Each Mac reaches it through an SSH `-L` tunnel, as a tunnel-only account (`nologin`, `PermitOpen 127.0.0.1:7400`, no shell, no other forwarding). The shared `local-token` scheme stays only for loopback test and demo stacks.
+  - *Why:* the shared token let either person act as the other (S17's finding 1). *Source:* S17, D-32, D-33, TH-1, TH-17. *Status:* Proposal.
+- **D-112 Signed dispatch and local approval (realizes D-33 and D-34 for the pilot). Proposal, built in the pilot.**
+  - **The envelope:** every command that starts, resumes, reopens, abandons or completes an agent's task, or integrates it, carries a dispatch signed by the issuing device: kind, project, task, agent, target device, issuer human and device, the coordinator epoch, a nonce, issue and expiry times, a hash of the task's title, text, scope and owner, and for a reopen or resume a hash of its message. Unknown fields are refused.
+  - **Two checks:** the server checks the signature against the issuer's registered key, and that the issuer is the connection's own device and human; it stores the nonce once. The target daemon checks it again against the keys pinned in its own `[trust.devices]`, its nonce journal, the expiry, the task hash against its view, and that it's the target. In device-key or GitHub mode a lifecycle event without a valid dispatch is refused, reported (`dispatch.rejected`) and frees the agent.
+  - **Local approval (D-34):** a `start`, `reopen` or `resume` issued by another human needs a single-use local approval on the target device, bound to the nonce and hashes. `integrate` is accepted only from the agent's accountable human, because the merge runs with their own GitHub login. A remote `abandon` stops the agent and never deletes work. A remote `complete` publishes through the same gate as the agent's own `report_done`.
+  - **Remote input never widens local policy:** no dispatch, task, message or server value can add to the local allowlists, secrets, limits, budgets or pins. Such a request is refused outright, with no approval path (T-5b). Only the local human editing `config.toml` widens policy. D-52's handling of `harness.yaml` is unchanged.
+  - **Who may act on a task:** its owner or the agent's accountable human, enforced by the server.
+  - *Source:* S17, D-33, D-34, TH-1, TH-2, TH-17. *Status:* Proposal.
+- **D-113 Device-owned execution and crash recovery (pilot). Proposal, built in the pilot.**
+  - **Ownership:** every agent is bound to one execution device (`agent_principals.device_id`), and lifecycle events name their target device. Only that device acts on them. At most one live session per task: the server refuses a second, backed by a unique index.
+  - **Write-ahead journal:** harnessd journals a lifecycle event's receipt, with fsync, before its event cursor can move past it, and journals every later step (approved, worktree, setup, session, ended, committed, pushed, PR, integrating, landed) before the step's side effects. Reports that must reach the server go through an ordered, durable outbox, resent with the same `command_id`.
+  - **Restart:** harnessd takes an exclusive lock first, then kills orphans, ends every session the server still shows live for this device, drains the outbox, and reconciles each task from its journal before acting on newer events. No path starts an agent without a valid approval. A session that was interrupted leaves its task **stopped**: the work stays in its worktree, and a human resumes it with a signed `resume`, which starts a new session there with a handoff (the task, the diff so far, the last summary). Resuming the vendor's own session isn't claimed.
+  - **A wait belongs to its session:** when the session ends, its open wait is cancelled, and a resumed session hears what the old one was waiting for.
+  - **Coordinator epoch:** a new coordinator database has a new epoch; harnessd stops and asks the human before mixing its local state with it.
+  - **#74:** a bounded stop when the server is unreachable, land tests that can be aborted, and cleanup of leftovers.
+  - *Source:* S17 (findings 4 and 5), #74. *Status:* Proposal.
+- **D-114 GitHub integration mode (pilot; Phase 1's GitHub PR integration, narrowed). Proposal, built in the pilot. Refines D-29's branch name for this mode.**
+  - **Mode:** each project's integration mode is set on the server (`local` by default, which keeps 0B, the demos and the benchmark unchanged, or `github`). In a GitHub project the local land, `--no-tests` included, is refused.
+  - **Git is the only path between Macs:** harnessd fetches, and a task starts from a base commit it fetched and verified. A finished task's commits are scanned (paths, secrets, sizes, dependency changes), approved by its human, pushed to `harness/<project>/<epoch>/<task>`, and opened as a PR whose body fills the PR template. The coordinator stores metadata only, never repository contents or credentials.
+  - **Credentials stay host-side:** harnessd asks `gh` for the human's token when it needs it, holds it in memory, and never logs it or puts it in a remote URL. Credentialed Git runs in the main repository by ref; Git in a task worktree runs with a pinned Git directory and no user config, because the worktree's `.git` file is agent-writable.
+  - **Commits:** authored and committed as the accountable human's GitHub noreply identity, with the agent named in a `Harness-Agent:` trailer.
+  - **Base references:** harnessd keeps its own `refs/harness/<project>/base`, moved only by compare-and-swap, and never reads or moves the human's local base branch in this mode.
+  - **Receiving a land:** a daemon never trusts a commit named by the server. It fetches the base itself, requires that commit to be on it, and for a PR checks that GitHub reports it merged as that commit. Only then does it sync at the existing safe boundary and deliver the landed notice or resolve the wait (D-106). A failed fetch, a missing object or a conflict leaves an explicit pending or blocked state.
+  - **Polling, not webhooks:** harnessd polls its PRs and the base branch. Merges made outside the harness are noticed like lands.
+  - *Source:* S17 (finding 2), D-07, D-50. *Status:* Proposal.
+- **D-115 The integration reservation (pilot). Supersedes the Phase 1 integration bullets of D-51 and D-54 for GitHub-mode projects: the harness merges one approved head at a time through GitHub's API, with no auto-merge and no merge train. Proposal, built in the pilot.**
+  - **The reservation:** a GitHub-mode land, one per project, taken under the project and lease locks. It's bound to the task, the PR, the approved head and base, the changed paths, and the leases' fencing tokens. The fencing check runs before any merge request, and stale tokens are refused there.
+  - **Before merging:** the human who is accountable for the agent approves that exact head. The code owners' reviews required by AGENTS.md must cover it, no other PR's CI may be running (AGENTS.md's one-in-flight rule), and GitHub's protections are re-read: squash only, strict up-to-date, the three required checks.
+  - **Arming:** harnessd tells the server before it sends the merge request, and waits for the reply. From then on the land can't be cancelled, and it fails only on evidence from GitHub.
+  - **While it's held:** no other task gets a lease that overlaps it, even after the reserving task's own lease expires.
+  - **The merge:** GitHub's merge API with the approved head SHA and squash. The merged commit counts only if its parent is the approved base and its tree is the approved head's.
+  - **A timeout is `outcome_unknown`:** the reservation stays, and harnessd reconciles from GitHub (merged, closed, or still open), never by a timer. If the device that holds it stays offline, another member device may reconcile it from GitHub's evidence.
+  - **A changed head or base invalidates the approval.** A PR left behind its base is refreshed (the base merged in, pushed, CI rerun) and approved again.
+  - **The honest limit:** the reservation fences only merges that go through it. A merge made directly on GitHub bypasses it; the harness detects and notices such a merge, but doesn't prevent it.
+  - *Source:* S17, D-20, D-97, D-103, live ruleset 24438154. *Status:* Proposal.
+- **D-116 Provider failure and the daily budget (pilot). Proposal, built in the pilot.**
+  - **Failures:** an auth, billing or budget error holds and stops the session and opens a per-device circuit that blocks new sessions until `harness provider check` passes; repeated rate limits stop the session, which stays resumable. Nothing switches provider, model or billing automatically.
+  - **Budgets:** one product agent per Mac; each session capped at $0.10; a daily cap of $0.25 per device by UTC day, matching each key's provider-enforced daily limit (total $0.50 a day, S17). A session's cap is the smaller of the two. Raising any cap is the owner's call.
+  - **Keys:** each human uses their own key, kept in `~/.harness/secrets.toml` (0600), never in launchd plists or shell files.
+  - *Source:* S17, D-126 (proposed in #85), F-120. *Status:* Proposal.
+- **D-117 The thin local UI (pilot; a narrow part of Phase 2's dashboard). Proposal, built through Harness tasks.**
+  - **Where state and keys live:** the device key, the project view, local approvals and dispatch signing stay in harnessd. The UI's bridge, `packages/ui`, talks to harnessd over a Unix socket under `~/.harness/run` with a token file. Sandboxed agents can't open Unix sockets or read `~/.harness`.
+  - **The bridge:** an HTTP server on a fixed `127.0.0.1` port, outside the agents' port range. No cookies: a single-use, 60-second launch token in the URL fragment buys a session token kept in `sessionStorage` and sent as a bearer header. Host and Origin are checked, the CSP is strict, and every string from an agent, a peer, the server or GitHub is rendered as text only.
+  - **The stack:** plain browser modules in TypeScript, type-stripped by the bridge with `module.stripTypeScriptTypes`. No bundler and no new dependency.
+  - *Source:* S17, TH-22, TH-23. *Status:* Proposal.
+- **D-118 The T-5 message screen (pilot; promotes security.md §6's proposal). Proposal, built in the pilot.** A message from a peer or another human, or a remotely dispatched task's text, that asks to read outside scope, send file contents, widen scope or approvals, or disable or skip tests, checks, hooks or the sandbox is held for a local `security_review` before the agent sees it.
+  - *Source:* S17, TH-4, T-5. *Status:* Proposal.
+- **D-119 Agents never reach a password-less local database (pilot). Proposal, built in the pilot.**
+  - **Why:** every agent session may bind and reach loopback ports (F-58). A Homebrew Postgres with `trust` auth lets anything on loopback log in as the macOS user's superuser and run programs outside the sandbox (`COPY … TO PROGRAM`).
+  - **The rule:** harnessd refuses to start agents while any loopback Postgres accepts a login without a password; it probes with a raw startup message, no new dependency. `harness doctor` runs the same check. Agents that need a database get a non-superuser role through a project secret (D-52).
+  - *Source:* S17's adversarial review (TH-22). *Status:* Proposal.
+<!-- Stream A: append new D-IDs (D-95 to D-119, then D-140 to D-149 per D-110) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)
 - **D-120 The A/B scenarios SC-0 to SC-4 (closes Q-02's scenario details; 0B item 9, D-58).** As built in [validation.md §3](docs/validation.md#scenarios-real-coupling-planted-on-purpose).
@@ -1278,7 +1347,7 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
 
 | Deferred item | Comes in | Why deferred |
 |---|---|---|
-| Full dashboard | 2 | The CLI and event log are enough to prove 0A and 0B |
+| Full dashboard | 2 | The CLI and event log are enough to prove 0A and 0B. *D-110 pulls a thin local UI (D-117) forward for the pilot; the full dashboard stays deferred.* |
 | Full policy compilation per vendor | 2 | A minimal confinement policy covers 0A and 0B |
 | Full resource scheduler | 2 | Ports and a 2-agent cap are enough for Phase 0 |
 | R2 and shared artifacts | 2 | Storage isn't the problem being tested |
@@ -1356,7 +1425,8 @@ This is the canonical list. README, AGENTS.md and the roadmap point here.
    - **The rest of 0B** (D-94, two parallel workstreams; tasks and dependencies in the pinned "0B workboard" GitHub issue): hook-based delivery and the Stop gate (item 3), `wait_for` (item 4), lease commands and `harness claim --force` (rest of item 5, D-89), the remaining message kinds (item 6), read confinement (item 7), T-1, T-1b and T-2 (item 8), then the A/B setup and run (items 9 and 10): scenarios, baseline recorder, playbook and rubric.
      - **Done by 2026-10-04:** read confinement and T-1 (D-98), hook delivery and the Stop gate (D-99, D-100), `wait_for` (D-95, D-101). The A/B baseline launch is built (D-102); it ran against a real model on 2026-10-05 and merged as A7 (#44).
      - **Done by 2026-10-06:** leases and T-2 (B5, B6; D-97, D-103), T-1b, the message kinds (D-105), task waits that end at the land (D-106), the A/B scenarios (D-120) and the harness arm's runner (B9a). **The functional MVP is declared (D-109):** EC2 three times, a real-model end-to-end run on Shelf, CI green.
-     - **Next:** the `ab-v1` freeze, which needs B9b, §9 signed by both owners (B10, #59), and reopen (D-107) and wait-cycle refusal (D-108, #63), both approved for 0B (D-122, D-123; #76, #63). Then the counted runs (A10), grading (B11), scoring (A9: #64, #65) and the gate.
+     - **Next (D-110, 2026-10-08): the two-Mac private pilot and its thin UI** (D-111 to D-119; the cards, dependencies and acceptance tests are on the workboard, #4, and its issues). The A/B steps below come after the pilot candidate, unchanged; the gate is not passed.
+     - ~~**Next:**~~ **After the pilot:** the `ab-v1` freeze, which needs B9b, §9 signed by both owners (B10, #59), and reopen (D-107) and wait-cycle refusal (D-108, #63), both approved for 0B (D-122, D-123; #76, #63). Then the counted runs (A10), grading (B11), scoring (A9: #64, #65) and the gate.
      - **Real-model runs (D-104):** OpenRouter, pinned; `node scripts/provider-check.ts --provider openrouter` first, then `npm run demo:0b -- --real --provider openrouter`.
 7. ~~**Before the first A/B run:** the owner approves the pass bar ([Q-03](docs/open-questions.md#q-03)).~~ **Done 2026-10-01:** bar v1 approved and versioned (D-57).
 

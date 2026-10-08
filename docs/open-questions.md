@@ -14,12 +14,12 @@
 | [Q-06](#q-06) | How good read-set coverage has to be, and shell-read handling | 0B | **Resolved → D-88** (the proposal, as written) |
 | [Q-07](#q-07) | Policy when two hard claims race | 0B | **Resolved → D-89** (first come, first served, plus a human override) |
 | [Q-08](#q-08) | Where tests run before landing or opening a PR | 1 | 0B answered by D-51; Phase 1 open |
-| [Q-09](#q-09) | Where the coordination server is hosted in Phase 1 | 1 | Open |
-| [Q-10](#q-10) | Identity, sign-in and signing keys | 1 | Open |
+| [Q-09](#q-09) | Where the coordination server is hosted in Phase 1 | 1 | Open; for the pilot, an always-on host the owners run, behind SSH tunnels (D-110, D-111) |
+| [Q-10](#q-10) | Identity, sign-in and signing keys | 1 | Open; for the pilot, preprovisioned humans with a key per device and a pinned server key (D-111, D-112) |
 | [Q-11](#q-11) | GitHub plan limits and GitHub-only | 1 | Open |
 | [Q-12](#q-12) | The original proposal text is missing | Nothing (context only) | Open |
 | [Q-13](#q-13) | How contract changes get detected beyond file paths | 1 / 2 | Open |
-| [Q-14](#q-14) | Where humans review and approve | 1 | Open |
+| [Q-14](#q-14) | Where humans review and approve | 1 | Open; for the pilot, local approval before publishing and before an exact-head merge, plus the AGENTS.md reviews (D-114, D-115) |
 | [Q-15](#q-15) | Retention and privacy for messages and read sets | 1 | Open |
 | [Q-16](#q-16) | Product name | Nothing | Open |
 | [Q-17](#q-17) | Does Phase 1 wait for the real-project validation? | The gate decision | Open, needs owner (at the gate) |
@@ -126,6 +126,7 @@
 ### Q-09
 **Where the coordination server is hosted in Phase 1.** A managed Postgres plus a small WebSocket service, or self-hosted.
 - **Things to weigh:** latency for both people, cost (S1: the real infra cost is always-on WebSocket and Postgres, not storage), and data residency.
+- **For the two-Mac pilot (D-110, D-111):** an always-on host the owners already run, with the server on loopback, reached through tunnel-only SSH accounts. No agents run there. The Phase 1 answer stays open.
 
 ### Q-10
 **Identity, sign-in and signing keys.**
@@ -135,6 +136,7 @@
   - where the server's command-signing key lives and how it rotates;
   - how agent principals are minted, and how each session is bound to one.
 - **Blocks:** Phase 1 security (D-33, D-34).
+- **For the two-Mac pilot (D-111, D-112):** no sign-in; humans and devices are preprovisioned by the coordinator's admin tool. Each device has an Ed25519 key and the server its own; keys are exchanged out of band and pinned. Dispatches are signed by the issuing device, not the server. Rotation is an admin `--rotate`. The Phase 1 answer (sign-in, enrollment UX) stays open.
 
 ### Q-11
 **GitHub plan limits and GitHub-only.**
@@ -160,6 +162,7 @@
 - **0B:** the human triggers land (D-54).
 - **Phase 1:** a PR review on GitHub, plus local approval prompts for security events and `harness.yaml` changes (D-52).
 - **Open:** should there be a harness-level gate before an agent's branch becomes a PR, for example a human approving the diff summary?
+- **For the two-Mac pilot (D-114, D-115):** yes. A local `publish` approval, showing the diff summary and PR text, comes before the first push. AGENTS.md's code-owner reviews on GitHub, then the accountable human's approval of the exact head, come before the harness merges it. Security events (remote starts, setup and test commands, held messages) are approved locally (D-112, D-118).
 
 ### Q-15
 **Retention and privacy for messages and read sets.**

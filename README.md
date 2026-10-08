@@ -19,7 +19,7 @@ The first wedge: **several humans, each running their own AI coding agents on th
   - the security tests T-1, T-1b and T-2 pass three times;
   - `npm run check` passes;
   - with real agents (OpenRouter, DeepSeek V4.1-Flash served by Parasail at fp8, D-104), the S3 example passes end to end, and so does a two-agent run of the A/B harness arm, each for $0.02 to $0.03.
-- **Next:** the `ab-v1` freeze, then the counted A/B runs (PLAN.md §12).
+- **Next:** the two-Mac private pilot and its thin UI (D-110 to D-119), then the `ab-v1` freeze and the counted A/B runs (PLAN.md §12). The A/B gate is not passed.
 - **Where things are:** the code lives in `packages/` (see [Running locally](#running-locally)). The canonical next steps are in [PLAN.md §12](PLAN.md#12-what-must-happen-before-and-during-phase-0a); the hand-over notes are in [HANDOFF.md](HANDOFF.md).
 
 ## Running locally
