@@ -49,6 +49,28 @@ output = 5.00
 cache_read = 0.10
 cache_write = 1.25
 
+# OpenRouter, pinned to Anthropic's Haiku 5.5 served by Anthropic: Vihaan's choice for development and the
+# live demos (D-126), cheaper than the default above and on the provider OpenRouter guarantees for Claude
+# Code (F-112, F-120). Not the `:batch` variant: that's OpenRouter's asynchronous Batch API, which rejects
+# streaming and answers within 24 hours, so it can't drive an agent (F-120).
+# Prices double-checked 2026-10-07. A prompt over 100,000 tokens is billed at five times these rates, so the
+# compact window stays under it; past it, the cost figure here is low.
+[providers.openrouter-haiku55]
+base_url = "https://openrouter.ai/api"
+auth = "bearer"
+key_env = "OPENROUTER_API_KEY"
+model = "anthropic/claude-haiku-5.5"
+max_context_tokens = 1000000
+auto_compact_window = 100000
+max_output_tokens = 32000
+extra_body = { provider = { only = ["anthropic"], allow_fallbacks = false } }
+
+[providers.openrouter-haiku55.prices."anthropic/claude-haiku-5.5"]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_write = 0.125
+
 # DeepSeek V4.1-Flash on DeepSeek's own endpoint: the same model as the default, without OpenRouter (F-72,
 # F-73). Optional since D-104. Prepaid: top up at https://platform.deepseek.com/top_up.
 # Key: https://platform.deepseek.com/api_keys
