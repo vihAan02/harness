@@ -1220,14 +1220,14 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - *Source:* 0B item 9, Q-02, D-58, S10. *Status:* Proposal (frozen with the `ab-v1` tag).
 - **D-121 The protocol and parameters for the counted A/B runs (B10; validation.md §9). Written by stream A, which took B10 over for the night of 2026-10-05 (S12); revised by stream B on 2026-10-06 with the owner's decisions D-122 to D-124 (S13), again (revision 2) after Daniyal's review of the first revision (S15, D-125), and on 2026-10-07 (revision 3) with his R1 to R10 on #80 and the owner's model choice (S16, D-126).**
   - **Parameters, the same in both arms:**
-    - the model is D-126's: `anthropic/claude-haiku-5.5` through OpenRouter, served by Anthropic (revision 3; it was D-104's DeepSeek);
+    - the model, chosen in §9 (revision 3), on D-126's provider table: `anthropic/claude-haiku-5.5` through OpenRouter, served by Anthropic (it was D-104's DeepSeek);
     - a 30-minute time cap from M1's start (both agents started, after setup), raised to 45 before the freeze if a dry run needs more than 20;
     - a $2 per-session budget in the harness arm, as a runaway stop. Reaching it stops that session, and the run is scored as it stands;
     - the harness as tagged `ab-v1`, with `harness task reopen` (D-122) and wait-cycle refusal (D-123);
     - fresh state per run (its own `HARNESS_HOME`, and the baseline's own Claude Code config directory), and each agent's first message is its card's phrasing, verbatim;
     - one machine; Daniyal coordinates and Vihaan grades (D-94);
     - the judge for M2 and M6 is `anthropic/claude-sonnet-5.5` through OpenRouter, at temperature 0, with a spot check of at least 20% of runs, re-judged after grading.
-  - **Run order:** rounds by pair, scenarios in a fixed order. Within a pair the two runs are back to back, and the harness arm goes first when the scenario number plus the pair number is even.
+  - **Run order:** passes by pair (§9's three passes), scenarios in a fixed order. Within a pair the two runs are back to back, and the harness arm goes first when the scenario number plus the pair number is even.
   - **Failures:**
     - a failure only the harness arm can have (harnessd, the server, Postgres) is scored as it stands, like a budget stop, never voided;
     - a run is void only for failures both arms are exposed to, a session on another model, or a playbook break noted when it happened, never for a result;

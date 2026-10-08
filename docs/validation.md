@@ -272,7 +272,8 @@ The owner records the go or no-go decision as a new D-ID in PLAN.md.
 > **Status: Proposal until both owners sign it (the table at the end); frozen with the `ab-v1` tag.**
 > - **Who wrote it:** stream A, taking B10 over for the night of 2026-10-05 (S12). Stream B revised it on 2026-10-06, with the owner's decisions D-122 to D-124 (S13) and the points from its reviews.
 > - **Revision 2 (2026-10-06):** Daniyal didn't sign the first revision (`e2acb96`, #59): four of its rules favoured the harness arm without saying so. Vihaan accepted all four and chose `done_at` for "caught" (S15, D-125). This revision fixes them, adds the sync-conflict step, and answers the review's questions.
-> - **Revision 3 (2026-10-07):** Daniyal didn't sign revision 2 (`685478b`, #80). This revision applies his R1 to R10 and nits as he wrote them, and moves the model to Haiku 5.5 (S16, D-126). It's the one both owners sign.
+> - **Revision 3 (2026-10-07):** Daniyal didn't sign revision 2 (`685478b`, #80). This revision applies his R1 to R10 and nits as he wrote them, and moves the model to Haiku 5.5 (S16, D-126). Superseded by revision 4.
+> - **Revision 4 (2026-10-08):** fixes what the Haiku move left behind, with no change to any parameter. Step 1 starts runs with `--provider openrouter-haiku55`; the old `openrouter` table is DeepSeek's. The Judge row's reason no longer claims a different model family: the judge stays Sonnet 5.5 (Vihaan's choice), and the row says honestly that it shares the agents' vendor. The Model row's scope remark cites its one run. It's the one both owners sign.
 > - **What it does:** fills in what §3 and §4 leave open: the parameters, the run order, the coordinator's rules, the rubric and the grading.
 > - **The pass bar:** its thresholds don't change. How §9 computes them is recorded as pass bar v1.1 (§5).
 
@@ -280,7 +281,7 @@ The owner records the go or no-go decision as a new D-ID in PLAN.md.
 
 | Parameter | Value | Why |
 |---|---|---|
-| Model | `anthropic/claude-haiku-5.5` through OpenRouter, served by Anthropic (`provider.only = ["anthropic"]`), provider fallback off: the `openrouter-haiku55` table in `docs/examples/providers.toml` (D-126). Not its `:batch` variant, which can't stream (F-120) | Vihaan's choice (S16, D-126), replacing D-104's DeepSeek: Anthropic's own provider is the one OpenRouter guarantees for Claude Code (F-112), and it costs less (F-120). One model and one serving provider in both arms (§3). It keeps to a task's declared scope more strictly than DeepSeek did (F-120), so the dry runs check that each card's scope covers what its change needs |
+| Model | `anthropic/claude-haiku-5.5` through OpenRouter, served by Anthropic (`provider.only = ["anthropic"]`), provider fallback off: the `openrouter-haiku55` table in `docs/examples/providers.toml` (D-126). Not its `:batch` variant, which can't stream (F-120) | Vihaan's choice (S16, D-126), replacing D-104's DeepSeek: Anthropic's own provider is the one OpenRouter guarantees for Claude Code (F-112), and it costs less (F-120). One model and one serving provider in both arms (§3). In its first real `demo:0b` run it stayed inside its task's declared scope and reported `task_blocked`, where DeepSeek's runs had passed (F-120: one run), so the dry runs check that each card's scope covers what its change needs |
 | How that's checked | Each harness session records its model and provider, and `harness metrics` warns when they differ. The baseline launcher reads the same table (D-102). A run with any session on another model or provider is void | |
 | Time cap | **30 minutes** per run, wall clock from M1's start, when both agents have started work (after their worktrees and setup, in both arms). At the cap the run ends, main as it is then is graded, and M1 counts as 30 minutes | The S3-sized real runs took 1–2 minutes; the scenario tasks are bigger. The dry runs check it: if any needs more than 20 minutes, the cap becomes 45 before the freeze, never after |
 | Budget | Harness arm: `max_budget_usd = 2` per session, as a runaway stop only. Reaching it stops that session, as if its agent had stopped working. The run goes on, ends as it would without that agent, and is scored as it stands. It's noted in the results, **never voided** | The baseline CLI has no budget flag (D-102), so a budget stop could only ever hit one arm. Voiding such a run and running it again would re-draw only the harness arm's failures. $2 is far above any real run so far (about $0.02–$0.05), so if it's ever reached, that's a harness failure the study should count. **The OpenRouter key's daily limit** (D-126) is set above a sitting's expected spend before each sitting. A run that the limit stops is a provider failure in both arms' exposure (void, below) |
@@ -292,7 +293,7 @@ The owner records the go or no-go decision as a new D-ID in PLAN.md.
 | Machine | One Mac, the coordinator's, for every run; one run at a time, nothing else heavy running | |
 | Coordinator | **Daniyal Mughal**, every run in both arms (D-94). Vihaan wrote the hidden checks, so he never coordinates | |
 | Grader | **Vihaan**, with the hidden checks, on arm-blinded trees (below) | |
-| Judge (M2, M6) | `anthropic/claude-sonnet-5.5` through OpenRouter, provider `anthropic` only, temperature 0, with the fixed prompts in `scripts/ab/rubric/` (A9) | A different model family from the agents', so no model grades its own kind |
+| Judge (M2, M6) | `anthropic/claude-sonnet-5.5` through OpenRouter, provider `anthropic` only, temperature 0, with the fixed prompts in `scripts/ab/rubric/` (A9) | A larger model than the agents' Haiku 5.5, but from the same vendor, so it isn't independent of their model. It judges both arms with the same fixed prompts, blind to the arm, so the shared vendor favours neither arm, and the spot check below re-judges a sample. Vihaan kept this judge when the agents moved to Haiku (revision 4) |
 | Spot check | Vihaan re-judges at least 20% of the counted runs (6 of 30), drawn with a fixed seed before grading starts, and re-judged only after `grades.json` is returned, so re-judging never shows the grader an arm before grading. The owners settle a disagreement, and it's logged | §4 |
 
 ### Schedule and run order
@@ -325,7 +326,7 @@ The owner records the go or no-go decision as a new D-ID in PLAN.md.
 
 ### The coordinator's playbook
 **Both arms:**
-1. **Start** with the runner: `node scripts/ab/run.ts --arm harness|baseline --scenario SC-k --phrasing p --real --provider openrouter` (its default cap is the 30 minutes above). It clones the scenario, assigns both cards at once, and starts M1's clock, and the cap's, once both agents have started work. Counted baseline runs use `--launch terminal`, which opens both agents' terminals itself; `--launch print` starts the clock before either agent runs, so it's for rehearsals only.
+1. **Start** with the runner: `node scripts/ab/run.ts --arm harness|baseline --scenario SC-k --phrasing p --real --provider openrouter-haiku55` (its default cap is the 30 minutes above). It clones the scenario, assigns both cards at once, and starts M1's clock, and the cap's, once both agents have started work. Counted baseline runs use `--launch terminal`, which opens both agents' terminals itself; `--launch print` starts the clock before either agent runs, so it's for rehearsals only.
 2. **The M10 timer:** press Enter in the runner's console when you start reading, relaying, deciding, approving or integrating, and again when you stop to wait. The runner logs each press; an interval still open at the end closes there.
 3. **Never write or edit code, and never tell an agent how to do its task.**
    - **Don't diff branches or read code** to find couplings the agents didn't mention. Doing the harness's job by hand would hide the difference being measured.
@@ -457,7 +458,7 @@ The relay rule doesn't apply: the harness delivers what changed.
 ### Sign-off
 Both owners sign before the first counted run, and before the `ab-v1` freeze. A signature names the commit it signs.
 - **How:** an owner signs by approving the pull request that adds this section. GitHub doesn't let a PR's author approve it, so the author signs with a comment on the PR, naming the commit.
-- **Where it's recorded:** this table and D-121's status, filled in after the signatures, as a docs-only change to the signed commit.
+- **Where it's recorded:** this table and D-121's status, filled in after the signatures, as a docs-only commit on top of the signed one.
 - **After the first counted run,** a change follows §5's version rules: tightening at any time, loosening only for later runs, with a reason and both owners' sign-off.
 
 | Owner | Signed |
