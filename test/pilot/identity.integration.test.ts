@@ -12,6 +12,7 @@ import { WebSocketServer } from 'ws';
 import { Daemon } from '../../packages/daemon/src/daemon.ts';
 import { renderConfig, parseConfig } from '../../packages/daemon/src/config.ts';
 import { createDeviceKey, loadDeviceKey } from '../../packages/daemon/src/identity.ts';
+import { CliClient, CliError } from '../../packages/cli/src/client.ts';
 import { makeRepo, tempDir, tempHome } from '../../packages/daemon/test/fixtures.ts';
 import { generateKeyPair, HELLO_SERVER_CONTEXT, keyId, newNonce, parsePrivateKey, signPayload } from '../../packages/protocol/src/signing.ts';
 import { startServer, type RunningServer } from '../../packages/server/src/server.ts';
@@ -20,8 +21,8 @@ import { freshSchema, seedProject, TEST_DATABASE_URL } from '../../packages/serv
 const freePort = () => new Promise<number>((resolve) => {
   const srv = net.createServer().listen(0, '127.0.0.1', () => { const { port } = srv.address() as net.AddressInfo; srv.close(() => resolve(port)); });
 });
-const until = async (pred: () => boolean, what: string, ms = 20_000) => {
-  for (const end = Date.now() + ms; !pred(); await new Promise((r) => setTimeout(r, 25))) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+const until = async (pred: () => boolean | Promise<boolean>, what: string, ms = 20_000) => {
+  for (const end = Date.now() + ms; !(await pred()); await new Promise((r) => setTimeout(r, 25))) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
 };
 
 async function pilotDevice(port: number) {
@@ -58,8 +59,7 @@ test('harnessd and the CLI authenticate with the device key; nothing needs the s
     assert.equal(daemon.linkState, 'connected');
     assert.match(daemon.link!.epoch!, /^[0-9a-f]{16}$/);
     // Heartbeats come from the verified harnessd: its presence is recorded.
-    await new Promise((r) => setTimeout(r, 400));
-    assert.ok((await d.db.pool.query("SELECT 1 FROM devices WHERE id = 'dev_test' AND last_heartbeat_at IS NOT NULL")).rowCount);
+    await until(async () => !!(await d.db.pool.query("SELECT 1 FROM devices WHERE id = 'dev_test' AND last_heartbeat_at IS NOT NULL")).rowCount, 'a heartbeat');
     // The real CLI, through the same handshake: it reads config.toml and device.key from HARNESS_HOME.
     const main = path.resolve(import.meta.dirname, '../../packages/cli/src/main.ts');
     const { stdout } = await promisify(execFile)(process.execPath, [main, 'agent', 'add', 'pilot'], { env: { ...process.env, HARNESS_HOME: d.home.root } });
@@ -144,6 +144,89 @@ test('a revoked device, or one replaced by another harnessd, stops reconnecting'
     await first.stop();
     await second.stop();
     await server.close();
+    await d.db.drop();
+    d.t.cleanup();
+  }
+});
+
+/** A process on the server's port that answers each hello with `frames(hello)`, raw, then closes after a moment. */
+async function squat(port: number, frames: (hello: { auth?: { client_nonce?: string } }) => string[]) {
+  let hellos = 0;
+  const wss = new WebSocketServer({ host: '127.0.0.1', port });
+  wss.on('connection', (ws) => {
+    ws.on('message', (data) => {
+      const m = JSON.parse(String(data)) as { type: string; auth?: { client_nonce?: string } };
+      if (m.type !== 'hello') return;
+      hellos++;
+      for (const f of frames(m)) ws.send(f);
+      setTimeout(() => ws.close(), 100);
+    });
+  });
+  await new Promise<void>((r) => wss.once('listening', () => r()));
+  return { hellos: () => hellos, close: () => new Promise<void>((r) => wss.close(() => r())) };
+}
+const deepChallenge = (serverPub: string) => {
+  const sig = signPayload(parsePrivateKey(generateKeyPair().privateKeyPem), HELLO_SERVER_CONTEXT, {});
+  return `{"v":1,"type":"challenge","server_nonce":${'['.repeat(50_000)}${']'.repeat(50_000)},"server_key_id":"${keyId(serverPub)}","sig":"${sig}"}`;
+};
+
+test('a squatter\'s malformed frames crash nothing: harnessd keeps retrying; the CLI fails with a clear error', async () => {
+  const port = await freePort();
+  const d = await pilotDevice(port);
+  const logs: string[] = [];
+  const junk = ['not json', 'null', '[]', '42', '{"type":7}', '{"v":1,"type":"error","code":"unauthorized","message":"go\\naway"}'];
+  let s = await squat(port, () => [...junk, deepChallenge(d.serverPub)]);
+  const daemon = new Daemon({ home: d.home, config: d.config, heartbeatMs: 200, log: (m) => logs.push(m) });
+  try {
+    await daemon.start();
+    await until(() => s.hellos() >= 3, 'harnessd to keep retrying');
+    assert.equal(daemon.link!.fatal, null);
+    assert.equal(daemon.linkState, 'server_identity_mismatch');
+    assert.ok(logs.some((l) => /sent a malformed challenge/.test(l)), logs.join(' | '));
+    assert.ok(logs.some((l) => l.includes('(ignored): unauthorized: go away')), 'the unverified text is logged on one line');
+    await daemon.stop();
+    // The CLI: junk and no challenge is a timeout naming what the unverified answer said; the deep challenge is refused.
+    await s.close();
+    s = await squat(port, () => junk);
+    await assert.rejects(CliClient.connect(d.config, d.project, 1500, loadDeviceKey(d.home)), (e: unknown) => e instanceof CliError && /no verified answer .* \(an unverified answer said unauthorized: go away\)/.test((e as Error).message));
+    await s.close();
+    s = await squat(port, () => [deepChallenge(d.serverPub)]);
+    await assert.rejects(CliClient.connect(d.config, d.project, 1500, loadDeviceKey(d.home)), (e: unknown) => e instanceof CliError && /malformed challenge/.test((e as Error).message));
+  } finally {
+    await daemon.stop();
+    await s.close();
+    await d.db.drop();
+    d.t.cleanup();
+  }
+});
+
+test('the CLI refuses a real challenge replayed to a new hello, and a server with another key', async () => {
+  const port = await freePort();
+  const d = await pilotDevice(port);
+  const other = generateKeyPair();
+  let server: RunningServer | null = await startServer({ pool: d.db.pool, databaseUrl: TEST_DATABASE_URL, schema: d.db.schema, serverKey: d.serverKey, port });
+  let s: Awaited<ReturnType<typeof squat>> | null = null;
+  try {
+    // A real challenge, recorded from the real server for one hello.
+    const recorded = await new Promise<string>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.addEventListener('open', () => ws.send(JSON.stringify({ v: 1, type: 'hello', client: { kind: 'cli', version: '0' }, principal: 'human_test', device_id: 'dev_test', auth: { scheme: 'device-key', client_nonce: newNonce() }, subscribe: [] })));
+      ws.addEventListener('message', (ev) => { resolve(String(ev.data)); ws.close(); });
+    });
+    assert.equal(JSON.parse(recorded).type, 'challenge');
+    await server.close();
+    server = null;
+    // Replayed to the CLI's own hello (a fresh client nonce): it doesn't verify.
+    s = await squat(port, () => [recorded]);
+    await assert.rejects(CliClient.connect(d.config, d.project, 3000, loadDeviceKey(d.home)), (e: unknown) => e instanceof CliError && /didn't prove the pinned server key/.test((e as Error).message));
+    await s.close();
+    s = null;
+    // A coordinator with another key on the pinned address.
+    server = await startServer({ pool: d.db.pool, databaseUrl: TEST_DATABASE_URL, schema: d.db.schema, serverKey: parsePrivateKey(other.privateKeyPem), port });
+    await assert.rejects(CliClient.connect(d.config, d.project, 3000, loadDeviceKey(d.home)), (e: unknown) => e instanceof CliError && /didn't prove the pinned server key/.test((e as Error).message));
+  } finally {
+    await s?.close();
+    await server?.close();
     await d.db.drop();
     d.t.cleanup();
   }

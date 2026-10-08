@@ -182,7 +182,25 @@ test('nothing before the challenge: the server sends no welcome, event or result
     // A command before auth is refused, and nothing leaks.
     h.c.send({ v: 1, type: 'command', command_id: randomUUID(), project_id: s.project, name: 'agent.create', args: { name: 'agent/y', vendor: 'claude' } });
     assert.equal((await refused(h.c)).code, 'unauthorized');
+    assert.deepEqual(h.c.inbox.map((m) => m.type), [], 'nothing but the refusal, up to the close');
     assert.ok(!(h.ch as Challenge & { projects?: unknown }).projects);
     assert.equal(publicKeyText(s.laptop.priv), s.laptop.pub);
+  } finally { await s.stop(); }
+});
+
+test('a device revoked while connected loses the connection at its next message', async () => {
+  const s = await stack();
+  try {
+    const h = await hello(s);
+    answer(h, s.laptop.priv);
+    await h.c.next('welcome');
+    const before = randomUUID();
+    h.c.send({ v: 1, type: 'command', command_id: before, project_id: s.project, name: 'agent.create', args: { name: 'agent/before', vendor: 'claude' } });
+    assert.ok((await h.c.next('command_result', (m) => m.command_id === before)).ok, 'a command before the revocation');
+    h.c.take('event');
+    await s.db.pool.query("UPDATE devices SET revoked_at = now() WHERE id = 'dev_test'");
+    h.c.send({ v: 1, type: 'command', command_id: randomUUID(), project_id: s.project, name: 'agent.create', args: { name: 'agent/after', vendor: 'claude' } });
+    assert.deepEqual(await refused(h.c), { code: 'unauthorized', close: 1008 });
+    assert.equal((await s.db.pool.query("SELECT 1 FROM agent_principals WHERE name = 'agent/after'")).rowCount, 0);
   } finally { await s.stop(); }
 });

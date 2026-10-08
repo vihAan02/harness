@@ -17,7 +17,7 @@ import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from
 import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, removeWorktree, TASK_ID, taskBranch } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink, type LinkState } from './link.ts';
-import { Handshake, loadDeviceKey } from './identity.ts';
+import { checkAuthTarget, Handshake, loadDeviceKey } from './identity.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
@@ -162,6 +162,7 @@ export class Daemon {
     }
     const saved = readJson<{ cursors: Record<string, number> }>(this.home.state, { cursors: {} }).cursors;
     const deviceKey = this.config.auth === 'device-key' ? (this.o.deviceKey ?? loadDeviceKey(this.home)) : null;
+    checkAuthTarget(this.config); // before anything connects
     this.link = new ServerLink({
       url: this.config.serverUrl,
       handshake: (subscribe) => new Handshake({ config: this.config, deviceKey, clientKind: 'harnessd', subscribe }),

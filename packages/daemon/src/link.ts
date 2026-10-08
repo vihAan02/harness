@@ -11,7 +11,7 @@
 //   give up (TH-23). A verified close 4001 means another harnessd took this device over, and is fatal.
 import { randomUUID } from 'node:crypto';
 import { CLOSE_DEVICE_REPLACED, PROTOCOL_VERSION, type Command, type EventMessage, type ServerMessage, type Subscription } from '@harness/protocol';
-import { ServerIdentityError, type Handshake } from './identity.ts';
+import { serverFrame, ServerIdentityError, untrustedText, type Handshake } from './identity.ts';
 
 /** The link's state, for `harness status` and the UI's health (D-111, D-117). */
 export type LinkState = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused';
@@ -135,21 +135,26 @@ export class ServerLink {
       const send = (m: unknown) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m)); };
       ws.addEventListener('open', () => send(hs.hello()));
       ws.addEventListener('message', (ev) => {
-        let m: ServerMessage;
-        try { m = JSON.parse(String(ev.data)) as ServerMessage; } catch { return; }
+        const m = serverFrame(ev.data);
+        if (!m) return;
         if (!verified) {
-          if (m.type === 'challenge') {
-            try {
+          // Whoever answered hasn't proved the pinned key: nothing it sends is trusted, and nothing it sends can stop
+          // this daemon. A failure here only ends this connection; the loop reconnects (D-111, TH-23).
+          try {
+            if (m.type === 'challenge') {
               send(hs.answer(m));
               verified = true;
-            } catch (e) {
-              if (!(e instanceof ServerIdentityError)) throw e;
+            } else if (m.type === 'error') {
+              this.o.log?.(`server error before it proved its key (ignored): ${untrustedText(m.code, 40)}: ${untrustedText(m.message)}`);
+            }
+          } catch (e) {
+            if (e instanceof ServerIdentityError) {
               this.setState('server_identity_mismatch');
               this.o.log?.(e.message);
-              ws.close();
+            } else {
+              this.o.log?.(`dropped the connection over an unverified frame: ${untrustedText((e as Error)?.message)}`);
             }
-          } else if (m.type === 'error') {
-            this.o.log?.(`server error before it proved its key (ignored): ${m.code}: ${m.message}`);
+            ws.close();
           }
           return; // a welcome, an event or a result before the server proved its key is never trusted
         }

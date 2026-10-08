@@ -73,10 +73,15 @@
 // server → client: as above, plus the coordinator's epoch and each project's integration mode
 { "v": 1, "type": "welcome", "server_time": "…", "epoch": "…", "projects": [ { "project_id": "prj_…", "head_seq": 1240, "integration_mode": "github" } ] }
 ```
-- **The server** checks the device's signature against `devices.public_key` (not revoked) and requires `devices.human_id` to equal `principal`. Otherwise `unauthorized`.
-- **The client** ignores every frame until the challenge's signature verifies, and treats every error or close before then as transient (backoff, never fatal): a process squatting the port can't make it give up (TH-23). A wrong signature holds harnessd's agents (`server_identity_mismatch`) until a verified server answers.
+- **The server** checks the device's signature against `devices.public_key` (not revoked) and requires `devices.human_id` to equal `principal`. Otherwise `unauthorized`. A device revoked while connected loses the connection at its next message (a command, a subscribe or a heartbeat, so within one heartbeat interval).
+- **The client** ignores every frame until the challenge's signature verifies, and treats every error or close before then as transient (backoff, never fatal): a process squatting the port can't make it give up (TH-23).
+  - A frame that isn't a JSON object with a string `type` is dropped unread, verified or not.
+  - A challenge's fields are shape-checked (a nonce, a key id string, a bounded signature string) before anything is encoded or verified.
+  - Any other failure before verification ends that connection only, and text from an unverified peer is logged on one line, bounded.
+  - A wrong signature, or a malformed challenge, holds harnessd's agents (`server_identity_mismatch`) until a verified server answers. The CLI fails with an error naming it.
+- **What the handshake doesn't do:** it has no channel binding. It resists replay (both nonces are fresh per connection, and the server's proof covers the client's nonce), but not a relay between a device and the real server. The pilot relies on the SSH tunnel for that: the coordinator listens on its own loopback only, and only an SSH login with the human's tunnel key reaches it (D-111).
 - **One harnessd per device:** a newer verified harnessd connection replaces the older one, which is closed with code `4001` (`CLOSE_DEVICE_REPLACED`). On a verified connection that's fatal: another harnessd holds this device's key.
-- **`local-token`** stays for loopback test and demo stacks. A server runs one scheme.
+- **`local-token`** stays for loopback test and demo stacks. A server runs one scheme. harnessd and the CLI never send the local token to a `server_url` that isn't loopback (127.0.0.0/8, ::1, localhost).
 
 ## 3. Event log and cursors
 

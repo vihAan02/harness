@@ -201,6 +201,13 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
     subscribe(c, subs); // after welcome, so replayed events always follow it
   }
 
+  /** Revoked since it connected (or gone): the device loses the connection at its next message (D-111). */
+  async function revoked(c: Conn): Promise<boolean> {
+    if (!c.authDeviceId) return false;
+    const r = (await o.pool.query<{ revoked_at: Date | null }>('SELECT revoked_at FROM devices WHERE id = $1', [c.authDeviceId])).rows[0];
+    return !r || r.revoked_at !== null;
+  }
+
   async function handle(c: Conn, raw: string) {
     let m: unknown;
     try { m = JSON.parse(raw); } catch { return fail(c, 'bad_request', 'not JSON'); }
@@ -211,6 +218,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
       if (m.type === 'auth' && c.pending) return auth(c, m);
       return fail(c, 'unauthorized', c.pending ? 'expected auth' : 'the first message must be hello', true);
     }
+    if (await revoked(c)) return fail(c, 'unauthorized', 'device authentication failed', true);
     if (m.type === 'subscribe') {
       if (!isSubscriptions(m.subscribe)) return fail(c, 'bad_request', 'malformed subscribe');
       try {
