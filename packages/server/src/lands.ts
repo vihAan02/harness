@@ -351,6 +351,43 @@ export async function failLand(ctx: HandlerContext, args: Record<string, unknown
   };
 }
 
+/**
+ * `land.empty { task_id, head_sha, base_sha }` (D-114, D-106): a finished GitHub-mode task whose branch adds nothing to
+ * the base, from the device that ran it. There's no PR to merge (GitHub refuses an empty one), so it lands as it is:
+ * one land, completed with no change, the task landed, its leases released, and the waits on it end. No reader is told
+ * anything, since nothing changed. A task with an open PR is integrated through it instead.
+ */
+export async function emptyLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  if (!ctx.caller.deviceId || ctx.actor.onBehalfOf) throw new CommandError('forbidden', 'only harnessd reports this, from the device that ran the task');
+  await lockInvalidation(ctx); // the same lock order as land.complete
+  const at = await lockLeases(ctx);
+  const mode = (await ctx.tx.query<{ integration_mode: string }>('SELECT integration_mode FROM projects WHERE id = $1 FOR UPDATE', [ctx.projectId])).rows[0]?.integration_mode;
+  if (mode !== 'github') throw new CommandError('conflict', 'a local project lands a task with no change through land.request');
+  const task = await lockTask(ctx, args.task_id);
+  if (task.status !== 'done') throw new CommandError('conflict', `${task.id} is ${task.status}; only a finished task lands`);
+  const head = sha(args.head_sha, 'head_sha');
+  const base = sha(args.base_sha, 'base_sha');
+  const ran = (await ctx.tx.query<{ device_id: string }>('SELECT device_id FROM agent_sessions WHERE task_id = $1 ORDER BY started_at DESC LIMIT 1', [task.id])).rows[0]?.device_id;
+  if (ran !== ctx.caller.deviceId) throw new CommandError('forbidden', `${task.id} ran on ${ran ?? 'no device'}: only that device reports it changed nothing`);
+  const pr = (await ctx.tx.query<{ pr_number: number }>("SELECT pr_number FROM task_prs WHERE task_id = $1 AND state = 'open'", [task.id])).rows[0];
+  if (pr) throw new CommandError('conflict', `${task.id} has PR #${pr.pr_number}: it lands through it`);
+  const inFlight = (await ctx.tx.query<{ id: string; task_id: string }>(
+    "SELECT id, task_id FROM lands WHERE project_id = $1 AND status IN ('requested', 'accepted')", [ctx.projectId])).rows[0];
+  if (inFlight) throw new CommandError('conflict', `land ${inFlight.id} (${inFlight.task_id}) is still in progress; one at a time (D-115)`);
+  const id = `land_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+  await ctx.tx.query(
+    `INSERT INTO lands (id, project_id, task_id, device_id, requested_by, run_tests, mode, status, base_sha, head_sha, new_base_sha, approved_head_sha, approved_base_sha, finished_at)
+     VALUES ($1, $2, $3, $4, $5, false, 'github', 'completed', $6, $7, $6, $7, $6, now())`, [id, ctx.projectId, task.id, ctx.caller.deviceId, ctx.caller.principal, base, head]);
+  await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
+  return {
+    result: { land_id: id },
+    events: [
+      { kind: 'land.completed', data: { land_id: id, task_id: task.id, old_base_sha: base, new_base_sha: base, changed_paths: [], empty: true } },
+      ...await releaseOnLand(ctx, task.id, at),
+    ],
+  };
+}
+
 /** How long a GitHub land's device must be silent before another member's harnessd may settle it (D-115). */
 let reconcileAfterMs = 10 * 60_000;
 /** The server's settings for lands (its `reconcileAfterMs` option). */

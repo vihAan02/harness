@@ -16,7 +16,7 @@ import { ackMessage, sendMessage } from './messages.ts';
 import { observeClaims } from './claims.ts';
 import { addReadset } from './readsets.ts';
 import { reportSync, unblockTask } from './syncs.ts';
-import { armLand, cancelLand, completeLand, failLand, reportLand, requestLand, startLand, reconcileLand } from './lands.ts';
+import { armLand, cancelLand, completeLand, failLand, reportLand, requestLand, startLand, reconcileLand, emptyLand } from './lands.ts';
 import { acquireLease, releaseLeases, renewLeases } from './leases.ts';
 import { startWait } from './waits.ts';
 import { landExternal, observeBase, publishPr, reportPrStatus, reportPublishBlocked } from './integrations.ts';
@@ -63,6 +63,7 @@ const HANDLERS: Record<string, Handler> = {
   'base.observe': observeBase,
   'land.external': landExternal,
   'land.reconcile': reconcileLand,
+  'land.empty': emptyLand,
 };
 
 export type CommandOutcome = { seqs: number[]; result: unknown; duplicate: boolean };

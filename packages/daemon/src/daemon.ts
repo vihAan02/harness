@@ -509,7 +509,8 @@ export class Daemon {
       if (commit) await this.report(projectId, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: taskBranch(taskId), commit });
       this.log(`${taskId}: recovered its completion: ${commit ? `committed ${commit.slice(0, 12)}` : 'nothing to commit'}`);
     }
-    if (task.status === 'done' && hasWorktree && this.project(projectId).integration === 'github' && !j.has(projectId, taskId, 'pr') && !j.has(projectId, taskId, 'no_change')) {
+    // Still done on the coordinator: its PR, or its empty land (no_change), may not have reached it before the crash.
+    if (task.status === 'done' && hasWorktree && this.project(projectId).integration === 'github' && !j.has(projectId, taskId, 'pr')) {
       // Committed, not yet published (or published before the crash, without the record): publish, idempotently.
       return this.publishTask(projectId, taskId);
     }
@@ -1688,10 +1689,12 @@ export class Daemon {
     const branch = this.remoteBranch(projectId, taskId);
     const head = await branchTip(project.repo, taskBranch(taskId));
     const base = await this.fetchProjectBase(project);
-    // Nothing to publish: the task's branch adds nothing to the base. Its land is a no-op (D-106 waits still end, PA6).
+    // Nothing to publish: the task's branch adds nothing to the base. It lands as it is (land.empty), so the waits on it
+    // end (D-106) and its leases go; there's no PR, which GitHub would refuse anyway.
     if (!(await git(project.repo, 'diff', '--name-only', `${base}...${head}`))) {
       j.append(projectId, taskId, 'no_change', { head, base });
-      this.log(`${taskId}: nothing to publish: its branch adds nothing to ${project.baseBranch}`);
+      this.log(`${taskId}: nothing to publish: its branch adds nothing to ${project.baseBranch}; it lands with no change`);
+      await this.report(projectId, 'land.empty', { task_id: taskId, head_sha: head, base_sha: base });
       return;
     }
     const gh = this.github(project);

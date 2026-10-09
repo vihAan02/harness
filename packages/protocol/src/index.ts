@@ -122,6 +122,8 @@ export type LandExternalArgs = { task_id: string; pr_number: number; merge_sha: 
 /** `land.arm` (the reserving harnessd, synchronous, never from the outbox): sent before the merge request (D-115). */
 export type LandArmArgs = { land_id: string; head_sha: string; base_sha: string };
 /** `land.reconcile` (another member device, when the reserving one has been offline ≥ 10 minutes): GitHub's evidence (D-115). */
+/** `land.empty` (harnessd → server): a finished GitHub-mode task whose branch adds nothing to the base lands as it is (D-106, D-114). */
+export type LandEmptyArgs = { task_id: string; head_sha: string; base_sha: string };
 export type LandReconcileArgs = {
   land_id: string; pr_number: number; observed_head_sha: string; observed_base_sha: string; merged: boolean; merge_sha?: string; changed?: ChangedBlob[];
   /** The PR's state on GitHub, when not merged. */
