@@ -33,6 +33,7 @@ import { ReadTracker, type ReadReport } from './reads.ts';
 import { parseShellReads } from './shellreads.ts';
 import { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 import { killOrphans, processStart, Sessions, type OrphanReport, type SessionRecord } from './supervision.ts';
+import { findTrustPostgres, trustRefusal, type TrustLogin } from './localsvc.ts';
 import { harnessTools } from './tools.ts';
 import { waitOutcomeText } from './tools/waits.ts';
 import { LeaseKeeper, type LeaseFaults } from './leases.ts';
@@ -87,6 +88,8 @@ const MAX_REPORT_PATHS = 5000;
  * `<system-reminder>`, which a name could close early (D-100).
  */
 const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>]/u;
+/** How long a clean D-119 check (no password-less loopback Postgres) holds before an agent start checks again. */
+const TRUST_PG_TTL_MS = 60_000;
 /** Nobody approved a setup or test command in time (D-52); a land that hits it fails as `not_approved`. */
 export class ApprovalTimeout extends Error {}
 export type DaemonOptions = {
@@ -114,6 +117,8 @@ export type DaemonOptions = {
   faults?: { leases?: LeaseFaults; crashAt?: string };
   /** This device's key, with device-key auth (D-111). Default: ~/.harness/device.key. */
   deviceKey?: KeyObject;
+  /** The D-119 check for loopback Postgres that takes password-less logins (TH-22), for tests. Default: findTrustPostgres. */
+  localServices?: { check?: () => Promise<TrustLogin[]> };
 };
 
 export class Daemon {
@@ -144,6 +149,7 @@ export class Daemon {
   recovering = true;
   buffered = new Map<string, EventMessage[]>();
   recovered: Promise<void> = Promise.resolve();
+  trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -220,6 +226,7 @@ export class Daemon {
     }
     await this.link.whenCaughtUp();
     await this.recovered;
+    this.logTrustPostgres();
     this.recoverLands();
     this.leases.start();
   }
@@ -388,6 +395,8 @@ export class Daemon {
     if (!agent || agent.humanId !== this.config.principal) return; // another human's agent runs on their device
     const project = this.project(e.project_id);
     const ref: AgentRef = { id: agent.id, name: agent.name, vendor: agent.vendor };
+    // D-119: refused before a worktree, setup or ports exist; startAgent checks again (cached).
+    if (e.kind === 'task.assigned' || e.kind === 'task.reopened') await this.refuseIfTrustPostgres();
     if (e.kind === 'task.assigned') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return; // already running here: a replayed or duplicate assignment starts nothing
@@ -621,6 +630,8 @@ export class Daemon {
           await step('awaiting_approval', `harness approve ${req.id}`);
           await this.waitForApproval(project.id, hash);
         }
+        // D-119: the repo's test code runs with loopback access, like an agent's.
+        await this.refuseIfTrustPostgres();
         await step('testing');
         const logFile = path.join(this.home.logs, `land-${landId}.log`);
         const timeout = Math.min(repo.test.timeoutSeconds ?? this.config.setup.timeoutSeconds, this.config.setup.timeoutSeconds);
@@ -976,10 +987,12 @@ export class Daemon {
   /**
    * Starts the task's agent session in its prepared workspace (local-runtime §3 step 3). The session's
    * first message is the task itself, from the local owner. Its child PID is recorded for orphan
-   * supervision (D-62), and its status and usage are reported to the server.
+   * supervision (D-62), and its status and usage are reported to the server. With device keys, it's refused
+   * while a loopback Postgres takes password-less logins (D-119).
    */
   async startAgent(ws: TaskWorkspace, agent: AgentRef, task: TaskForAgent, tools?: HarnessTool[]): Promise<RunningAgent> {
     const project = this.project(ws.projectId);
+    await this.refuseIfTrustPostgres(); // D-119: before anything is recorded or reported
     if (this.running.has(ws.taskId)) throw new Error(`task ${ws.taskId} already has a running agent`);
     const adapter = this.adapters[agent.vendor];
     if (!adapter) throw new Error(`no adapter for vendor ${agent.vendor}`);
@@ -1055,6 +1068,45 @@ export class Daemon {
     await run.adapter.stopSession(run.handle, mode);
     await run.done;
     await run.sync.running; // never let finishTask or teardown race a sync's Git writes
+  }
+
+  // ---------- loopback services (D-119, TH-22) ----------
+
+  /** The pilot (device keys) refuses agents beside a password-less loopback Postgres; HARNESS_ALLOW_TRUST_PG=1 is the human's override. */
+  guardsTrustPostgres(): boolean {
+    return this.config.auth === 'device-key' && process.env.HARNESS_ALLOW_TRUST_PG !== '1';
+  }
+
+  /** Loopback Postgres logins that need no password. A clean result holds for 60 s; a hit or a failure is checked again next time. */
+  trustPostgres(): Promise<TrustLogin[]> {
+    if (this.trustPg && Date.now() - this.trustPg.at < TRUST_PG_TTL_MS) return this.trustPg.hits;
+    const entry = { at: Date.now(), hits: (this.o.localServices?.check ?? (() => findTrustPostgres({ log: this.log })))() };
+    this.trustPg = entry;
+    const drop = () => { if (this.trustPg === entry) this.trustPg = null; };
+    entry.hits.then((h) => { if (h.length) drop(); }, drop);
+    return entry.hits;
+  }
+
+  /** Throws while an agent's sandbox could reach a password-less Postgres: it could run programs outside the sandbox (D-119). Fails closed. */
+  async refuseIfTrustPostgres(): Promise<void> {
+    if (!this.guardsTrustPostgres()) return;
+    let hits: TrustLogin[];
+    try {
+      hits = await this.trustPostgres();
+    } catch (e) {
+      throw new Error(`D-119: couldn't check loopback Postgres for password-less logins (${(e as Error).message}); harnessd won't start agents until it can`);
+    }
+    if (hits.length) throw new Error(trustRefusal(hits));
+  }
+
+  /** At ready: the D-119 verdict for the human, without holding up readiness. Agent starts await the same check. */
+  logTrustPostgres(): void {
+    if (this.config.auth !== 'device-key') return;
+    if (!this.guardsTrustPostgres()) return this.log('D-119: HARNESS_ALLOW_TRUST_PG=1, so agents start even beside a loopback Postgres that accepts password-less logins');
+    this.trustPostgres().then(
+      (hits) => this.log(hits.length ? trustRefusal(hits) : 'D-119: no loopback Postgres accepts password-less logins'),
+      (e: Error) => this.log(`D-119: couldn't check loopback Postgres for password-less logins (${e.message}); harnessd won't start agents until it can`),
+    );
   }
 
   // ---------- internals ----------
