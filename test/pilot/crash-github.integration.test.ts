@@ -78,7 +78,7 @@ test('killed right after the merge request was armed: the next start reconciles 
     await first.exited;
     const second = await harnessd(s, children, 'after_merge_request');
     const pr = (await s.db.pool.query('SELECT pr_number, head_sha, base_sha FROM task_prs WHERE task_id = $1', [task])).rows[0];
-    await s.a.command('land.request', { task_id: task, mode: 'github', pr_number: pr.pr_number, head_sha: pr.head_sha, base_sha: pr.base_sha });
+    await s.a.integrate(task, { pr_number: pr.pr_number, head_sha: pr.head_sha, base_sha: pr.base_sha });
     assert.equal((await second.exited).signal, 'SIGKILL');
     assert.equal(merges(s), 0, 'armed, then killed before asking GitHub');
     await harnessd(s, children);

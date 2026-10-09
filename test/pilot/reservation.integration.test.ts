@@ -28,8 +28,8 @@ async function published(s: PilotStack, name: string, file = `${name.replace('/'
   return { task, agent, pr, file };
 }
 /** The human approves the PR's exact head on the current base (`harness integrate`). */
-const integrate = async (s: PilotStack, t: Awaited<ReturnType<typeof published>>, over: Record<string, unknown> = {}) =>
-  (await s.a.command('land.request', { task_id: t.task, mode: 'github', pr_number: t.pr.prNumber, head_sha: t.pr.headSha, base_sha: t.pr.baseSha, ...over })).land_id!;
+const integrate = async (s: PilotStack, t: Awaited<ReturnType<typeof published>>, over: Partial<{ pr_number: number; head_sha: string; base_sha: string }> = {}) =>
+  (await s.a.integrate(t.task, { pr_number: t.pr.prNumber, head_sha: t.pr.headSha, base_sha: t.pr.baseSha, ...over })).land_id!;
 const landOf = (s: PilotStack, id: string) => s.b.daemon.view(s.project).lands.get(id);
 const merges = (s: PilotStack) => s.fake.log.filter((l) => l.method === 'PUT' && l.path.endsWith('/merge'));
 const count = async (s: PilotStack, kind: string) => (await s.db.pool.query('SELECT count(*)::int AS n FROM events WHERE project_id = $1 AND kind = $2', [s.project, kind])).rows[0].n as number;

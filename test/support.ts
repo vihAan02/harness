@@ -20,7 +20,7 @@ import { dispatchFor, freshSchema, seedProject, TEST_DATABASE_URL } from '../pac
 import { DUMMY_KEY, startMock, type Mock } from '../packages/adapters/test/mock-api.ts';
 import type { Observation } from '../packages/adapters/src/adapter.ts';
 import type { DispatchKind, EventMessage, Subscription } from '../packages/protocol/src/index.ts';
-import { generateKeyPair, parsePrivateKey } from '../packages/protocol/src/signing.ts';
+import { generateKeyPair, parsePrivateKey, pathsSha256 } from '../packages/protocol/src/signing.ts';
 import { FakeAdapter } from './fake-adapter.ts';
 import { FakeGitHub, type FakeGitHubOptions } from './fake-github.ts';
 
@@ -192,6 +192,12 @@ export type PilotSide = {
   assign: (agent: string, task: { title: string; text: string; scope?: string[] }) => Promise<string>;
   /** A human's lifecycle command (`task.assign`, `.complete`, `.abandon`, `.reopen`, `.resume`), with the dispatch this device signed. */
   signed: (name: keyof typeof DISPATCH_KIND, args: Record<string, unknown> & { task_id: string }) => Promise<Record<string, string>>;
+  /**
+   * `harness integrate` as an approval made earlier: an integrate dispatch this device signed for exactly this PR, head
+   * and base (and the paths the merge would change), sent as land.request (D-112, D-115). harnessd's own `dispatch`
+   * (Daemon.dispatchCommand) also checks them against GitHub first; this signs what it's given, stale or not.
+   */
+  integrate: (task: string, x: { pr_number: number; head_sha: string; base_sha: string }) => Promise<Record<string, string>>;
 };
 /** The dispatch each human lifecycle command carries (D-112; protocol.md §11). */
 const DISPATCH_KIND = { 'task.assign': 'start', 'task.complete': 'complete', 'task.abandon': 'abandon', 'task.reopen': 'reopen', 'task.resume': 'resume' } as const satisfies Record<string, DispatchKind>;
@@ -295,12 +301,21 @@ export async function startPilotStack(p: {
         });
         return command(name, { ...args, dispatch });
       };
+      const integrate: PilotSide['integrate'] = async (task, x) => {
+        const changed = (await gitAsync(pair[s].repo, 'diff', '--no-renames', '--name-only', '-z', x.base_sha, x.head_sha).catch(() => '')).split('\0').filter(Boolean).sort();
+        const agentId = (await db.pool.query<{ a: string }>('SELECT assignee_agent_id AS a FROM tasks WHERE id = $1', [task])).rows[0]!.a;
+        const dispatch = await dispatchFor(db.pool, deviceKey, {
+          kind: 'integrate', projectId: project, taskId: task, agentId, targetDevice: device, issuerHuman: human, issuerDevice: device,
+          integrate: { ...x, paths_sha256: pathsSha256(changed) },
+        });
+        return command('land.request', { task_id: task, mode: 'github', ...x, dispatch });
+      };
       const assign: PilotSide['assign'] = async (agent, t) => {
         const task = (await command('task.create', { title: t.title, text: t.text, scope: t.scope ?? [] })).task_id!;
         await signed('task.assign', { task_id: task, assignee_agent_id: agent });
         return task;
       };
-      return { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command, assign, signed };
+      return { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command, assign, signed, integrate };
     };
     const a = await side('a');
     const b = await side('b');

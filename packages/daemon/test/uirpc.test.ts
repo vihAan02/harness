@@ -43,6 +43,7 @@ async function rpc() {
   const approvals = new Approvals(home);
   const commands: unknown[][] = [];
   const resets: number[] = [];
+  const dispatches: unknown[][] = [];
   let seq = 1;
   const snapshot = (p: string) => ({ v: 1, project_id: p, head_seq: seq, taken_at: new Date().toISOString(), tasks: [] }) as never;
   const server = new UiRpc({
@@ -51,12 +52,17 @@ async function rpc() {
       projects: () => ['prj_a'], snapshot, health: () => ({ connection: 'connected' }), approvals,
       command: async (...args) => { commands.push(args); return { seqs: [7], result: { task_id: 'T-9' } }; }, log: () => {},
       resetProvider: () => { resets.push(1); },
+      dispatch: async (...args) => {
+        dispatches.push(args);
+        if (args[2] === 'T-404') throw Object.assign(new Error('no task T-404 in prj_a'), { code: 'not_found' });
+        return { seqs: [8], result: null };
+      },
     },
   });
   await server.start();
   const token = fs.readFileSync(path.join(short, 'run', 'uirpc.token'), 'utf8').trim();
   return {
-    t, home, socket, approvals, commands, resets, server, token, bump: () => { seq++; },
+    t, home, socket, approvals, commands, resets, dispatches, server, token, bump: () => { seq++; },
     async stop() { await server.stop(); t.cleanup(); fs.rmSync(short, { recursive: true, force: true }); },
   };
 }
@@ -100,7 +106,7 @@ test('approvals: listed with what the human must see; approved only with the exa
   } finally { await r.stop(); }
 });
 
-test('commands: an allowlist, no assignment without a dispatch, a UUID command id; dispatch waits for PA3', async () => {
+test('commands: an allowlist, no assignment without a dispatch, a UUID command id; a dispatch goes to harnessd to sign', async () => {
   const r = await rpc();
   try {
     const c = await client(r.socket);
@@ -111,7 +117,15 @@ test('commands: an allowlist, no assignment without a dispatch, a UUID command i
     assert.equal((await c.call(r.token, 'command', { project_id: 'prj_other', name: 'task.create', args: { title: 'x' }, command_id: id }))!.error!.code, 'not_found');
     assert.deepEqual((await c.call(r.token, 'command', { project_id: 'prj_a', name: 'task.create', args: { title: 'x', text: 'y' }, command_id: id }))!.result, { seqs: [7], result: { task_id: 'T-9' } });
     assert.deepEqual(r.commands, [['prj_a', 'task.create', { title: 'x', text: 'y' }, id]]);
-    assert.equal((await c.call(r.token, 'dispatch', { kind: 'integrate', task_id: 'T-1' }))!.error!.code, 'not_available');
+    // A lifecycle command is a dispatch: harnessd builds and signs it (D-112). The socket checks its shape and passes it on.
+    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'merge', task_id: 'T-1', command_id: id }))!.error!.code, 'bad_request');
+    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'start', task_id: 'T-1', command_id: 'nope' }))!.error!.code, 'bad_request');
+    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'reopen', task_id: 'T-1', text: 7, command_id: id }))!.error!.code, 'bad_request');
+    const expected = { pr_number: 4, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40) };
+    assert.deepEqual((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'integrate', task_id: 'T-1', expected, command_id: id }))!.result, { seqs: [8], result: null });
+    assert.deepEqual((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'start', task_id: 'T-2', agent_id: 'agent_x', command_id: id }))!.result, { seqs: [8], result: null });
+    assert.deepEqual(r.dispatches, [['prj_a', 'integrate', 'T-1', { expected }, id], ['prj_a', 'start', 'T-2', { agentId: 'agent_x' }, id]]);
+    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'abandon', task_id: 'T-404', command_id: id }))!.error!.code, 'not_found', 'a refusal keeps its code');
     assert.deepEqual((await c.call(r.token, 'provider_reset'))!.result, { reset: true });
     assert.deepEqual(r.resets, [1]);
     assert.equal((await c.call(r.token, 'nope'))!.error!.code, 'bad_request');
@@ -149,7 +163,7 @@ test('a stale socket from a crash is replaced; anything else at that path is ref
     dead.kill('SIGKILL');
     await new Promise((res) => dead.once('exit', res));
     assert.ok(fs.lstatSync(socket).isSocket(), 'the stale socket is there');
-    const host = { projects: () => [], snapshot: () => ({}) as never, health: () => ({ up: true }), approvals: new Approvals(tempHome(t.dir)), command: async () => ({ seqs: [], result: null }), log: () => {}, resetProvider: () => {} };
+    const host = { projects: () => [], snapshot: () => ({}) as never, health: () => ({ up: true }), approvals: new Approvals(tempHome(t.dir)), command: async () => ({ seqs: [], result: null }), log: () => {}, resetProvider: () => {}, dispatch: async () => ({ seqs: [], result: null }) };
     const r = new UiRpc({ socket, host });
     await r.start();
     const token = fs.readFileSync(path.join(short, 'run', 'uirpc.token'), 'utf8').trim();

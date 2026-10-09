@@ -50,7 +50,8 @@ import { snapshotOf } from './snapshot.ts';
 import { screenText } from './screen.ts';
 import { MIN_START_USD, ProviderCircuit, RATE_LIMIT_STOP, SpendLedger } from './budget.ts';
 import { UiRpc } from './uirpc.ts';
-import { checkDispatch, DISPATCH_OF, sessionApprovalHash, StartRefused, STARTS, type StartFailedReason, type Verdict } from './dispatch.ts';
+import { checkDispatch, DISPATCH_OF, makeDispatch, sessionApprovalHash, StartRefused, STARTS, type StartFailedReason, type Verdict } from './dispatch.ts';
+import { pathsSha256 } from '@harness/protocol/signing';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -146,6 +147,20 @@ export type DaemonOptions = {
   localServices?: { check?: () => Promise<TrustLogin[]> };
 };
 
+/** What a human's dispatch needs beyond its kind and task (protocol.md §12). */
+export type DispatchRequest = {
+  agentId?: string; text?: string; reason?: string; summary?: string;
+  expected?: { pr_number: number; head_sha: string; base_sha: string };
+};
+/** A dispatch harnessd won't build, with a code the UI shows (protocol.md §12). */
+export class DispatchRefused extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 /** What a security review releases (D-118): one message, its exact text. */
 function reviewHash(id: string, text: string): string {
   return createHash('sha256').update(JSON.stringify({ v: 1, kind: 'security_review', id, text })).digest('hex');
@@ -192,6 +207,8 @@ export class Daemon {
   procsRunning = new Set<string>();
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
   linkState: LinkState = 'connecting'; // for status and health (D-111)
+  /** This device's key with device-key auth (D-111): the handshake's, and the one dispatches are signed with (D-112). */
+  deviceKey: KeyObject | null = null;
   ui: UiRpc | null = null;
   /** The write-ahead journal (D-113), keyed by the coordinator's epoch, so it exists from the first welcome. */
   journalInstance: Journal | null = null;
@@ -242,6 +259,7 @@ export class Daemon {
     }
     const saved = readJson<{ cursors: Record<string, number> }>(this.home.state, { cursors: {} }).cursors;
     const deviceKey = this.config.auth === 'device-key' ? (this.o.deviceKey ?? loadDeviceKey(this.home)) : null;
+    this.deviceKey = deviceKey;
     checkAuthTarget(this.config); // before anything connects
     this.link = new ServerLink({
       url: this.config.serverUrl,
@@ -270,6 +288,7 @@ export class Daemon {
           approvals: this.approvals,
           command: (projectId, name, args, commandId) => this.link!.command(projectId, name, args, undefined, commandId),
           resetProvider: () => { this.circuit.reset(); this.log('the provider circuit was reset from the UI'); },
+          dispatch: (projectId, kind, taskId, o, commandId) => this.dispatchCommand(projectId, kind, taskId, o, commandId),
           log: (m) => this.log(m),
         },
       });
@@ -727,6 +746,57 @@ export class Daemon {
       }
     }
     return env;
+  }
+
+  /**
+   * A human's lifecycle command from this device, signed here (D-112): the UI's and the CLI's `dispatch` (protocol.md
+   * §12). harnessd builds the envelope from its own view of the task and signs it with the device key, which never
+   * leaves harnessd. For `integrate` it first reads the PR's head and the base from GitHub, and refuses unless they're
+   * what the human was shown (`expected`); the paths the merge changes are signed with them.
+   */
+  async dispatchCommand(projectId: string, kind: DispatchKind, taskId: string, o: DispatchRequest, commandId?: string): Promise<{ seqs: number[]; result: unknown }> {
+    if (!this.link || !this.deviceKey) throw new DispatchRefused('not_available', 'signed dispatch needs device-key auth (D-111)');
+    const epoch = this.link.epoch;
+    if (!epoch) throw new DispatchRefused('not_available', 'not connected to the coordinator yet');
+    const project = this.project(projectId);
+    const view = this.view(projectId);
+    const task = view.tasks.get(taskId);
+    if (!task) throw new DispatchRefused('not_found', `no task ${taskId} in ${projectId}`);
+    const agentId = kind === 'start' ? o.agentId : task.assignee;
+    const agent = agentId ? view.agents.get(agentId) : undefined;
+    if (!agent) throw new DispatchRefused('bad_request', kind === 'start' ? 'a start names the agent: agent_id' : `${taskId} has no agent`);
+    // The device that acts: the agent's own (D-113); an agent from before devices were bound runs on its human's.
+    const target = agent.deviceId ?? (agent.humanId === this.config.principal ? this.config.deviceId : null);
+    if (!target) throw new DispatchRefused('bad_request', `${agent.name} isn't bound to a device`);
+    const message = kind === 'reopen' ? (o.text ?? '') : kind === 'resume' ? o.text : undefined;
+    let integrate: NonNullable<DispatchEnvelope['integrate']> | undefined;
+    if (kind === 'integrate') {
+      const x = o.expected;
+      if (!x || !Number.isSafeInteger(x.pr_number) || typeof x.head_sha !== 'string' || typeof x.base_sha !== 'string') {
+        throw new DispatchRefused('bad_request', 'integrate needs what you were shown: expected { pr_number, head_sha, base_sha }');
+      }
+      const pr = await this.github(project).pull(x.pr_number);
+      if (pr.head.sha !== x.head_sha) throw new DispatchRefused('conflict', `PR #${x.pr_number}'s head is now ${pr.head.sha.slice(0, 12)}, not the ${x.head_sha.slice(0, 12)} you approved: look again`);
+      const base = await this.fetchProjectBase(project);
+      if (base !== x.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${x.base_sha.slice(0, 12)} you approved: the PR needs updating first`);
+      const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', base, x.head_sha)).split('\0').filter(Boolean).sort();
+      integrate = { pr_number: x.pr_number, head_sha: x.head_sha, base_sha: base, paths_sha256: pathsSha256(changed) };
+    }
+    const dispatch = makeDispatch(this.deviceKey, {
+      kind, projectId, taskId, agentId: agent.id, targetDeviceId: kind === 'integrate' ? this.config.deviceId : target,
+      issuerHumanId: this.config.principal, issuerDeviceId: this.config.deviceId, epoch,
+      task: { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId },
+      ...(message === undefined ? {} : { message }), ...(integrate ? { integrate } : {}),
+    });
+    const [name, args]: [string, Record<string, unknown>] =
+      kind === 'start' ? ['task.assign', { task_id: taskId, assignee_agent_id: agent.id }]
+      : kind === 'reopen' ? ['task.reopen', { task_id: taskId, text: message }]
+      : kind === 'resume' ? ['task.resume', { task_id: taskId, ...(message === undefined ? {} : { text: message }) }]
+      : kind === 'abandon' ? ['task.abandon', { task_id: taskId, reason: o.reason ?? 'abandoned' }]
+      : kind === 'complete' ? ['task.complete', { task_id: taskId, ...(o.summary ? { summary: o.summary } : {}) }]
+      : ['land.request', { task_id: taskId, mode: 'github', pr_number: integrate!.pr_number, head_sha: integrate!.head_sha, base_sha: integrate!.base_sha }];
+    this.log(`dispatching ${kind} of ${taskId} to ${kind === 'integrate' ? 'this device' : target}, signed by ${this.config.deviceId}`);
+    return this.link.command(projectId, name, { ...args, dispatch }, undefined, commandId);
   }
 
   /** A remote start, reopen or resume waits for this human's approval, bound to its nonce and hashes (D-34). */

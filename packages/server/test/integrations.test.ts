@@ -219,7 +219,19 @@ test('an armed GitHub land fails only on GitHub\'s evidence, can\'t be cancelled
   await publish(w.task, 31);
   const tip = (await db.pool.query('SELECT tip_sha FROM project_bases WHERE project_id = $1', [project])).rows[0].tip_sha;
   const approver = { principal: 'human_test', deviceId: null, authDeviceId: 'dev_1' };
-  const land = res(await run('land.request', { task_id: w.task, mode: 'github', pr_number: 31, head_sha: SHA('2'), base_sha: tip }, approver)).land_id;
+  // The approver's integrate dispatch (D-112): exactly this PR, head and base.
+  const integrate = (x: { pr_number: number; head_sha: string; base_sha: string }) => dispatchFor(db.pool, parsePrivateKey(key1.privateKeyPem), {
+    kind: 'integrate', projectId: project, taskId: w.task, agentId: w.agent, targetDevice: 'dev_1', issuerHuman: 'human_test', issuerDevice: 'dev_1',
+    integrate: { ...x, paths_sha256: '0'.repeat(64) },
+  });
+  const request = { task_id: w.task, mode: 'github', pr_number: 31, head_sha: SHA('2'), base_sha: tip };
+  await rejects(run('land.request', request, approver), 'forbidden', /dispatch refused \(missing\)/);
+  await rejects(run('land.request', { ...request, dispatch: await integrate({ pr_number: 31, head_sha: SHA('2'), base_sha: SHA('9') }) }, approver), 'forbidden', /content_mismatch/);
+  const signed = await integrate({ pr_number: 31, head_sha: SHA('2'), base_sha: tip });
+  const requested = await run('land.request', { ...request, dispatch: signed }, approver);
+  const land = res(requested).land_id;
+  assert.deepEqual((await kinds(requested.seqs))[0].data.dispatch, signed, 'echoed for the device that merges, which checks it again');
+  assert.equal((await db.pool.query('SELECT dispatch_nonce FROM lands WHERE id = $1', [land])).rows[0].dispatch_nonce, signed.envelope.nonce);
   const accepted = await run('land', { land_id: land, base_branch: 'main', base_sha: tip, merge_base_sha: tip, head_sha: SHA('2'), changed_paths: ['src/g.ts'], lease_tokens: [] }, device);
   assert.equal(res(accepted).accepted, true);
   await rejects(run('land.complete', { land_id: land, old_base_sha: tip, new_base_sha: SHA('b'), changed: [] }, device), 'conflict', /never armed/);
