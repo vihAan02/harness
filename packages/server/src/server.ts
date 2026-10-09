@@ -129,13 +129,13 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
   async function headsFor(principal: string, subs: Subscription[]): Promise<ProjectHead[]> {
     if (subs.length === 0) return [];
     const ids = subs.map((s) => s.project_id);
-    const rows = (await o.pool.query<{ id: string; next_seq: string }>(
-      `SELECT p.id, p.next_seq FROM projects p
+    const rows = (await o.pool.query<{ id: string; next_seq: string; integration_mode: 'local' | 'github' }>(
+      `SELECT p.id, p.next_seq, p.integration_mode FROM projects p
        JOIN project_memberships m ON m.project_id = p.id AND m.human_id = $1 WHERE p.id = ANY($2)`, [principal, ids])).rows;
-    const head = new Map(rows.map((r) => [r.id, Number(r.next_seq)]));
+    const head = new Map(rows.map((r) => [r.id, r]));
     const denied = ids.filter((id) => !head.has(id));
     if (denied.length) throw new CommandError('forbidden', `${principal} is not a member of ${denied.join(', ')}`);
-    return ids.map((id) => ({ project_id: id, head_seq: head.get(id)! }));
+    return ids.map((id) => ({ project_id: id, head_seq: Number(head.get(id)!.next_seq), integration_mode: head.get(id)!.integration_mode }));
   }
   function subscribe(c: Conn, subs: Subscription[]) {
     for (const s of subs) {
