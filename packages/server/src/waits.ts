@@ -3,7 +3,8 @@
 // ends in exactly one outcome:
 //  - resolved: what it waited for happened (checked at once when the wait starts, then by the sweep);
 //  - timed_out: the timeout passed first, and the task's owner gets a task_blocked message;
-//  - cancelled: the waiting task ended (done, landed or abandoned) first.
+//  - cancelled: the waiting task ended (done, landed or abandoned) first, or the session that waited ended: a wait
+//    belongs to its session, and a resumed session is told what the old one waited for (D-113).
 // The sweep resolves waits from current state, so no other command has to know about waits. harnessd
 // pushes the outcome to the waiter as a new turn (D-95).
 import { randomUUID } from 'node:crypto';
@@ -21,7 +22,7 @@ const TIMEOUT = { min: 10, max: 3600, default: 600 };
 const ACTIVE = ['in_progress', 'blocked'];
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-type WaitRow = { id: string; project_id: string; task_id: string; agent_id: string; on_kind: WaitKind; on_id: string; timed_out: boolean; task_status: string };
+type WaitRow = { id: string; project_id: string; task_id: string; agent_id: string; on_kind: WaitKind; on_id: string; timed_out: boolean; task_status: string; session_status: string };
 
 /**
  * What a wait is waiting for, if it has happened: the result to hand the waiter, else null. For a lease, the
@@ -55,7 +56,10 @@ async function happened(tx: pg.ClientBase, projectId: string, kind: WaitKind, id
 async function waitCycle(ctx: HandlerContext, from: string, to: string): Promise<string[] | null> {
   const chain = [from];
   for (let at = from; chain.length <= 50;) {
-    const next = (await ctx.tx.query<{ on_id: string }>("SELECT on_id FROM waits WHERE project_id = $1 AND task_id = $2 AND on_kind = 'task' AND outcome IS NULL", [ctx.projectId, at])).rows[0]?.on_id;
+    // An ended session's wait no longer waits for anything (D-113), even before the sweep cancels it.
+    const next = (await ctx.tx.query<{ on_id: string }>(
+      `SELECT w.on_id FROM waits w JOIN agent_sessions s ON s.id = w.session_id
+       WHERE w.project_id = $1 AND w.task_id = $2 AND w.on_kind = 'task' AND w.outcome IS NULL AND s.status <> 'ended'`, [ctx.projectId, at])).rows[0]?.on_id;
     if (!next || chain.includes(next)) return null;
     chain.push(next);
     if (next === to) return chain;
@@ -73,6 +77,11 @@ async function settle(tx: pg.ClientBase, w: WaitRow, at: string | null): Promise
   if (!ACTIVE.includes(w.task_status)) {
     await finish('cancelled', null);
     return [{ kind: 'wait.cancelled', actor: 'harness', data: { ...base, reason: `task_${w.task_status}` } }];
+  }
+  // Nobody is left to hear the outcome once the session that waited has ended (D-113).
+  if (w.session_status === 'ended') {
+    await finish('cancelled', null);
+    return [{ kind: 'wait.cancelled', actor: 'harness', data: { ...base, reason: 'session_ended' } }];
   }
   const result = await happened(tx, w.project_id, w.on_kind, w.on_id, at);
   if (result) {
@@ -96,8 +105,9 @@ async function settle(tx: pg.ClientBase, w: WaitRow, at: string | null): Promise
   ];
 }
 
-const OPEN_WAITS = `SELECT w.id, w.project_id, w.task_id, w.agent_id, w.on_kind, w.on_id, w.timeout_at <= now() AS timed_out, t.status AS task_status
-  FROM waits w JOIN tasks t ON t.id = w.task_id WHERE w.outcome IS NULL`;
+const OPEN_WAITS = `SELECT w.id, w.project_id, w.task_id, w.agent_id, w.on_kind, w.on_id, w.timeout_at <= now() AS timed_out, t.status AS task_status,
+  s.status AS session_status
+  FROM waits w JOIN tasks t ON t.id = w.task_id JOIN agent_sessions s ON s.id = w.session_id WHERE w.outcome IS NULL`;
 
 /** `wait.start { session_id, on: { kind: answer | task | lease, id }, timeout_s? }` → `{ wait_id, outcome, result? }` (D-95). */
 export async function startWait(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
@@ -138,15 +148,18 @@ export async function startWait(ctx: HandlerContext, args: Record<string, unknow
   } else if (!(await ctx.tx.query('SELECT 1 FROM leases WHERE id = $1 AND project_id = $2', [on.id, ctx.projectId])).rowCount) {
     throw new CommandError('not_found', `no lease ${on.id}`);
   }
-  const open = (await ctx.tx.query<{ id: string; on_kind: string; on_id: string }>('SELECT id, on_kind, on_id FROM waits WHERE task_id = $1 AND outcome IS NULL', [sess.task_id])).rows[0];
-  if (open) throw new CommandError('conflict', `${sess.task_id} is already waiting for ${open.on_kind} ${open.on_id} (${open.id}); one wait at a time`);
+  // One wait at a time per task. One that an ended session left (a restart, before the sweep came) is cancelled here,
+  // so the task's new session can wait (D-113).
+  const open = (await ctx.tx.query<WaitRow>(`${OPEN_WAITS} AND w.task_id = $1`, [sess.task_id])).rows[0];
+  const leftOver = open && open.session_status === 'ended' ? await settle(ctx.tx, open, at) : [];
+  if (open && !leftOver.length) throw new CommandError('conflict', `${sess.task_id} is already waiting for ${open.on_kind} ${open.on_id} (${open.id}); one wait at a time`);
 
   const id = `wait_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
   const timeoutAt = (await ctx.tx.query<{ at: Date }>(
     `INSERT INTO waits (id, project_id, task_id, session_id, agent_id, on_kind, on_id, timeout_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8)) RETURNING timeout_at AS at`,
     [id, ctx.projectId, sess.task_id, args.session_id, agentId, kind, on.id, timeout])).rows[0]!.at;
-  const events: HandlerOutput['events'] = [{
+  const events: HandlerOutput['events'] = [...leftOver.map((e) => ({ kind: e.kind, data: e.data })), {
     kind: 'wait.started', data: { wait_id: id, task_id: sess.task_id, session_id: args.session_id, agent_id: agentId, on: { kind, id: on.id }, timeout_at: timeoutAt.toISOString() },
   }];
   // Already happened: resolved at once, in the same transaction. Marked immediate, because the tool's result says
