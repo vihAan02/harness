@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 // `harness`, the human CLI (D-54; docs/architecture.md §2). It reads ~/.harness (HARNESS_HOME) for the
 // server, the local token and the human principal, the same files harnessd uses.
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
-import { PROTOCOL_VERSION, type EventMessage } from '@harness/protocol';
+import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, untrustedText, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
+import { PROTOCOL_VERSION, type DispatchKind, type EventMessage } from '@harness/protocol';
+import { taskSha256 } from '@harness/protocol/signing';
 import pkg from '../package.json' with { type: 'json' };
 import { CliClient, CliError } from './client.ts';
 import { doctor, renderChecks } from './doctor.ts';
+import { dispatchVia } from './harnessd.ts';
 import { keygen, writeSetup } from './setup.ts';
 
 const USAGE = `usage: harness <command> [--project <id>]
@@ -21,6 +24,9 @@ const USAGE = `usage: harness <command> [--project <id>]
   task reopen <task> (--text <msg> | --file <path>)
                                               send a done task back to its agent (a failed land, say): a new session
                                               in its worktree, with your message (D-107)
+  task resume <task> [--text <msg> | --file <path>]
+                                              start a stopped task again (its session ended): a new session in its
+                                              worktree, with the work so far (D-113)
   task unblock <task>                         after you've resolved a sync conflict in the task's worktree: resume the agent
   land <task> [--no-tests] [--no-wait]        land a finished task: its device merges it, runs the approved test command,
                                               and moves the base branch only if green (D-51)
@@ -83,6 +89,21 @@ async function withServer<T>(a: Args, fn: (c: CliClient) => Promise<T>): Promise
   try { return await fn(c); } finally { c.close(); }
 }
 
+/**
+ * A human's lifecycle command (D-112). With device keys, harnessd on this Mac signs it from its own view, with the
+ * device key the CLI never reads, and sends it; the CLI first says what's being signed, as the task stands now.
+ * On a loopback local-token stack it goes as before, with no dispatch.
+ */
+async function lifecycle(c: CliClient, kind: DispatchKind, name: string, taskId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const config = loadConfig(harnessHome());
+  if (config.auth !== 'device-key') return c.command(name, { task_id: taskId, ...args });
+  const t = c.view.tasks.get(taskId) ?? fail(`no task ${taskId} in this project`);
+  const expected = { task_sha256: taskSha256({ title: t.title, text: t.text, scope: t.scope, owner_human_id: t.ownerHumanId }) };
+  console.log(`Signing a ${kind} of ${taskId} "${untrustedText(t.title, 120)}" (scope ${t.scope.map((p) => untrustedText(p, 120)).join(', ') || 'none'}; task ${expected.task_sha256.slice(0, 12)}) with this Mac's key, through harnessd.`);
+  const r = await dispatchVia(harnessHome(), { project_id: c.projectId, kind, task_id: taskId, args, expected, command_id: randomUUID() });
+  return ((r as { result?: unknown } | null)?.result ?? {}) as Record<string, unknown>;
+}
+
 function describeEvent(c: CliClient, e: EventMessage): string {
   const d = (e.data ?? {}) as Record<string, unknown>;
   const who = e.actor.principal === 'harness' ? 'harness' : e.actor.on_behalf_of ? c.view.agentName(e.actor.principal) : e.actor.principal;
@@ -126,9 +147,15 @@ async function main(argv: string[]): Promise<void> {
     return withServer(a, async (c) => {
       const assignee = flag(a, 'assign');
       const priority = flag(a, 'priority');
+      // With device keys a start dispatch names its task, and the server picks the id: create, then assign (D-112).
+      const signed = loadConfig(harnessHome()).auth === 'device-key';
       const r = await c.command('task.create', {
-        title, text, scope, ...(assignee ? { assignee_agent_id: agentId(c, assignee) } : {}), ...(priority ? { priority: Number(priority) } : {}),
+        title, text, scope, ...(assignee && !signed ? { assignee_agent_id: agentId(c, assignee) } : {}), ...(priority ? { priority: Number(priority) } : {}),
       });
+      if (assignee && signed) {
+        await c.until((v) => v.tasks.has(String(r.task_id)));
+        await lifecycle(c, 'start', 'task.assign', String(r.task_id), { assignee_agent_id: agentId(c, assignee) });
+      }
       console.log(`Created ${String(r.task_id)}: ${title}${assignee ? `, assigned to ${agentName(assignee)}. harnessd on its device starts it now.` : '.'}`);
       for (const o of (r.overlaps as { task_id: string; paths: string[] }[] | undefined) ?? []) {
         console.log(`Heads-up: its scope overlaps ${o.task_id} on ${o.paths.join(', ')}. Agents work best with scopes that don't overlap.`);
@@ -140,8 +167,8 @@ async function main(argv: string[]): Promise<void> {
     const [task, agent] = rest;
     if (!task || !agent) fail('usage: harness task assign <task> <agent>');
     return withServer(a, async (c) => {
-      await c.command('task.assign', { task_id: task, assignee_agent_id: agentId(c, agent) });
-      console.log(`Assigned ${task} to ${agentName(agent)}. harnessd on its device starts it now.`);
+      await lifecycle(c, 'start', 'task.assign', task, { assignee_agent_id: agentId(c, agent) });
+      console.log(`Assigned ${task} to ${agentName(agent)}. harnessd on its device starts it now, or, if it's another human's agent, once they approve it there (D-34).`);
     });
   }
 
@@ -149,7 +176,7 @@ async function main(argv: string[]): Promise<void> {
     const task = rest[0] ?? fail('usage: harness task done <task> [--summary <text>]');
     const summary = flag(a, 'summary');
     return withServer(a, async (c) => {
-      await c.command('task.complete', { task_id: task, ...(summary ? { summary } : {}) });
+      await lifecycle(c, 'complete', 'task.complete', task, summary ? { summary } : {});
       console.log(`${task} is done. harnessd commits its work on harness/task/${task} and stops its agent.`);
     });
   }
@@ -158,7 +185,7 @@ async function main(argv: string[]): Promise<void> {
     const task = rest[0] ?? fail('usage: harness task abandon <task> --reason <text>');
     const reason = flag(a, 'reason') ?? fail('say why with --reason');
     return withServer(a, async (c) => {
-      await c.command('task.abandon', { task_id: task, reason });
+      await lifecycle(c, 'abandon', 'task.abandon', task, { reason });
       console.log(`${task} is abandoned. harnessd stops its agent and removes its worktree.`);
     });
   }
@@ -168,8 +195,18 @@ async function main(argv: string[]): Promise<void> {
     const file = flag(a, 'file');
     const text = file ? fs.readFileSync(file, 'utf8') : flag(a, 'text') ?? fail('say what to fix with --text or --file (a failed land\'s output, say)');
     return withServer(a, async (c) => {
-      await c.command('task.reopen', { task_id: task, text });
+      await lifecycle(c, 'reopen', 'task.reopen', task, { text });
       console.log(`${task} is reopened. harnessd starts its agent again in its worktree, with your message.`);
+    });
+  }
+
+  if (command === 'task' && sub === 'resume') {
+    const task = rest[0] ?? fail('usage: harness task resume <task> [--text <message> | --file <path>]');
+    const file = flag(a, 'file');
+    const text = file ? fs.readFileSync(file, 'utf8') : flag(a, 'text');
+    return withServer(a, async (c) => {
+      await lifecycle(c, 'resume', 'task.resume', task, text ? { text } : {});
+      console.log(`${task} is resumed. harnessd starts a new session in its worktree, with the work so far${text ? ' and your message' : ''} (D-113).`);
     });
   }
 
