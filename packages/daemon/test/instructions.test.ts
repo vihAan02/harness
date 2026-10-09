@@ -40,8 +40,8 @@ test('the task arrives in an owner envelope (protocol.md §8)', () => {
 
 test('config: agent model and budget are optional and validated', () => {
   const base = { device_id: 'dev_a', principal: 'human_a' };
-  assert.deepEqual(parseConfig(base, TOKEN).agents, { provider: null, model: null, maxBudgetUsd: null, readAllow: [] });
-  assert.deepEqual(parseConfig({ ...base, agents: { model: 'claude-sonnet-5-5', max_budget_usd: 5 } }, TOKEN).agents, { provider: null, model: 'claude-sonnet-5-5', maxBudgetUsd: 5, readAllow: [] });
+  assert.deepEqual(parseConfig(base, TOKEN).agents, { provider: null, model: null, maxBudgetUsd: null, dailyBudgetUsd: null, readAllow: [] });
+  assert.deepEqual(parseConfig({ ...base, agents: { model: 'claude-sonnet-5-5', max_budget_usd: 5 } }, TOKEN).agents, { provider: null, model: 'claude-sonnet-5-5', maxBudgetUsd: 5, dailyBudgetUsd: null, readAllow: [] });
   assert.deepEqual(parseConfig({ ...base, agents: { read_allow: ['~/.cache/ms-playwright', '/opt/tools'] } }, TOKEN).agents.readAllow, ['~/.cache/ms-playwright', '/opt/tools']);
   for (const bad of ['relative/path', '', 'C:\\x', '~user/x', '/a\nb']) {
     assert.throws(() => parseConfig({ ...base, agents: { read_allow: [bad] } }, TOKEN), /agents.read_allow/, JSON.stringify(bad));
