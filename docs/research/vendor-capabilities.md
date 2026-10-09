@@ -739,6 +739,26 @@ Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider ope
 
 *Impact:* pilot PRs need no approval from GitHub's ruleset. The review gate is the AGENTS.md rule, which D-115's precheck enforces from CODEOWNERS. No probe PR is needed.
 
+**F-119 ✔ A sandboxed agent's shell, and a setup or test command under srt, can't open a Unix socket: on macOS, srt denies AF_UNIX unless a socket path is allowed, and harnessd allows none** (checked 2026-10-09: the source of `@anthropic-ai/sandbox-runtime` 0.0.78, and the T-1 UI-socket test with Claude Code CLI 2.1.287 and srt 0.0.78 on macOS).
+- **The source:** srt's macOS profile (`dist/sandbox/macos-sandbox-utils.js`, `generateSandboxProfile`) allows `system-socket (socket-domain AF_UNIX)` and Unix-socket bind and connect only with `allowAllUnixSockets: true`, or for the paths listed in `allowUnixSockets`. With neither set, Unix sockets are blocked by default. On Linux, `allowUnixSockets` is ignored (seccomp can't filter by path); only `allowAllUnixSockets` changes the default. The pinned CLI's binary (`@anthropic-ai/claude-agent-sdk-darwin-arm64` 0.3.287) carries the same rules, `allowAllUnixSockets` and `allow system-socket (socket-domain AF_UNIX)`, for the agent's Bash sandbox.
+- **harnessd sets neither:**
+  - not in the agent's sandbox (`packages/adapters/src/claude/policy.ts`), whose only network setting is `allowLocalBinding` for a task with ports (D-68);
+  - not for setup and test commands (`packages/daemon/src/setup.ts`, `sandboxSettings`).
+
+  `allowLocalBinding`, which a land's tests also get, doesn't open Unix sockets.
+- **Observed** (`test/security/t1-uirpc-unreachable.integration.test.ts`). harnessd's UI socket is placed at a `/tmp` path that no read rule covers:
+  - an agent's Bash connecting with Node gets `EPERM` or `EACCES`, and with Python doesn't connect;
+  - a setup command under srt, with `allowLocalBinding` on, is refused the same way;
+  - the control: this OS user's own process connects.
+
+  It passed in CI's `full-macos` on #105's head and on `main` since, and locally on `main` @ `07c65a2`, 3 runs of 3 (3 tests each) on 2026-10-09.
+- **Not covered:**
+  - Linux (the pilot runs on macOS);
+  - a socket entry added to the sandbox settings later;
+  - processes outside the sandbox, such as harnessd's own children and the human's shell. This is why the socket also lives in `~/.harness/run` (0700) and needs the per-start token, and why agents can't read `~/.harness` (D-98).
+
+*Impact:* D-117. The UI bridge reaches harnessd over this socket, and an agent can't connect to it, even knowing its path and token. Re-check when the srt or CLI pin moves, or when any sandbox settings gain a socket entry.
+
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)

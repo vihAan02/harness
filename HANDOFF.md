@@ -1,5 +1,82 @@
 # Handoff: harness, Phase 0B (state as of 2026-10-06; the pilot sprint from 2026-10-08)
 
+## Update (2026-10-09, T+24): the pilot's core is on `main`, but gate H24 hasn't run. Read this first
+- **Who and when:** written by Daniyal's Claude (stream A) at about 15:45 UTC on 2026-10-09. T+0 was PC0's merge (#87, 2026-10-08 14:35 UTC).
+- **Gate H24 hasn't run yet.** It needs, on both real Macs and real GitHub, in both directions:
+  - a cross-clone PR, its CI, an approved merge, and the exact-SHA sync on the other Mac;
+  - one interrupted operation recovered.
+
+  What blocks it, in order:
+  1. **H1a, the coordinator host (Daniyal).** Without it there's no shared coordinator, so no tunnel and no live `harness doctor`. Vihaan's tunnel key is posted on #4.
+  2. **Humans signing their commands.** On a device-key connection, every assign, reopen, resume, abandon, complete and integrate needs a signed dispatch (PB2a, merged). harnessd's side is PA3 and PA3c (#124 and #125, opened today; Vihaan reviews). The CLI's side is PB2b (#120, approved).
+  3. **Joining and installing:** PB1b `harness setup`/`doctor` (#116) and PB5 install, tunnel and `pg-harden` (#117), both Vihaan's, in review.
+  4. **Daniyal's Mac (D-119, H3):**
+     - Postgres 17 (5432) and 18 (5433) accept password-less loopback logins, so harnessd refuses to start agents. Run `scripts/pilot/pg-harden.sh` once #117 merges.
+     - Git's credential helper is still `osxkeychain`. Run `gh auth setup-git`. `gh` itself is logged in with the `workflow` scope.
+  5. **H2:** each human's OpenRouter key, capped at $0.25 a day on the provider's side, in `~/.harness/secrets.toml`. Neither key is in place. P0 (the cost probe) hasn't run.
+- **Merged since the sprint began.** Each was green on the three required checks at its merged head. Stream A's were rebased and passed `npm run check` locally before they were pushed:
+
+  | PR | What | Squash |
+  |---|---|---|
+  | #87 | PC0, the decision (D-110 to D-119, S17) | `9ac5100` |
+  | #88, #89, #95 | PC1a protocol contracts; PC1b local config; PC1c hardening | `029841e`, `5d8f12b`, `7d2038e` |
+  | #112 | #100's `full-macos` failure fixed at its cause (the lease-lock test helper) | `61d93bc` |
+  | #94 | F-114 to F-116 | `18e5cb4` |
+  | #114 | A wait belongs to its session (D-113) | `6ffbee7` |
+  | #92 | PA2, identity (device keys, mutual handshake; 0014) | `acd8e02` |
+  | #109 | PC2, the UI scaffold | `60b014b` |
+  | #93 | PA5b, GitHub records on the server (0016) | `b033e80` |
+  | #96, #97 | PA4a crash recovery; PA11 localhost exposure | `058d6b5`, `520f5d5` |
+  | #98 to #102 | PA5a fake GitHub; PA5c publish; PA5d polling; PA6 reservation; PA7 receive | `fd85fee`, `8689af3`, `3be2127`, `b9b30ac`, `c11dae7` |
+  | #103 | PA5e, worktree Git pinned (TH-25) | `93f198e` |
+  | #104, #105 | PA9 read model; PA9b the UI socket | `749d065`, `6d8ca37` |
+  | #106, #107, #108 | PA8 provider and budget; PA4b bounded stop (#74); PA10 fault harness | `bb2fdc2`, `543afa3`, `34026a0` |
+  | #110, #113 | PA3b the T-5 screen; PA3 prep (signed test dispatches) | `be3f0c1`, `9bff3ac` |
+  | #123 | `@harness/daemon` re-exports the Claude pins | `1b803e8` |
+  | #111 | PB2a, server dispatch (Vihaan; 0015) | `7a49446` |
+  | #115 | PB1a, `npm run admin -- apply` (Vihaan) | `07c65a2` |
+  | #122 | UI plumbing before the PU tasks (the UI tests' type-check, `web/`'s import rule, §12's launch handshake) | `087cff4` |
+- **`main` @ `07c65a2`, before #122:** on this Mac (Node 24.21.0, Postgres 18 on 5433), `npm run check` gives 513 tests, 512 pass, 0 fail, 1 skipped. #122's rebased head (`9fd1d92`) gave 514, 513 pass, 0 fail, before it merged as `087cff4`. CI on every push to `main` is green. The scheduled nightly (`full-macos-demos`) has failed daily since at least 2026-10-05 because the `HARNESS_BENCH_TOKEN` secret isn't set. That's infrastructure, not code: Vihaan owns `.github` and the secret.
+- **Open, stream A** (one PR in flight at a time):
+  - **The stack, opened today, each PR on the one before:**
+    - #124 PA3 and #125 PA3c: Vihaan reviews (security; the socket's `dispatch` contract);
+    - #126 PA6c: Vihaan reviews (additive protocol fields);
+    - #127 PA4d: merges on green;
+    - #128 PA5f: Vihaan reviews (additive `land.empty`);
+    - #129, the review follow-ups: Vihaan reviews (contracts);
+    - #130 PA6d and #131 T-3/T-4/T-5b end to end: merge on green.
+
+    Overnight, PA6c and PA5f were announced as merging on green. Both change protocol types, so they now wait for Vihaan.
+
+    **Verified today after the rebase onto `7a49446`:**
+    - `npm run check` at every head, 0 failures each: 515 tests at #124, up to 533 at #131.
+    - At the top, with PA4c included (tree `bd745a8`): `npm run check` and `test:ci` each 540 tests, 539 pass; both demos pass; the new and changed suites 3 runs of 3.
+  - **Held until the queue drains, as the owner asked:** PA4b's second part.
+    - PA4c: the durable outbox and coordinator-change recovery.
+    - PA4e (D-141): idle stop, and a blocked task stays blocked across a session's end.
+    - PA4f (D-140): logs capped at 10 MiB with one rotation.
+    - The server fix from #115's review: a connection is bound to the key it proved, so a rotate or revoke ends it.
+  - **This PR:** F-119 and this update.
+  - **A/B, parked unchanged:** #84, #83, #65.
+- **Open, stream B (Vihaan's proposed order):** #116, #120, #117, #119, #121, #118. Then #85 and #82, which wait for a slot. #80 is parked.
+- **Waiting on Vihaan:**
+  - reviews of #124, #125, #126, #128 and #129;
+  - #116's rebase and fixes;
+  - #115's follow-ups (rotate on a revoked device, `integration_mode` changes, argument parsing, CLI tests).
+- **Waiting on Daniyal (human only):**
+  - H1a, H2 and H3 above;
+  - hardening Postgres on this Mac;
+  - the budget decision once P0 runs.
+- **Real-model spend in the sprint:** $0. Every run so far is scripted.
+- **On this Mac:**
+  - It rebooted at about 11:00 UTC on 2026-10-09. Postgres 18 (5433) isn't a Homebrew service and didn't come back. Start it with `LC_ALL=en_US.UTF-8 /opt/homebrew/opt/postgresql@18/bin/pg_ctl -D /opt/homebrew/var/postgresql@18 -l /opt/homebrew/var/postgresql@18/server.log start`. Without `LC_ALL`, it stops with "postmaster became multithreaded during startup".
+  - Default `node` (26) is broken (a missing `libsimdjson`). Use `/opt/homebrew/opt/node@24/bin`.
+- **Next, T+24 to T+48:**
+  1. Merge the stack and Vihaan's chain, alternating, as reviews land.
+  2. Open PA4b's second part.
+  3. H1a, then the first two-Mac run toward H24.
+  4. R1 preparation (the pinned runtime), PU-1 and PU-2 as Harness tasks.
+
 ## Update (2026-10-08): the two-Mac pilot sprint (D-110). Read this first
 - **Who and when:** written by Daniyal's Claude (stream A), 2026-10-08, with PC0.
 - **What changed:** the owner put a two-Mac private pilot and its thin UI ahead of the counted A/B (S17, D-110). The design is D-111 to D-119. The A/B gate is not passed; the `ab-v1` freeze and counted runs come after the pilot candidate, and the open A/B PRs (#80, #83, #84, #65) wait unchanged.
