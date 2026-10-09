@@ -170,6 +170,8 @@ export async function openDeviceClient(url: string, config: LocalConfig, deviceK
 
 export type PilotSide = {
   human: string; device: string; daemon: Daemon; home: Home; config: LocalConfig; repo: string; deviceKey: KeyObject; publicKey: string;
+  /** The config as written to disk (for a harnessd started elsewhere, such as a crash test's child). */
+  raw: Record<string, unknown>;
   adapter: FakeAdapter; client: TestClient; logs: string[]; acted: EventMessage[];
   /** Sends a command as this human from their device's CLI connection; throws on `ok: false`. */
   command: (name: string, args: Record<string, unknown>) => Promise<Record<string, string>>;
@@ -259,7 +261,7 @@ export async function startPilotStack(p: {
         if (!r.ok) throw new Error(`${human}: ${name}: ${r.error.code}: ${r.error.message}`);
         return (r.result ?? {}) as Record<string, string>;
       };
-      return { human, device, daemon, home, config, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command };
+      return { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command };
     };
     const a = await side('a');
     const b = await side('b');

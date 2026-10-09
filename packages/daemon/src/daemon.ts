@@ -178,6 +178,8 @@ export class Daemon {
   landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
   /** Aborted when harnessd stops: setup commands and land tests are killed at once (#74). */
   stopSignal = new AbortController();
+  /** Setup and test commands running now, by name; their process groups are recorded in ~/.harness/procs. */
+  procsRunning = new Set<string>();
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
   linkState: LinkState = 'connecting'; // for status and health (D-111)
   ui: UiRpc | null = null;
@@ -224,6 +226,7 @@ export class Daemon {
     // First, before anything that could touch another harnessd's agents (D-113).
     this.releaseLock = await acquireLock(path.join(this.home.root, 'harnessd.lock'));
     this.orphans = await killOrphans(this.sessions);
+    await this.killSetupOrphans();
     for (const o of this.orphans) {
       this.log(`killed orphaned agent process ${o.pid} (session ${o.sessionId}, task ${o.taskId}); changed: ${o.changedPaths.join(', ') || 'nothing'}`);
     }
@@ -748,7 +751,8 @@ export class Daemon {
         const result = await runSetup({
           home: this.home, worktree: dir, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, `land-${landId}`),
           command: repo.test.command, allowedDomains: [], allowLocalBinding: true, timeoutMs: timeout * 1000, logFile, signal: this.stopSignal.signal,
-        });
+          onSpawn: (pgid) => this.recordProcs(`${project.id}-land-${landId}`, pgid),
+        }).finally(() => this.forgetProcs(`${project.id}-land-${landId}`));
         if (result.aborted || this.stopping) throw new Error('harnessd stopped during the tests');
         if (result.exitCode !== 0) {
           const tail = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').split('\n').slice(-20).join('\n') : '';
@@ -806,6 +810,35 @@ export class Daemon {
     // Only if the base, as it is now, contains the branch.
     const baseNow = await branchTip(project.repo, project.baseBranch).catch(() => null);
     if (baseNow) await deleteMergedBranch(project.repo, taskBranch(taskId), head, baseNow);
+  }
+
+  /** The setup or test command's process group, recorded before it's awaited (D-113): a crash can't orphan it unrecorded. */
+  recordProcs(name: string, pgid: number): void {
+    void processStart(pgid).then((start) => {
+      if (start && this.procsRunning.has(name)) writeJsonAtomic(path.join(this.home.root, 'procs', `${name}.json`), { pgid, start });
+    });
+    this.procsRunning.add(name);
+  }
+
+  forgetProcs(name: string): void {
+    this.procsRunning.delete(name);
+    fs.rmSync(path.join(this.home.root, 'procs', `${name}.json`), { force: true });
+  }
+
+  /**
+   * At start: a setup or test command a crash left running is killed, group and all, but only if its process is the
+   * one recorded (the same pid with the same start time: pids get reused). Recovery then re-runs what it must (D-113).
+   */
+  async killSetupOrphans(): Promise<void> {
+    const dir = path.join(this.home.root, 'procs');
+    for (const f of fs.existsSync(dir) ? fs.readdirSync(dir).filter((x) => x.endsWith('.json')) : []) {
+      const rec = readJson<{ pgid?: unknown; start?: unknown } | null>(path.join(dir, f), null);
+      if (rec && Number.isSafeInteger(rec.pgid) && (rec.pgid as number) > 1 && typeof rec.start === 'string' && (await processStart(rec.pgid as number)) === rec.start) {
+        try { process.kill(-(rec.pgid as number), 'SIGKILL'); } catch { /* gone in the meantime */ }
+        this.log(`killed the process group ${String(rec.pgid)} a crash left running (${f.replace(/\.json$/, '')})`);
+      }
+      fs.rmSync(path.join(dir, f), { force: true });
+    }
   }
 
   /**
@@ -1652,6 +1685,7 @@ export class Daemon {
         }
         break;
       case 'ended': {
+        this.crashPoint('before_result_persist');
         const reason = run.stopReason ?? o.reason; // harnessd's own reason, when it stopped the session (D-116)
         Object.assign(run.record, { pid: null, endedAt: new Date().toISOString(), endReason: reason });
         this.sessions.save(run.record);
@@ -1738,6 +1772,7 @@ export class Daemon {
       const req = this.approvals.request({ projectId: project.id, taskId, command: setup.command, manifests, hash });
       this.log(`the setup command for ${taskId} needs your approval. Review it with: harness approve ${req.id}`);
       await report('approval_requested');
+      this.crashPoint('during_approval');
       await this.waitForApproval(project.id, hash);
       await report('approved');
     }
@@ -1752,7 +1787,8 @@ export class Daemon {
       command: setup.command, allowedDomains: this.config.setup.allowedDomains, timeoutMs: this.config.setup.timeoutSeconds * 1000, logFile,
       npmCache: path.join(this.home.root, 'cache', 'npm'), // shared by this device's setups (D-116)
       signal: this.stopSignal.signal,
-    });
+      onSpawn: (pgid) => this.recordProcs(`${project.id}-${scratchName}`, pgid),
+    }).finally(() => this.forgetProcs(`${project.id}-${scratchName}`));
     if (result.exitCode !== 0) {
       await report('failed', { exit_code: result.exitCode });
       throw new Error(`setup command failed (exit ${result.exitCode}${result.timedOut ? ', timed out' : ''}); see ${logFile}`);

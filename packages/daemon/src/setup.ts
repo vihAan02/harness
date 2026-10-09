@@ -39,6 +39,8 @@ export type SetupRun = {
   npmCache?: string;
   /** harnessd stopping (#74): kills the command's process group at once; the result says it was aborted. */
   signal?: AbortSignal;
+  /** Called with the process group's id as soon as it exists, so a crash can't orphan it unrecorded (D-113). */
+  onSpawn?: (pgid: number) => void;
 };
 
 const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -83,6 +85,7 @@ export async function runSetup(r: SetupRun): Promise<{ exitCode: number; timedOu
       const child = spawn(process.execPath, [SRT_CLI, '-s', settings, '-c', command], { cwd: r.worktree, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
       child.stdout.pipe(log, { end: false });
       child.stderr.pipe(log, { end: false });
+      if (child.pid) r.onSpawn?.(child.pid); // detached: its pid is its process group's id
       let timedOut = false;
       let aborted = false;
       const end = (grace: number) => {
