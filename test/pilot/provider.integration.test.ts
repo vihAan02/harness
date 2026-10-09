@@ -71,3 +71,18 @@ test('the day\'s budget: a session gets at most what\'s left; reaching the budge
     s.daemon.circuit.reset();
   }
 });
+
+test('a 401: the session stops as provider_auth, the circuit opens, and once the human resets it the stopped task resumes', async () => {
+  s.daemon.circuit.reset();
+  s.mock.failPlan = [{ status: 401, body: { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } } }];
+  const t = await assign('Auth', steps('TEXT never'));
+  await s.until(() => sessionOf(t)?.endReason === 'provider_auth', 60_000, 'the session to stop as provider_auth');
+  s.mock.failPlan = [];
+  assert.equal(s.daemon.circuit.state()?.kind, 'auth');
+  assert.ok(fs.existsSync(s.worktreeOf(t)), 'its worktree stays');
+  // Refused while the circuit is open, and nothing switches provider: the resume waits for the human.
+  await assert.rejects(s.daemon.refuseIfTrustPostgres().then(() => s.daemon.refuseIfNoBudget()), /the provider circuit is open \(auth/);
+  s.daemon.circuit.reset(); // the human fixed the key and reset it
+  await s.command('task.resume', { task_id: t, text: 'The key is fixed; carry on.' });
+  await s.until(() => s.daemon.running.has(t) && sessionOf(t)?.endReason === undefined, 30_000, 'the resumed session');
+});

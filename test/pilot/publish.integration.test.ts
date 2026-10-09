@@ -93,3 +93,22 @@ test('fetches of the base are one at a time per repository: concurrent fetches w
     assert.equal(tips.at(-1), await s.fake.baseTip());
   } finally { await s.stop(); }
 });
+
+test('a denied publish: nothing is pushed and no PR opens, the task stays done and isn\'t shown publishing, and it isn\'t asked again', async () => {
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, daemonOptions: { approvalPollMs: 50 } });
+  try {
+    const t = await started(s, 'agent/denied');
+    fs.writeFileSync(path.join(t.worktree, 'notes.md'), 'notes\n');
+    await s.a.signed('task.complete', { task_id: t.task });
+    await s.until(() => pendingPublish(s, t.task) !== undefined, 20_000, 'the publish approval request');
+    new Approvals(s.a.home).deny(pendingPublish(s, t.task)!.id);
+    await s.until(() => journal(s, t.task).includes('publish_denied'), 20_000, 'the denial');
+    assert.equal(s.fake.prs().length, 0);
+    assert.equal(s.fake.log.filter((l) => l.server === 'git' && l.method === 'POST' && l.path.endsWith('git-receive-pack')).length, 0, 'nothing pushed');
+    assert.equal(s.a.daemon.snapshot(s.project).tasks.find((x) => x.id === t.task)!.state, 'done');
+    // A restart reconciles the task: the denial stands, so it isn't asked again.
+    await s.a.restart();
+    await new Promise((r) => setTimeout(r, 500)); // ten approval polls: no new request
+    assert.equal(pendingPublish(s, t.task), undefined);
+  } finally { await s.stop(); }
+});
