@@ -710,6 +710,35 @@ Source: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-age
   - 3 of the S3 example's 4 criteria were met. The fourth exposed a gap in how a waiting or finishing agent gets a landed change (D-106).
 
 Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider openrouter` run, 2026-10-05. *Impact: D-104's provider pin; D-106.*
+**F-114 ✔ GitHub's merge endpoint: the `sha` guard and its error codes, and the asynchronous endpoint beside it** (checked 2026-10-08 against GitHub's REST docs, "Pulls").
+- **`PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge`** takes `commit_title`, `commit_message`, `merge_method` (`merge`, `squash` or `rebase`) and `sha`: "SHA that pull request head must match to allow merge".
+  - **200:** merged.
+  - **405:** the merge can't be performed.
+  - **409:** `sha` was given and the head didn't match.
+  - **422:** validation failed.
+  - **The note:** it "does not support stacked pull requests or merging with a merge queue".
+- **`merge_commit_sha`:** after a squash, it "represents the SHA of the squashed commit on the base branch". Before the merge, it's a test merge commit, and means nothing for the base.
+- **`mergeable`** is `true`, `false` or `null`. `null` means GitHub is computing it in the background, so ask again. The docs list `mergeable_state` as a string without its values.
+- **The docs now recommend an asynchronous endpoint**, `PUT …/pulls/{pull_number}/merge-async`. It takes `sha`, `merge_method`, `merge_action` (`default` uses a merge queue if one is configured, or `direct_merge`, or `merge_queue`) and `bypass_rules` (default false).
+  - It answers 202 with a UUID, then `GET …/merge-async/{uuid}` returns `pending`, `merged` (with the commit), `enqueued` or `failed`, kept for 24 hours.
+  - 200 means already merged or queued. 409 means a request is already queued.
+
+*Impact:* D-115 uses the synchronous endpoint with `sha` and `merge_method: squash`. The repo has no merge queue, and a lost answer is reconciled from the PR and the base, never from a UUID. `test/fake-github.ts` follows the 405 and 409 codes above. If a merge queue is ever enabled, the reservation has to move to `merge-async` with `merge_action: direct_merge`, or be redesigned around the queue.
+
+**F-115 ✔ "Require branches to be up to date before merging" (strict) means the head must contain the base tip** (checked 2026-10-08, GitHub docs "Available rules for rulesets", and the live ruleset on `vihAan02/harness`).
+- With strict on, "the topic branch must be up to date with the base branch before merging". Every move of the base makes open PRs need updating and a new CI run.
+- **The live ruleset on `main`:** `strict_required_status_checks_policy: true`, required contexts `guard`, `unit-linux` and `full-macos` from GitHub Actions (integration 15368), `allowed_merge_methods: ["squash"]`, 0 required approvals, `require_code_owner_review: false`.
+- **Not documented:** which `mergeable_state` a behind PR reports. The fake reports `behind`. PA7's precheck doesn't rely on that alone: it also checks that the head contains the base tip it fetched.
+
+*Impact:* D-115's precheck. A PR behind the base is brought up to date by harnessd (PA7) and approved again once CI is green, and only one PR is integrated at a time (AGENTS.md).
+
+**F-116 ✔ `require_extra_approval_for_unattributed_changes` adds no approval to a PR a human opens, and so none to harnessd's** (checked 2026-10-08: GitHub docs "Available rules for rulesets", the live ruleset, and #94 itself).
+- **The docs** describe "Require an additional approval for unattributed Copilot pull requests": public preview, "enabled by default, for both new and existing rulesets". When Copilot opens a PR not attributed to a person, "the ruleset requires one more approval than the number you configured".
+- **The live ruleset** has `require_extra_approval_for_unattributed_changes: true` beside `required_approving_review_count: 0`, which fits the default-on setting.
+- **Observed:** #94 was opened with a human's own `gh` token. With its required checks green and no reviews at all, GitHub reports it `mergeable_state: clean` and `mergeStateStatus: CLEAN`. harnessd opens PRs the same way, with the accountable human's `gh` token (D-114), so they're attributed to that human too.
+
+*Impact:* pilot PRs need no approval from GitHub's ruleset. The review gate is the AGENTS.md rule, which D-115's precheck enforces from CODEOWNERS. No probe PR is needed.
+
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
