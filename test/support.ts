@@ -8,6 +8,7 @@ import { randomUUID, type KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { Approvals } from '../packages/daemon/src/approvals.ts';
 import { Daemon, type DaemonOptions, type RunningAgent } from '../packages/daemon/src/daemon.ts';
 import { parseConfig, renderConfig, type LocalConfig } from '../packages/daemon/src/config.ts';
 import { Handshake } from '../packages/daemon/src/identity.ts';
@@ -25,7 +26,14 @@ import { FakeGitHub, type FakeGitHubOptions } from './fake-github.ts';
 
 export type Stack = Awaited<ReturnType<typeof startStack>>;
 
-export async function startStack(p: { files: Record<string, string>; portRange?: [number, number]; daemon?: boolean; daemonOptions?: Partial<DaemonOptions> }) {
+export async function startStack(p: {
+  files: Record<string, string>; portRange?: [number, number]; daemon?: boolean; daemonOptions?: Partial<DaemonOptions>;
+  /**
+   * T-5 (D-118): by default this stack's human releases every security review at once, so tests of what lies past the
+   * screen (the envelope, the sandbox, the read rules) still see the hostile text. `true` leaves them for the test.
+   */
+  manualReviews?: boolean;
+}) {
   const db = await freshSchema();
   const project = await seedProject(db.pool);
   await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_test', 'human_test', 'laptop')");
@@ -117,7 +125,12 @@ export async function startStack(p: { files: Record<string, string>; portRange?:
     return stdout;
   };
 
+  const releaser = p.manualReviews ? undefined : setInterval(() => {
+    const a = new Approvals(home);
+    for (const r of a.pending()) if (r.kind === 'security_review') a.approve(r.id);
+  }, 50);
   const stop = async () => {
+    clearInterval(releaser);
     await daemon.stop();
     human.close();
     await server.close();
