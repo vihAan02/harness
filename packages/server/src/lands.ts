@@ -277,6 +277,15 @@ function changedOf(v: unknown): { path: string; newHash: string | null }[] {
  * leases released, a GitHub project's base chain moved to it, and everyone who read a changed file told. Call with
  * the invalidation and lease locks held (`at` from lockLeases).
  */
+/**
+ * Moves of the base parked while a merge was armed (D-115) go once its land fails: the pollers report them again, and
+ * with nothing armed they're applied as moves outside the harness, so readers hear of them. Kept, a re-report would
+ * be "known", and the move never noticed.
+ */
+async function releaseParked(ctx: HandlerContext): Promise<void> {
+  await ctx.tx.query("DELETE FROM base_advances WHERE project_id = $1 AND status = 'parked'", [ctx.projectId]);
+}
+
 async function recordCompleted(ctx: HandlerContext, land: LandRow, oldBase: string, newBase: string, changed: { path: string; newHash: string | null }[], at: string, extra: Record<string, unknown> = {}): Promise<HandlerOutput['events']> {
   const task = await lockTask(ctx, land.task_id);
   await ctx.tx.query("UPDATE lands SET status = 'completed', new_base_sha = $2, changed_blobs = $3, finished_at = now() WHERE id = $1",
@@ -331,6 +340,7 @@ export async function failLand(ctx: HandlerContext, args: Record<string, unknown
   const detail = typeof args.detail === 'string' ? args.detail.replace(CONTROL, '').slice(0, 1000) : null;
   const conflicts = args.conflict_paths === undefined ? [] : paths(args.conflict_paths, 'conflict_paths');
   await ctx.tx.query("UPDATE lands SET status = 'failed', reason = $2, detail = $3, finished_at = now() WHERE id = $1", [land.id, args.reason, detail]);
+  if (land.merge_requested_at) await releaseParked(ctx);
   const merged = args.reason === 'verification_failed' ? (args.evidence as { merge_sha?: string } | undefined)?.merge_sha : undefined;
   return {
     result: null,
@@ -384,6 +394,7 @@ export async function reconcileLand(ctx: HandlerContext, args: Record<string, un
   const by = { reconciled_by: ctx.caller.deviceId, device_silent_since: quiet.since?.toISOString() ?? null };
   const fail = async (reason: string, detail: string, alert?: Record<string, unknown>) => {
     await ctx.tx.query("UPDATE lands SET status = 'failed', reason = $2, detail = $3, finished_at = now() WHERE id = $1", [land.id, reason, detail]);
+    await releaseParked(ctx);
     return {
       result: { status: 'failed', reason },
       events: [

@@ -1,7 +1,8 @@
 // D-115's squash check on the merging device: the merged commit counts only if its parent is the approved base and its
 // tree is the approved head's. GitHub (the fake, told to) merges something else: the land fails as verification_failed,
 // with an alert, the task is never landed, and its branch and worktree stay for the human. The commit is on the base
-// all the same, so the move is reported as one the harness didn't make, and readers hear of it.
+// all the same, so the move is reported as one the harness didn't make, and readers hear of it; and when the PR shows
+// as merged with no land in flight, it still isn't landed as a merge outside the harness.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -41,5 +42,11 @@ test('a merge that isn\'t the approved head on the approved base never lands: th
     assert.ok(fs.existsSync(path.join(worktree, 'notes.md')), 'the worktree stays');
     // On the base whatever it holds: the pollers report the move, and the chain follows it.
     await s.until(() => s.b.daemon.view(s.project).events.some((e) => e.kind === 'base.advanced' && (e.data as { new_sha?: string }).new_sha === merged.mergeCommitSha), 20_000, 'the move to be reported');
+    // Its PR shows as merged with no land in flight, which is how a merge outside the harness looks: still not landed.
+    // Whether A's poller saw it merged during the land or after (land.external, refused), the end is the same.
+    await s.until(() => s.a.daemon.view(s.project).prs.get(task)?.merged === true, 20_000, 'A\'s poller to see the PR merged');
+    await new Promise((r) => setTimeout(r, 1000)); // six of A's poll rounds: it never lands
+    assert.equal((await rows(s, 'land.completed')).length, 0, 'still never landed');
+    assert.equal((await s.db.pool.query('SELECT status FROM tasks WHERE id = $1', [task])).rows[0].status, 'done');
   } finally { await s.stop(); }
 });

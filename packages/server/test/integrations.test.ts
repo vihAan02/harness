@@ -240,8 +240,15 @@ test('an armed GitHub land fails only on GitHub\'s evidence, can\'t be cancelled
   await rejects(run('land.cancel', { task_id: w.task }), 'conflict', /can't be cancelled/);
   await rejects(run('land.fail', { land_id: land, reason: 'error', detail: 'timeout' }, device), 'conflict', /armed/);
   await rejects(run('land.fail', { land_id: land, reason: 'pr_closed' }, device), 'conflict', /evidence/);
+  // Someone else's commit reaches the base while it's armed: parked, then applied once the land fails.
+  const move = { old_sha: tip, new_sha: SHA('f'), changed: [{ path: 'src/other.ts', new_hash: SHA('e') }] };
+  assert.equal(res(await run('base.observe', move, other)).status, 'parked');
+  assert.equal(res(await run('base.observe', move, device)).status, 'parked', 'again, while still armed: not known yet');
   const failed = await run('land.fail', { land_id: land, reason: 'pr_closed', evidence: { state: 'closed', merged: false, head_sha: SHA('2') } }, device);
   assert.deepEqual((await kinds(failed.seqs)).map((e) => e.kind), ['land.failed']);
+  const applied = await run('base.observe', move, other);
+  assert.equal(res(applied).status, 'applied');
+  assert.ok((await kinds(applied.seqs)).some((e) => e.kind === 'base.advanced' && e.data.new_sha === SHA('f')), 'readers hear of it');
 });
 
 test('land.reconcile: another member device settles a silent device\'s GitHub land from GitHub\'s evidence, once (D-115)', async () => {
@@ -282,9 +289,19 @@ test('land.reconcile: another member device settles a silent device\'s GitHub la
   // Merged, but not what was approved: never landed, with an alert.
   const b = await armed('agent/rc2', 43);
   await silent(11);
+  // A poller saw the merge while it was armed: held until the land's outcome is known.
+  assert.equal(res(await run('base.observe', { old_sha: b.tip, new_sha: SHA('c'), changed: [{ path: 'src/r.ts', new_hash: SHA('e') }] }, other)).status, 'parked');
   const unverified = await reconcile(b.land, 43, { merged: true, merge_sha: SHA('c'), verified: false, changed: [] });
   assert.deepEqual((await kinds(unverified.seqs)).map((e) => [e.kind, e.data.reason ?? e.data.what]), [['land.failed', 'verification_failed'], ['security.alert', 'merge_not_approved']]);
   assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [b.task])).rows[0].status, 'done');
+  // Nor does it land later as a merge outside the harness, once its PR shows as merged with no land in flight.
+  const outside = await run('land.external', { task_id: b.task, pr_number: 43, merge_sha: SHA('c'), old_base_sha: b.tip, changed: [] }, device);
+  assert.deepEqual([res(outside), outside.seqs], [{ status: 'not_approved' }, []]);
+  assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [b.task])).rows[0].status, 'done');
+  // The base did move: reported again, the parked move is applied as one outside the harness, and readers hear of it.
+  const moved = await run('base.observe', { old_sha: b.tip, new_sha: SHA('c'), changed: [{ path: 'src/r.ts', new_hash: SHA('e') }] }, other);
+  assert.equal(res(moved).status, 'applied');
+  assert.deepEqual((await kinds(moved.seqs)).filter((e) => e.kind === 'base.advanced').map((e) => e.data.new_sha), [SHA('c')]);
 
   // Merged as approved: completed, as its own device would have, and the task landed.
   const c = await armed('agent/rc3', 44);

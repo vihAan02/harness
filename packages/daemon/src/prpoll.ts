@@ -165,5 +165,6 @@ export class Poller {
     const parent = await gitRemote(p.repo, 'rev-parse', `${merge}^1`);
     const r = await this.d.send(p.id, 'land.external', { task_id: taskId, pr_number: prNumber, merge_sha: merge, old_base_sha: parent, changed: await changedBlobsBetween(p.repo, parent, merge) }) as { status: string };
     if (r.status === 'landed') this.d.log(`${taskId}'s PR #${prNumber} was merged outside the harness; landed as ${merge.slice(0, 12)}`);
+    if (r.status === 'not_approved') this.d.log(`${taskId}'s PR #${prNumber} was merged as ${merge.slice(0, 12)}, which isn't the approved squash: ${taskId} isn't landed`);
   }
 }
