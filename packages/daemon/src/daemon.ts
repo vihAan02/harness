@@ -531,15 +531,17 @@ export class Daemon {
     } else if (e.kind === 'task.reopened') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
       if (!fs.existsSync(this.worktreeOf(project.id, taskId))) throw new Error(`${taskId}'s worktree isn't on this device; it can't be reopened here`);
+      const message = String((e.data as { text?: unknown }).text ?? '');
+      if (!(await this.otherHumansMessageOk(e, project.id, taskId, 'reopen', message))) return;
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha: '', agentId: agent.id, reuse: true });
       if (this.stopping) return;
-      const message = String((e.data as { text?: unknown }).text ?? '');
       await this.startAgent(ws, ref, { id: task.id, title: task.title, text: reopenedText(task.text, message), scope: task.scope, ownerHumanId: task.ownerHumanId });
       this.log(`${agent.name} started again on ${taskId} (reopened) in ${ws.worktree}`);
     } else if (e.kind === 'task.resumed') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return;
       if (!fs.existsSync(this.worktreeOf(project.id, taskId))) throw new Error(`${taskId}'s worktree isn't on this device; it can't be resumed here`);
+      if (!(await this.otherHumansMessageOk(e, project.id, taskId, 'resume', String((e.data as { text?: unknown }).text ?? '')))) return;
       const j = this.journal();
       // A crash during setup: run the approved setup again before the session (same hash, no new approval).
       const forceSetup = j.has(project.id, taskId, 'setup_started') && !j.has(project.id, taskId, 'setup_ok');
@@ -606,17 +608,20 @@ export class Daemon {
     return false;
   }
 
-  /** The screen for a task's text when another human wrote it (D-118): waits for the review; false when it's denied or unanswered. */
-  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string): Promise<boolean> {
+  /**
+   * The screen for a task's text when another human wrote it, or for the message of another human's reopen or resume
+   * (D-118): waits for the review; false when it's denied or unanswered. `key` makes each one its own review.
+   */
+  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string, what = `task ${taskId}, written by ${owner},`, key = `task:${taskId}`): Promise<boolean> {
     const hits = screenText(text);
     if (!hits.length) return true;
-    const hash = reviewHash(`task:${taskId}`, text);
+    const hash = reviewHash(key, text);
     if (this.approvals.isApproved(projectId, hash)) return true;
     const req = this.approvals.request({
       projectId, taskId, manifests: [], hash, kind: 'security_review',
-      command: `task ${taskId}, written by ${owner}, asks to ${hits.map((h) => h.rule).join(', ')}; your agent starts it only once you release it. The exact text:\n${text}`,
+      command: `${what} asks to ${hits.map((h) => h.rule).join(', ')}; your agent starts it only once you release it. The exact text:\n${text}`,
     });
-    this.log(`held task ${taskId} from ${owner}: ${hits.map((h) => `${h.rule} ("${h.excerpt}")`).join('; ')}. Review it with: harness approve ${req.id}`);
+    this.log(`held ${what.replace(/,$/, '')}: ${hits.map((h) => `${h.rule} ("${h.excerpt}")`).join('; ')}. Review it with: harness approve ${req.id}`);
     const deadline = Date.now() + (this.o.approvalTimeoutMs ?? 30 * 60_000);
     while (!this.stopping && Date.now() < deadline) {
       if (this.approvals.isApproved(projectId, hash)) return true;
@@ -643,6 +648,16 @@ export class Daemon {
       }
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
+  }
+
+  /**
+   * T-5 (D-118): the message of a reopen or resume another human sent is screened like a peer's before the agent sees
+   * it, each one on its own (its event's seq). This human's own messages, and the task's text already screened, aren't.
+   */
+  async otherHumansMessageOk(e: EventMessage, projectId: string, taskId: string, kind: 'reopen' | 'resume', message: string): Promise<boolean> {
+    const by = (e.data as { by?: unknown }).by;
+    if (typeof by !== 'string' || by === this.config.principal || !message) return true;
+    return this.taskScreenedOk(projectId, taskId, message, by, `${by}'s ${kind} of task ${taskId}`, `${kind}:${taskId}:${e.seq}`);
   }
 
   /**
