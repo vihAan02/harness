@@ -47,6 +47,7 @@ import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { readPolicyFor } from './readpolicy.ts';
 import { ProjectView, type MessageInfo, type WaitInfo } from './view.ts';
 import { snapshotOf } from './snapshot.ts';
+import { MIN_START_USD, ProviderCircuit, RATE_LIMIT_STOP, SpendLedger } from './budget.ts';
 import { UiRpc } from './uirpc.ts';
 
 export type TaskWorkspace = {
@@ -61,6 +62,10 @@ export type RunningAgent = {
   sessionId: string; projectId: string; taskId: string; agent: AgentRef; workspace: TaskWorkspace;
   adapter: AgentAdapter; handle: SessionHandle; record: SessionRecord;
   lastUsage: Extract<Observation, { kind: 'usage' }> | null;
+  /** Why harnessd stopped it, when it did (D-116): provider_auth, provider_billing, budget, rate_limited. */
+  stopReason?: string;
+  /** Rate-limit errors seen in this session. */
+  rateLimits?: number;
   /** Tool calls by tool, and calls the permission rules denied, over the whole session (H-07, M5b). */
   tools: { calls: Record<string, number>; denied: number };
   /** The status as of the observation being handled; the adapter's live status may already be ahead. Only `ended` ends a session. */
@@ -143,6 +148,8 @@ export class Daemon {
   log: (msg: string) => void;
   o: DaemonOptions;
   approvals: Approvals;
+  spend: SpendLedger;
+  circuit: ProviderCircuit;
   sessions: Sessions;
   ports: PortAllocator;
   link: ServerLink | null = null;
@@ -177,6 +184,8 @@ export class Daemon {
     this.config = o.config ?? loadConfig(o.home);
     this.log = o.log ?? (() => {});
     this.approvals = new Approvals(this.home);
+    this.spend = new SpendLedger(this.home);
+    this.circuit = new ProviderCircuit(this.home);
     this.sessions = new Sessions(this.home);
     this.ports = new PortAllocator(this.home, this.config.limits.portRange, this.config.limits.portsPerAgent, this.config.limits.maxConcurrentAgents);
     this.adapters = o.adapters ?? { claude: new ClaudeAdapter() };
@@ -232,6 +241,7 @@ export class Daemon {
           health: () => this.health(),
           approvals: this.approvals,
           command: (projectId, name, args, commandId) => this.link!.command(projectId, name, args, undefined, commandId),
+          resetProvider: () => { this.circuit.reset(); this.log('the provider circuit was reset from the UI'); },
           log: (m) => this.log(m),
         },
       });
@@ -241,7 +251,11 @@ export class Daemon {
 
   /** The UI's health line (protocol.md §12): who this is, and the link's state. */
   health(): Record<string, unknown> {
-    return { device_id: this.config.deviceId, principal: this.config.principal, connection: this.linkState, epoch: this.link?.epoch ?? null };
+    return {
+      device_id: this.config.deviceId, principal: this.config.principal, connection: this.linkState, epoch: this.link?.epoch ?? null,
+      // D-116: the provider circuit (null when closed) and the day's spend on this device.
+      provider_circuit: this.circuit.state(), spent_today_usd: this.spend.spent(), daily_budget_usd: this.config.agents.dailyBudgetUsd,
+    };
   }
 
   journal(): Journal {
@@ -295,7 +309,7 @@ export class Daemon {
     return snapshotOf(view, {
       deviceId: this.config.deviceId, principal: this.config.principal, integrationMode: project.integration, connection: this.linkState,
       approvals: this.approvals.pending().filter((r) => r.projectId === projectId).map((r) => ({ taskId: r.taskId, kind: r.kind ?? 'setup' })),
-      publishing, budget: { dailyBudgetUsd: this.config.agents.dailyBudgetUsd, sessionCapUsd: this.config.agents.maxBudgetUsd },
+      publishing, budget: { dailyBudgetUsd: this.config.agents.dailyBudgetUsd, sessionCapUsd: this.config.agents.maxBudgetUsd, spentUsd: this.spend.spent() },
     });
   }
 
@@ -471,7 +485,10 @@ export class Daemon {
     const project = this.project(e.project_id);
     const ref: AgentRef = { id: agent.id, name: agent.name, vendor: agent.vendor };
     // D-119: refused before a worktree, setup or ports exist; startAgent checks again (cached).
-    if (e.kind === 'task.assigned' || e.kind === 'task.reopened') await this.refuseIfTrustPostgres();
+    if (e.kind === 'task.assigned' || e.kind === 'task.reopened') {
+      await this.refuseIfTrustPostgres();
+      this.refuseIfNoBudget(); // D-116: before a worktree, setup or ports exist
+    }
     if (e.kind === 'task.assigned') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return; // already running here: a replayed or duplicate assignment starts nothing
@@ -1095,6 +1112,7 @@ export class Daemon {
   async startAgent(ws: TaskWorkspace, agent: AgentRef, task: TaskForAgent, tools?: HarnessTool[]): Promise<RunningAgent> {
     const project = this.project(ws.projectId);
     await this.refuseIfTrustPostgres(); // D-119: before anything is recorded or reported
+    const left = this.refuseIfNoBudget(); // D-116: likewise
     if (this.running.has(ws.taskId)) throw new Error(`task ${ws.taskId} already has a running agent`);
     const adapter = this.adapters[agent.vendor];
     if (!adapter) throw new Error(`no adapter for vendor ${agent.vendor}`);
@@ -1129,7 +1147,7 @@ export class Daemon {
       }),
       instructions: sessionInstructions({ agentName: agent.name, taskId: ws.taskId, ports: ws.ports, repo: readRepoInstructions(ws.worktree) }),
       ...(provider.model ? { model: provider.model } : {}),
-      ...(this.config.agents.maxBudgetUsd ? { maxBudgetUsd: this.config.agents.maxBudgetUsd } : {}),
+      ...(this.sessionCap(left) !== null ? { maxBudgetUsd: this.sessionCap(left)! } : {}),
       log: this.vendorLog(sessionId),
       // The Stop gate keeps the agent going for its notices only while the task is in progress (D-100).
       taskOpen: () => this.views.get(ws.projectId)?.tasks.get(ws.taskId)?.status === 'in_progress',
@@ -1337,6 +1355,41 @@ export class Daemon {
     return entry.hits;
   }
 
+  /**
+   * D-116: no agent starts while the provider circuit is open, or with less than MIN_START_USD left of the day's
+   * budget on this device. Returns what's left of the day (null with no daily budget).
+   */
+  refuseIfNoBudget(): number | null {
+    const c = this.circuit.state();
+    if (c) {
+      throw new Error(`D-116: the provider circuit is open (${c.kind}: ${c.reason}); ${c.kind === 'budget' ? 'it closes on the next UTC day' : 'fix the provider account, then reset it'}. No agent starts until then`);
+    }
+    const daily = this.config.agents.dailyBudgetUsd;
+    const left = this.spend.remaining(daily);
+    if (left !== null && left < MIN_START_USD) {
+      throw new Error(`D-116: $${left.toFixed(2)} is left of today's $${daily} budget on this device; no agent starts with less than $${MIN_START_USD}`);
+    }
+    return left;
+  }
+
+  /** A session's cap: the smaller of the per-session cap and what's left of the day (D-116); null when neither is set. */
+  sessionCap(left: number | null): number | null {
+    const caps = [this.config.agents.maxBudgetUsd, left].filter((x): x is number => x !== null);
+    return caps.length ? Math.min(...caps) : null;
+  }
+
+  /** Stops every running agent on this device for a provider reason (D-116); each stays resumable by its human. */
+  stopAllFor(reason: string): void {
+    for (const run of this.running.values()) this.stopFor(run, reason);
+  }
+
+  stopFor(run: RunningAgent, reason: string): void {
+    if (run.stopReason) return;
+    run.stopReason = reason;
+    this.log(`${run.agent.name} (${run.taskId}): stopping (${reason}); its human can resume it`);
+    void this.stopAgent(run.taskId).catch((e: Error) => this.log(`stopping ${run.taskId}: ${e.message}`));
+  }
+
   /** Throws while an agent's sandbox could reach a password-less Postgres: it could run programs outside the sandbox (D-119). Fails closed. */
   async refuseIfTrustPostgres(): Promise<void> {
     if (!this.guardsTrustPostgres()) return;
@@ -1446,9 +1499,17 @@ export class Daemon {
         run.status = o.status;
         await report({ status: o.status });
         break;
-      case 'usage':
+      case 'usage': {
         run.lastUsage = o;
+        // The day's spend on this device (D-116): when it reaches the daily budget, every agent here stops.
+        this.spend.record(run.sessionId, o.costUsd);
+        const daily = this.config.agents.dailyBudgetUsd;
+        if (daily !== null && this.spend.spent() >= daily) {
+          this.circuit.open('budget', `$${this.spend.spent().toFixed(4)} spent of today's $${daily}`);
+          this.stopAllFor('budget');
+        }
         break;
+      }
       case 'tool.called':
         run.tools.calls[o.tool] = (run.tools.calls[o.tool] ?? 0) + 1;
         if (o.toolUseId) run.monitor.calls.set(o.toolUseId, { tool: o.tool, hooked: run.monitor.calls.get(o.toolUseId)?.hooked ?? false, result: null });
@@ -1511,15 +1572,26 @@ export class Daemon {
       case 'error':
         // Pause and alert; the vendor CLI does its own bounded retries, harnessd never loops (F-65).
         this.log(`${run.agent.name} (${run.taskId}): ${o.error}: ${o.message}`);
+        // D-116: a bad key or an unpaid account stops every agent here until the human fixes it and resets the circuit;
+        // repeated rate limits stop this session only. Nothing switches provider.
+        if (o.error === 'auth' || o.error === 'billing') {
+          this.circuit.open(o.error, o.message);
+          this.stopAllFor(o.error === 'auth' ? 'provider_auth' : 'provider_billing');
+        } else if (o.error === 'rate_limit' && (run.rateLimits = (run.rateLimits ?? 0) + 1) >= RATE_LIMIT_STOP) {
+          this.stopFor(run, 'rate_limited');
+        } else if (o.error === 'budget') {
+          run.stopReason ??= 'budget';
+        }
         break;
       case 'ended': {
-        Object.assign(run.record, { pid: null, endedAt: new Date().toISOString(), endReason: o.reason });
+        const reason = run.stopReason ?? o.reason; // harnessd's own reason, when it stopped the session (D-116)
+        Object.assign(run.record, { pid: null, endedAt: new Date().toISOString(), endReason: reason });
         this.sessions.save(run.record);
-        this.journal().append(run.projectId, run.taskId, 'ended', { session_id: run.sessionId, reason: o.reason });
+        this.journal().append(run.projectId, run.taskId, 'ended', { session_id: run.sessionId, reason });
         // The final running totals too: a session stopped mid-turn (budget, kill, hardening) never got its turn-end report (M8).
         const u = run.lastUsage;
         await report({
-          status: 'ended', reason: o.reason,
+          status: 'ended', reason,
           ...(u ? { usage: { input: u.input, output: u.output, cache_read: u.cacheRead, cache_creation: u.cacheCreation, cost_usd: u.costUsd, cost_basis: u.costBasis, models: u.models } } : {}),
           tools: this.toolStats(run),
         });
@@ -1610,6 +1682,7 @@ export class Daemon {
     const result = await runSetup({
       home: this.home, worktree, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, scratchName),
       command: setup.command, allowedDomains: this.config.setup.allowedDomains, timeoutMs: this.config.setup.timeoutSeconds * 1000, logFile,
+      npmCache: path.join(this.home.root, 'cache', 'npm'), // shared by this device's setups (D-116)
     });
     if (result.exitCode !== 0) {
       await report('failed', { exit_code: result.exitCode });

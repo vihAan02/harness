@@ -32,6 +32,11 @@ export type SetupRun = {
    * srt then allows binding on every interface and inbound connections, outbound only to localhost (F-58).
    */
   allowLocalBinding?: boolean;
+  /**
+   * npm's cache, shared by this device's setup runs (D-116's approved cache): ~/.harness/cache/npm. Lockfile installs
+   * check every package against its integrity hash, so one task can't hand another a different package through it.
+   */
+  npmCache?: string;
 };
 
 const shellQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -42,20 +47,21 @@ const real = (p: string) => { try { return fs.realpathSync.native(p); } catch { 
 export function sandboxSettings(r: SetupRun) {
   const realHome = real(os.homedir());
   const [worktree, scratch] = [real(r.worktree), real(r.scratch)];
+  const cache = r.npmCache ? [real(r.npmCache)] : [];
   return {
     filesystem: {
-      allowWrite: [worktree, scratch],
+      allowWrite: [worktree, scratch, ...cache],
       denyWrite: [real(r.gitCommonDir)],
       // Each credential path where it is and where it really is (a dotfiles repo may symlink ~/.ssh).
       denyRead: [...new Set([real(r.home.root), ...CREDENTIAL_PATHS.flatMap((p) => [path.join(realHome, p), real(path.join(realHome, p))])])],
-      allowRead: [worktree, scratch],
+      allowRead: [worktree, scratch, ...cache],
     },
     network: { allowedDomains: r.allowedDomains, deniedDomains: [], ...(r.allowLocalBinding ? { allowLocalBinding: true } : {}) },
   };
 }
 
 export async function runSetup(r: SetupRun): Promise<{ exitCode: number; timedOut: boolean }> {
-  for (const d of [path.join(r.scratch, 'home'), path.join(r.scratch, 'tmp'), path.dirname(r.logFile)]) ensureDir(d);
+  for (const d of [path.join(r.scratch, 'home'), path.join(r.scratch, 'tmp'), path.dirname(r.logFile), ...(r.npmCache ? [r.npmCache] : [])]) ensureDir(d);
   const settings = path.join(r.scratch, 'srt-settings.json');
   fs.writeFileSync(settings, JSON.stringify(sandboxSettings(r), null, 2), { mode: 0o600 });
   const env = {
@@ -66,7 +72,7 @@ export async function runSetup(r: SetupRun): Promise<{ exitCode: number; timedOu
     TMPDIR: '/tmp',
     LANG: 'en_US.UTF-8',
   };
-  const command = `export TMPDIR=${shellQuote(path.join(r.scratch, 'tmp'))}; ${r.command}`;
+  const command = `export TMPDIR=${shellQuote(path.join(r.scratch, 'tmp'))};${r.npmCache ? ` export npm_config_cache=${shellQuote(r.npmCache)};` : ''} ${r.command}`;
   // Output goes through pipes that harnessd copies to the log. The log lives under ~/.harness, which
   // the sandbox read-denies, and macOS also checks writes to an inherited file descriptor's path.
   const log = fs.createWriteStream(r.logFile, { flags: 'a', mode: 0o600 });

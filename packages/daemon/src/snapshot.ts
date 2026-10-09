@@ -14,7 +14,8 @@ export type SnapshotLocal = {
   approvals: { taskId: string; kind: string }[];
   /** Tasks it has committed or is pushing, with no PR yet (the journal's committed/pushing, D-114). */
   publishing: Set<string>;
-  budget: { dailyBudgetUsd: number | null; sessionCapUsd: number | null };
+  /** `spentUsd`: this device's ledger for the day (D-116), which covers every project; else the view's sessions here. */
+  budget: { dailyBudgetUsd: number | null; sessionCapUsd: number | null; spentUsd?: number };
   now?: number;
 };
 
@@ -122,6 +123,6 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
     tasks, agents, devices: [...v.devices.entries()].map(([device_id, d]) => ({ device_id, online: d.online, at: d.at })),
     messages, waits: [...v.waits.values()].map(wait), lands: [...v.lands.values()].map(land),
     base_advances: v.baseAdvances.map((b) => ({ old_sha: b.oldSha, new_sha: b.newSha, changed_paths: [...b.changedPaths], at: b.at })),
-    budget: { day, spent_usd: spent, daily_budget_usd: local.budget.dailyBudgetUsd, session_cap_usd: local.budget.sessionCapUsd },
+    budget: { day, spent_usd: local.budget.spentUsd ?? spent, daily_budget_usd: local.budget.dailyBudgetUsd, session_cap_usd: local.budget.sessionCapUsd },
   };
 }

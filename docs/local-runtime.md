@@ -130,7 +130,16 @@ limits:                            # repo values can only LOWER local limits (D-
 - **How they're injected:** `harnessd` puts only the secrets an agent's task needs into that agent process's environment. That's the repo's `env.refs` ∩ the local allowlist (D-52).
 - **The base env is explicit.** The Claude TS SDK's `env` option *replaces* the environment (F-22), so the adapter passes a minimal base (`PATH`, `HOME`, the chosen auth variable per F-67), plus the ports and the referenced secrets.
 - **Secret names are restricted (D-87, TH-21).** A secret may never use a name the agent CLI or runtime reads (`ANTHROPIC_*`, `CLAUDE*`, `NODE_*`, `BUN_*`, `SSL_*`, proxy and TLS variables, `PATH`, `PORT`, `HARNESS_*`, `GIT_*` and similar), nor the name of the model key's variable. harnessd refuses such a config, and the adapter refuses such a session.
-- **The model key** is read from harnessd's own environment, under the name the local config's provider table gives (`key_env`, D-87). harnessd checks it at startup, never logs it, and never writes it to disk.
+- **The model key** is read from harnessd's own environment, under the name the local config's provider table gives (`key_env`, D-87). Failing that, it's read from `~/.harness/secrets.toml` (owner-only) under the same name. That's D-116's refinement for the pilot: launchd plists and rc files never hold it.
+  - harnessd checks it at startup, never logs it, and never writes it anywhere.
+  - Agents and setup commands can't read `~/.harness`.
+  - The name guard above still applies, so no project can hand the key to agents as a secret.
+- **Spend and provider failure (D-116):**
+  - **The ledger:** harnessd keeps the day's spend per device in `~/.harness/spend/<UTC day>.json`.
+  - **Caps:** each session's cap is the smaller of `max_budget_usd` and what's left of `daily_budget_usd`. No session starts with less than $0.03 left.
+  - **The circuit:** an auth or billing error from the provider, or the day's budget running out, stops every agent on the device and opens the circuit (`~/.harness/provider-circuit.json`). It blocks new starts until the human resets it, from the UI or by deleting the file. A budget circuit closes on its own on the next UTC day.
+  - **Rate limits:** after three in one session, harnessd stops that session only.
+  - **After a stop:** stopped tasks keep their worktrees and can be resumed. Nothing switches provider automatically.
 - **Never:**
   - written into worktree files;
   - included in messages or events;
