@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@harness/daemon": "0.0.0",
-    "@harness/protocol": "0.0.0"
+    "@harness/protocol": "0.0.0",
+    "smol-toml": "1.9.0"
   }
 }
