@@ -78,3 +78,23 @@ test('the root package declares no agent-vendor SDK', () => {
   const declared = depsOf(readJson(path.join(root, 'package.json')));
   for (const dep of declared) assert.ok(!AGENT_VENDOR_SDKS.includes(dep), `root depends on vendor SDK ${dep}`);
 });
+
+// The UI's browser modules (D-117; packages/ui/tsconfig.web.json): the bridge serves each .ts file under web/ with its
+// types stripped, and the browser resolves nothing else. So they import only relative .ts files inside web/, and
+// @harness/* only as types, which the stripping erases. A dynamic import() with a literal follows the same rule.
+test('ui: browser modules import only relative .ts files inside web/, and @harness/* only as types (D-117)', () => {
+  const web = path.join(packagesDir, 'ui', 'web');
+  for (const file of fs.existsSync(web) ? sourceFiles(web) : []) {
+    const rel = path.relative(root, file);
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/^\s*(?:import|export)\s+(type\s+)?[^'";]*?\bfrom\s*['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]/gm)) {
+      const spec = (m[2] ?? m[3])!;
+      if (spec.startsWith('@harness/')) { assert.ok(m[1], `${rel} imports ${spec} as a value; only \`import type\` reaches the browser`); continue; }
+      assert.ok(/^\.\.?\//.test(spec) && spec.endsWith('.ts'), `${rel} imports ${spec}; browser modules import only relative .ts files`);
+      assert.ok(path.resolve(path.dirname(file), spec).startsWith(web + path.sep), `${rel} imports ${spec}, outside web/`);
+    }
+    for (const m of src.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]/g)) {
+      assert.ok(/^\.\.?\//.test(m[1]!) && m[1]!.endsWith('.ts'), `${rel} imports ${m[1]} dynamically; only relative .ts files`);
+    }
+  }
+});

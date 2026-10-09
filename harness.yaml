@@ -13,7 +13,12 @@ setup:
     - packages/ui/package.json
 test:
   command: npm run typecheck && node --test "packages/ui/test/**/*.test.ts" test/structure.test.ts
+  # What decides what the test command checks: a change to any of these needs the human's approval again (D-52).
   manifests:
     - package.json
     - package-lock.json
+    - tsconfig.json
+    - packages/ui/tsconfig.web.json
+    - packages/ui/tsconfig.test.json
+    - test/structure.test.ts
   timeout_seconds: 600

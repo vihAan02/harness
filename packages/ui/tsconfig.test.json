@@ -1,0 +1,19 @@
+{
+  // The UI's tests (packages/ui/test) run in Node and import the browser modules they test, so they're checked with
+  // both the DOM and Node's types. tsconfig.web.json checks the browser modules alone, with no Node types (D-117).
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true
+  },
+  "include": ["test", "web"]
+}

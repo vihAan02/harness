@@ -16,5 +16,7 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src", "packages/*/test", "test", "scripts"]
+  "include": ["packages/*/src", "packages/*/test", "test", "scripts"],
+  // The UI's browser modules, and the tests that import them, need the DOM: packages/ui/tsconfig.{web,test}.json.
+  "exclude": ["packages/ui/web", "packages/ui/test"]
 }
