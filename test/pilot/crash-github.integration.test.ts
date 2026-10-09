@@ -37,10 +37,10 @@ const merges = (s: PilotStack) => s.fake.log.filter((l) => l.method === 'PUT' &&
 /** A task for side A's agent, done with one changed file; resolves once harnessd asks to publish it. */
 async function done(s: PilotStack, name: string) {
   const agent = (await s.a.command('agent.create', { name, vendor: 'claude' })).agent_id!;
-  const task = (await s.a.command('task.create', { title: `${name} work`, text: `do ${name}`, scope: [], assignee_agent_id: agent })).task_id!;
+  const task = await s.a.assign(agent, { title: `${name} work`, text: `do ${name}`, scope: [] });
   await waitFor(s, 'the session', async () => (await count(s, 'session.started', task)) === 1);
   fs.writeFileSync(path.join(s.a.home.worktrees, s.project, task, `${name.replace('/', '-')}.txt`), 'work\n');
-  await s.a.command('task.complete', { task_id: task });
+  await s.a.signed('task.complete', { task_id: task });
   await waitFor(s, 'the publish request', async () => new Approvals(s.a.home).pending().some((r) => r.kind === 'publish' && r.taskId === task));
   return task;
 }

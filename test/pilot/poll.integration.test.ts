@@ -12,14 +12,14 @@ const POLL = { daemonOptions: { pollMs: 150 } };
 
 async function started(s: PilotStack, name: string) {
   const agent = (await s.a.command('agent.create', { name, vendor: 'claude' })).agent_id!;
-  const task = (await s.a.command('task.create', { title: `${name} work`, text: `do ${name}`, scope: [], assignee_agent_id: agent })).task_id!;
+  const task = await s.a.assign(agent, { title: `${name} work`, text: `do ${name}`, scope: [] });
   await s.until(() => s.a.daemon.running.has(task), 20_000, `${task}'s session`);
   return { task, worktree: s.a.daemon.worktreeOf(s.project, task) };
 }
 async function published(s: PilotStack, name: string) {
   const t = await started(s, name);
   fs.writeFileSync(path.join(t.worktree, `${name.replace('/', '-')}.txt`), 'work\n');
-  await s.a.command('task.complete', { task_id: t.task });
+  await s.a.signed('task.complete', { task_id: t.task });
   await s.until(() => new Approvals(s.a.home).pending().some((r) => r.kind === 'publish' && r.taskId === t.task), 20_000, 'the publish request');
   new Approvals(s.a.home).approve(new Approvals(s.a.home).pending().find((r) => r.taskId === t.task)!.id);
   await s.until(() => s.a.daemon.view(s.project).prs.has(t.task), 20_000, 'the PR');

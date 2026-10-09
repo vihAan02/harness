@@ -39,11 +39,11 @@ test('through the socket: a running task\'s state, its publish approved as shown
     const ui = await rpcClient(socket);
     const state = async (task: string) => (await ui.call<ProjectSnapshot[]>('snapshot', { project_id: s.project }))[0]!.tasks.find((t) => t.id === task)?.state;
     const agent = (await s.a.command('agent.create', { name: 'agent/ui', vendor: 'claude' })).agent_id!;
-    const task = (await s.a.command('task.create', { title: 'ui work', text: 'do it', scope: [], assignee_agent_id: agent })).task_id!;
+    const task = await s.a.assign(agent, { title: 'ui work', text: 'do it', scope: [] });
     await s.until(() => s.a.daemon.running.has(task), 20_000, 'the session');
     for (const end = Date.now() + 10_000; (await state(task)) !== 'running';) if (Date.now() > end) assert.fail(`state ${await state(task)}`);
     fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'ui.txt'), 'hi\n');
-    await s.a.command('task.complete', { task_id: task });
+    await s.a.signed('task.complete', { task_id: task });
     // The publish request, as the UI shows it, then approved with the hash it showed.
     type Pending = { id: string; kind: string; task_id: string; command: string; hash: string };
     let req: Pending | undefined;

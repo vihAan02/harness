@@ -15,12 +15,12 @@ const FAST = { pollMs: 150, github: { token: async () => '', retryMs: 100 } };
 /** Human A's task, done, published and its PR open; returns the PR. */
 async function published(s: PilotStack, name: string, file = `${name.replace('/', '-')}.txt`) {
   const agent = (await s.a.command('agent.create', { name, vendor: 'claude' })).agent_id!;
-  const task = (await s.a.command('task.create', { title: `${name} work`, text: `do ${name}`, scope: [], assignee_agent_id: agent })).task_id!;
+  const task = await s.a.assign(agent, { title: `${name} work`, text: `do ${name}`, scope: [] });
   await s.until(() => s.a.daemon.running.has(task), 20_000, `${task}'s session`);
   const target = path.join(s.a.daemon.worktreeOf(s.project, task), file);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${name}\n`);
-  await s.a.command('task.complete', { task_id: task });
+  await s.a.signed('task.complete', { task_id: task });
   await s.until(() => new Approvals(s.a.home).pending().some((r) => r.kind === 'publish' && r.taskId === task), 20_000, 'the publish request');
   new Approvals(s.a.home).approve(new Approvals(s.a.home).pending().find((r) => r.taskId === task)!.id);
   await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'the PR');
@@ -128,7 +128,7 @@ test('while the reservation is held, no other task gets an overlapping lease, fo
   try {
     const t = await published(s, 'agent/held', 'shared.txt');
     const otherAgent = (await s.b.command('agent.create', { name: 'agent/other', vendor: 'claude' })).agent_id!;
-    const other = (await s.b.command('task.create', { title: 'other', text: 'other', scope: [], assignee_agent_id: otherAgent })).task_id!;
+    const other = await s.b.assign(otherAgent, { title: 'other', text: 'other', scope: [] });
     await s.until(() => s.b.daemon.running.has(other), 20_000, 'the other session');
     s.fake.mergeFault = { delayMs: 1500 }; // the merge takes a while: the reservation is held meanwhile
     const land = await integrate(s, t);

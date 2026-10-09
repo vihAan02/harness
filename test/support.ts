@@ -16,10 +16,10 @@ import { makeRepo, tempDir, tempHome, TOKEN } from '../packages/daemon/test/fixt
 import type { Home } from '../packages/daemon/src/home.ts';
 import { startServer, type RunningServer } from '../packages/server/src/server.ts';
 import { TestClient } from '../packages/server/test/client.ts';
-import { freshSchema, seedProject, TEST_DATABASE_URL } from '../packages/server/test/helpers.ts';
+import { dispatchFor, freshSchema, seedProject, TEST_DATABASE_URL } from '../packages/server/test/helpers.ts';
 import { DUMMY_KEY, startMock, type Mock } from '../packages/adapters/test/mock-api.ts';
 import type { Observation } from '../packages/adapters/src/adapter.ts';
-import type { EventMessage, Subscription } from '../packages/protocol/src/index.ts';
+import type { DispatchKind, EventMessage, Subscription } from '../packages/protocol/src/index.ts';
 import { generateKeyPair, parsePrivateKey } from '../packages/protocol/src/signing.ts';
 import { FakeAdapter } from './fake-adapter.ts';
 import { FakeGitHub, type FakeGitHubOptions } from './fake-github.ts';
@@ -188,7 +188,13 @@ export type PilotSide = {
   adapter: FakeAdapter; client: TestClient; logs: string[]; acted: EventMessage[];
   /** Sends a command as this human from their device's CLI connection; throws on `ok: false`. */
   command: (name: string, args: Record<string, unknown>) => Promise<Record<string, string>>;
+  /** Creates a task, then assigns it to `agent` with a start dispatch this device signed (D-112): the server names the task first. */
+  assign: (agent: string, task: { title: string; text: string; scope?: string[] }) => Promise<string>;
+  /** A human's lifecycle command (`task.assign`, `.complete`, `.abandon`, `.reopen`, `.resume`), with the dispatch this device signed. */
+  signed: (name: keyof typeof DISPATCH_KIND, args: Record<string, unknown> & { task_id: string }) => Promise<Record<string, string>>;
 };
+/** The dispatch each human lifecycle command carries (D-112; protocol.md §11). */
+const DISPATCH_KIND = { 'task.assign': 'start', 'task.complete': 'complete', 'task.abandon': 'abandon', 'task.reopen': 'reopen', 'task.resume': 'resume' } as const satisfies Record<string, DispatchKind>;
 export type PilotStack = Awaited<ReturnType<typeof startPilotStack>>;
 
 /**
@@ -274,7 +280,27 @@ export async function startPilotStack(p: {
         if (!r.ok) throw new Error(`${human}: ${name}: ${r.error.code}: ${r.error.message}`);
         return (r.result ?? {}) as Record<string, string>;
       };
-      return { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command };
+      const signed: PilotSide['signed'] = async (name, args) => {
+        const agentId = typeof args.assignee_agent_id === 'string' ? args.assignee_agent_id
+          : (await db.pool.query<{ a: string | null }>('SELECT assignee_agent_id AS a FROM tasks WHERE id = $1', [args.task_id])).rows[0]?.a;
+        if (!agentId) throw new Error(`${name}: ${args.task_id} has no agent to dispatch to`);
+        // Each human has one device here, and an agent runs on its human's (D-113).
+        const target = (await db.pool.query<{ id: string }>(
+          'SELECT d.id FROM agent_principals a JOIN devices d ON d.human_id = a.accountable_human_id WHERE a.id = $1', [agentId])).rows[0]!.id;
+        const kind = DISPATCH_KIND[name];
+        const message = (kind === 'reopen' || kind === 'resume') && typeof args.text === 'string' ? args.text : undefined;
+        const dispatch = await dispatchFor(db.pool, deviceKey, {
+          kind, projectId: project, taskId: args.task_id, agentId, targetDevice: target, issuerHuman: human, issuerDevice: device,
+          ...(message === undefined ? {} : { message }),
+        });
+        return command(name, { ...args, dispatch });
+      };
+      const assign: PilotSide['assign'] = async (agent, t) => {
+        const task = (await command('task.create', { title: t.title, text: t.text, scope: t.scope ?? [] })).task_id!;
+        await signed('task.assign', { task_id: task, assignee_agent_id: agent });
+        return task;
+      };
+      return { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command, assign, signed };
     };
     const a = await side('a');
     const b = await side('b');
