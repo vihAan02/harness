@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Internal coordination protocol types, shared end to end (D-14; docs/protocol.md).",
+  "description": "Internal coordination protocol types, shared end to end (D-14; docs/protocol.md). `./signing` holds the pilot's keys and signatures (D-111, D-112).",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./signing": "./src/signing.ts"
   }
 }

@@ -130,7 +130,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
 
   async function hello(c: Conn, m: Record<string, unknown>) {
     if (!isHello(m)) return fail(c, 'bad_request', 'malformed hello', true);
-    if (!tokenMatches(m.auth.token, o.localToken)) return fail(c, 'unauthorized', 'bad token', true);
+    if (m.auth.scheme !== 'local-token' || !tokenMatches(m.auth.token, o.localToken)) return fail(c, 'unauthorized', 'bad token', true);
     if (!(await o.pool.query('SELECT 1 FROM human_principals WHERE id = $1', [m.principal])).rowCount) {
       return fail(c, 'unauthorized', `unknown principal ${m.principal}`, true);
     }
