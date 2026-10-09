@@ -2,7 +2,7 @@
 // nothing of the land is still writing under ~/.harness or in the repo (the T-2 teardown flake: ENOTEMPTY).
 //  - a land that moved the base reports it, then removes its worktrees and record, before the stop returns;
 //  - one waiting for an approval gives up at once, as interrupted, and the server hears it before the link closes;
-//  - one running its tests never moves the base once harnessd is stopping: interrupted too, as a restart would be;
+//  - one running its tests has them killed at once, never moves the base, and is interrupted too, as a restart would be (#74);
 //  - one not started yet is left as it is on the server, for recoverLands at the next start.
 // Agents are fakes (test/fake-adapter.ts); the server, harnessd, Git and srt are real. Each test has its own stack.
 import { test } from 'node:test';
@@ -96,20 +96,21 @@ test('a land waiting for an approval gives up at once on stop, as interrupted, a
   });
 });
 
-test('a land whose tests pass after harnessd began stopping never moves the base: interrupted, as a restart would be', async () => {
+test('a land whose tests are running when harnessd stops has them killed at once, and never moves the base: interrupted', async () => {
   await withTask({ approve: true, files: { 'src/a.ts': 'export const a = 3;\n', hold: '' } }, async (s, t) => {
     const before = gitIn(s.repo, 'rev-parse', 'main');
     const r = await s.command('land.request', { task_id: t });
     const hold = path.join(leftovers(s, r.land_id!)[0]!, 'hold');
     try {
       await progress(s, r.land_id!, 'testing');
-      const stopping = s.daemon.stop(); // harnessd is stopping from here on (stop() says so at once)...
-      fs.rmSync(hold); // ...and only then do the tests pass
-      await stopping;
-      await progress(s, r.land_id!, 'tested');
+      const t0 = Date.now();
+      await s.daemon.stop(); // the tests would hold forever: the stop kills them (#74)
+      assert.ok(Date.now() - t0 < 15_000, `stopped in ${Date.now() - t0} ms, not after the tests' timeout`);
       const out = await outcome(s, r.land_id!);
       assert.deepEqual([out.kind, dataOf(out).reason], ['land.failed', 'interrupted'], JSON.stringify(dataOf(out)));
-      assert.match(String(dataOf(out).detail), /stopped before the base moved/);
+      assert.match(String(dataOf(out).detail), /stopped during the tests/);
+      const tested = (await s.db.pool.query("SELECT count(*)::int AS n FROM events WHERE kind = 'land.progress' AND data->>'land_id' = $1 AND data->>'step' = 'tested'", [r.land_id])).rows[0].n;
+      assert.equal(tested, 0, 'never tested');
       assert.equal(gitIn(s.repo, 'rev-parse', 'main'), before, 'the base did not move');
       for (const p of leftovers(s, r.land_id!)) assert.ok(!fs.existsSync(p), `${p} is gone`);
     } finally {
