@@ -47,6 +47,7 @@ import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { readPolicyFor } from './readpolicy.ts';
 import { ProjectView, type MessageInfo, type WaitInfo } from './view.ts';
 import { snapshotOf } from './snapshot.ts';
+import { UiRpc } from './uirpc.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -129,6 +130,9 @@ export type DaemonOptions = {
   github?: { token?: () => Promise<string>; retryMs?: number };
   /** How often GitHub-mode projects' base and PRs are polled (D-114). Default 60 s. */
   pollMs?: number;
+  /** The UI bridge's socket (D-117; protocol.md §12): `~/.harness/run/harnessd.sock` in production. Off when unset. */
+  uiSocket?: string;
+  uiPollMs?: number;
   /** The D-119 check for loopback Postgres that takes password-less logins (TH-22), for tests. Default: findTrustPostgres. */
   localServices?: { check?: () => Promise<TrustLogin[]> };
 };
@@ -154,6 +158,7 @@ export class Daemon {
   landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
   linkState: LinkState = 'connecting'; // for status and health (D-111)
+  ui: UiRpc | null = null;
   /** The write-ahead journal (D-113), keyed by the coordinator's epoch, so it exists from the first welcome. */
   journalInstance: Journal | null = null;
   releaseLock: (() => void) | null = null;
@@ -218,6 +223,25 @@ export class Daemon {
     // Recovery runs as soon as the logs are caught up, whether or not anyone awaits ready().
     this.recovered = this.link.whenReady().then(() => this.link!.whenCaughtUp()).then(() => this.recover())
       .catch((e: Error) => this.log(`recovery failed: ${e.message}`));
+    if (this.o.uiSocket) {
+      this.ui = new UiRpc({
+        socket: this.o.uiSocket, ...(this.o.uiPollMs ? { pollMs: this.o.uiPollMs } : {}),
+        host: {
+          projects: () => this.config.projects.map((p) => p.id),
+          snapshot: (projectId) => this.snapshot(projectId),
+          health: () => this.health(),
+          approvals: this.approvals,
+          command: (projectId, name, args, commandId) => this.link!.command(projectId, name, args, undefined, commandId),
+          log: (m) => this.log(m),
+        },
+      });
+      await this.ui.start();
+    }
+  }
+
+  /** The UI's health line (protocol.md §12): who this is, and the link's state. */
+  health(): Record<string, unknown> {
+    return { device_id: this.config.deviceId, principal: this.config.principal, connection: this.linkState, epoch: this.link?.epoch ?? null };
   }
 
   journal(): Journal {
@@ -995,6 +1019,7 @@ export class Daemon {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    await this.ui?.stop();
     await this.poller?.stop();
     this.leases.stop();
     await Promise.all([...this.running.keys()].map((taskId) => this.stopAgent(taskId)));
