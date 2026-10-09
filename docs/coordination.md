@@ -273,6 +273,7 @@ In-progress work becomes visible through **checkpoint pushes**. `harnessd` commi
 - each agent's observed claims;
 - overlaps;
 - pending questions;
-- (0B) stale-context notices, syncs and leases.
+- (0B) stale-context notices, syncs and leases;
+- (0B) blocked reports, open waits and capped Stop gates (D-95, D-100, D-105). A wait on a task that's done but not landed says so, with the `harness land` to run (D-106); so does each done task.
 
 A full dashboard is Phase 2.
