@@ -8,5 +8,5 @@ export { isReservedEnvName } from './env.ts';
 export { DENIED_ENTRIES_BUDGET, deniedEntries, isInside, readAllowed, realish, type ReadPolicy } from './readpolicy.ts';
 export { AUTH_ENV_VARS, compileClaudePermissions, GIT_DENY_WRITE, BASE_TOOLS, shimToolName } from './claude/policy.ts';
 export { claudeHooks, editedPaths, relativize } from './claude/hooks.ts';
-export { claudeCapabilities, PINNED } from './claude/version.ts';
+export { claudeCapabilities, installedSdkVersion, PINNED } from './claude/version.ts';
 export { claudeExecutable, type InteractiveLaunch } from './claude/interactive.ts';
