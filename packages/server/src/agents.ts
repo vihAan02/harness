@@ -3,7 +3,7 @@ import { isUniqueViolation } from './db.ts';
 import { CommandError, type HandlerContext, type HandlerOutput } from './handler.ts';
 
 const VENDORS = ['claude', 'codex'];
-const AGENT_NAME = /^agent\/[a-z0-9][a-z0-9._-]{0,62}$/;
+export const AGENT_NAME = /^agent\/[a-z0-9][a-z0-9._-]{0,62}$/;
 
 /** `agent.create { name, vendor, device_id? }`: registers an agent principal accountable to the calling human (D-18, D-54). */
 export async function createAgent(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {

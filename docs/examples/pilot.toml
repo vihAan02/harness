@@ -1,0 +1,57 @@
+# The two-Mac pilot's provisioning file (D-110, D-111; PB1). The coordinator's operator applies it with
+#   npm run admin -- apply pilot.toml
+# It holds public keys only: each human runs `harness setup keygen` on their own Mac and reads the fingerprint aloud,
+# and the operator checks it against the one `apply` prints before anyone pins anything. A device's key changes only
+# with `--rotate <device_id>`; `--revoke <device_id>` stops it at its next message. Nothing here is ever deleted.
+
+[[humans]]
+id = "human_vihaan"
+display_name = "Vihaan"
+github_login = "vihAan02"
+
+[[humans]]
+id = "human_daniyal"
+display_name = "Daniyal"
+github_login = "DaniyalMughal1"
+
+[[devices]]
+id = "dev_vihaan_mbp"
+human = "human_vihaan"
+name = "Vihaan's MacBook Pro"
+public_key = "ed25519:<from harness setup keygen on that Mac>"
+
+[[devices]]
+id = "dev_daniyal_mac"
+human = "human_daniyal"
+name = "Daniyal's Mac"
+public_key = "ed25519:<from harness setup keygen on that Mac>"
+
+[[projects]]
+id = "prj_harness"
+name = "harness"
+repo_url = "https://github.com/vihAan02/harness.git"
+default_branch = "main"
+integration_mode = "github" # needs migration 0016 (PA5b) on the coordinator
+
+[[memberships]]
+project = "prj_harness"
+human = "human_vihaan"
+role = "owner"
+
+[[memberships]]
+project = "prj_harness"
+human = "human_daniyal"
+role = "owner"
+
+# One product agent per Mac (D-116), each bound to its human's device (D-113).
+[[agents]]
+project = "prj_harness"
+name = "agent/vihaan-ui"
+human = "human_vihaan"
+device = "dev_vihaan_mbp"
+
+[[agents]]
+project = "prj_harness"
+name = "agent/daniyal-ui"
+human = "human_daniyal"
+device = "dev_daniyal_mac"
