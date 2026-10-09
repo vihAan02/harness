@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPair } from '@harness/protocol/signing';
 import { parse } from 'smol-toml';
-import { parseConfig, renderConfig } from '../src/index.ts';
+import fs from 'node:fs';
+import { loadConfig, parseConfig, renderConfig } from '../src/index.ts';
+import { tempDir, tempHome } from './fixtures.ts';
 
 const TOKEN = 't'.repeat(32);
 const own = generateKeyPair().publicKey;
@@ -101,4 +103,58 @@ test('renderConfig writes only what harnessd would accept, and round-trips', () 
   assert.deepEqual(parseConfig(parse(text) as Record<string, unknown>, '', NOTEST), parseConfig(raw, '', NOTEST));
   assert.ok(!/token/i.test(text), 'no token is ever written');
   assert.throws(() => renderConfig(pilot({ server_key: undefined }), NOTEST), /server_key/);
+});
+
+test('strict everywhere: unknown keys and sections of the wrong type are refused, not read as empty', () => {
+  const bad = (raw: Record<string, unknown>, re: RegExp) => assert.throws(() => parseConfig(raw, '', NOTEST), re);
+  bad(pilot({ authh: 'device-key' }), /the config has unknown keys: authh/);
+  bad(pilot({ api_key: 'x' }), /the config has unknown keys: api_key/);
+  bad(pilot({ limits: { max_concurent_agents: 1 } }), /\[limits\] has unknown keys: max_concurent_agents/);
+  bad(pilot({ setup: { allowed_domain: [] } }), /\[setup\] has unknown keys: allowed_domain/);
+  bad(pilot({ ui: 7480 }), /\[ui\] must be a table/);
+  bad(pilot({ projects: 'x' }), /projects must be an array/);
+  bad(pilot({ projects: ['x'] }), /projects\[0\] must be a table/);
+  bad(pilot({ trust: { devices: [] } }), /trust.devices must be a table/);
+  bad(pilot({ providers: { or: 'x' } }), /providers.or must be a table/);
+});
+
+test('keys: stored canonically, one per device, never the server\'s', () => {
+  const bad = (raw: Record<string, unknown>, re: RegExp) => assert.throws(() => parseConfig(raw, '', NOTEST), re);
+  const unpadded = own.replace(/=+$/, '');
+  assert.notEqual(unpadded, own);
+  const c = parseConfig(pilot({ trust: { devices: { dev_daniyal: { human: 'human_daniyal', key: unpadded } } } }), '', NOTEST);
+  assert.equal(c.trustedDevices.dev_daniyal!.key, own, 'two encodings of one key are one pin');
+  bad(pilot({ trust: { devices: { dev_daniyal: { human: 'human_daniyal', key: own }, dev_vihaan: { human: 'human_vihaan', key: unpadded } } } }), /pin the same key/);
+  bad(pilot({ trust: { devices: { dev_daniyal: { human: 'human_daniyal', key: own }, dev_other: { human: 'human_vihaan', key: server } } } }), /pins the server's key/);
+});
+
+test('budgets fit the day, the UI port isn\'t the server\'s, and commits are by a GitHub noreply address', () => {
+  const bad = (raw: Record<string, unknown>, re: RegExp) => assert.throws(() => parseConfig(raw, '', NOTEST), re);
+  bad(pilot({ agents: { max_budget_usd: 0.5, daily_budget_usd: 0.25 } }), /can't be above agents.daily_budget_usd/);
+  bad(pilot({ ui: { port: 7400 } }), /ui.port is server_url's port/);
+  bad(pilot({ projects: [{ ...project, commit_email: 'daniyal@example.com' }] }), /commit_email/);
+});
+
+test('HARNESS_TEST=1 points GitHub only at this machine: never the token to another host', () => {
+  const bad = (p: Record<string, unknown>, re: RegExp) => assert.throws(() => parseConfig(pilot({ projects: [{ ...project, ...p }] }), '', TEST), re, JSON.stringify(p));
+  bad({ remote: 'https://git.example/o/r.git' }, /remote must be on github.com/);
+  bad({ github_api: 'http://10.0.0.5/' }, /github_api must be/);
+  bad({ github_api: 'https://api.github.com.evil.example' }, /github_api must be/);
+  bad({ github_api: 'file:///etc/passwd' }, /github_api must be/);
+  bad({ github_api: 'http://user:pw@127.0.0.1:9/' }, /github_api must be/);
+  assert.equal(parseConfig(pilot({ projects: [{ ...project, github_api: 'http://127.0.0.1:9/' }] }), '', TEST).projects[0]!.githubApi, 'http://127.0.0.1:9');
+});
+
+test('renderConfig never writes a credential, and loadConfig names a bad auth before a missing token', () => {
+  for (const v of ['sk-or-v1-' + 'a'.repeat(40), 'ghp_' + 'a'.repeat(36), '-----BEGIN PRIVATE KEY-----']) {
+    assert.throws(() => renderConfig(pilot({ projects: [{ ...project, commit_name: v }] }), NOTEST), /looks like a credential|commit_name/);
+    assert.throws(() => renderConfig(pilot({ agents: { max_budget_usd: 0.1, daily_budget_usd: 0.25, read_allow: [`/x/${v}`] } }), NOTEST), /agents.read_allow\[0\] looks like a credential/);
+  }
+  const t = tempDir('config-auth');
+  try {
+    const home = tempHome(t.dir);
+    fs.rmSync(home.token);
+    fs.writeFileSync(home.config, 'device_id = "dev_a"\nprincipal = "human_a"\nauth = "device_key"\n');
+    assert.throws(() => loadConfig(home), /auth must be "device-key" or "local-token"/);
+  } finally { t.cleanup(); }
 });

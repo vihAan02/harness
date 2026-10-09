@@ -27,14 +27,16 @@
 //   [ui]      port = 7480                 (the UI bridge's fixed loopback port, outside limits.port_range, D-117)
 //   [[projects]]  integration = "local" | "github"   (default "local"; must match the server's, D-114)
 //             remote = "https://github.com/<owner>/<repo>.git"   (github: no userinfo, query or fragment)
-//             github_api = "https://api.github.com"   (only HARNESS_TEST=1 may point it, or the remote, elsewhere)
-//             commit_name = "…", commit_email = "…@users.noreply.github.com"   (github: who task commits are by)
+//             github_api = "https://api.github.com"   (only HARNESS_TEST=1 may point it, or the remote, elsewhere: at a loopback host)
+//             commit_name = "…", commit_email = "…@users.noreply.github.com"   (github: who task commits are by; a GitHub noreply address)
+//
+// Every table is strict: unknown keys, and a section of the wrong type, are refused. Keys are stored canonically.
 //             require_dispatch = true   (forced on with device-key or github, D-112)
 import fs from 'node:fs';
 import path from 'node:path';
 import { isModelAlias, isReservedEnvName, MODEL_ID, priceOf, type Prices } from '@harness/adapters';
 import type { IntegrationMode } from '@harness/protocol';
-import { KeyError, parsePublicKey } from '@harness/protocol/signing';
+import { KeyError, parsePublicKey, publicKeyText } from '@harness/protocol/signing';
 import { parse, stringify } from 'smol-toml';
 import { readPrivateFile, type Home } from './home.ts';
 
@@ -98,7 +100,8 @@ export function loadConfig(home: Home): LocalConfig {
   } catch (e) {
     throw new Error(`can't read ${home.config}: ${(e as Error).message}`);
   }
-  // With device keys there is no shared token (D-111).
+  // With device keys there is no shared token (D-111). A bad `auth` is reported as that, not as a missing token.
+  if (raw.auth !== undefined && raw.auth !== 'device-key' && raw.auth !== 'local-token') throw new Error('config: auth must be "device-key" or "local-token"');
   return parseConfig(raw, raw.auth === 'device-key' ? '' : loadToken(home));
 }
 
@@ -112,6 +115,11 @@ export type ParseOptions = { env?: Record<string, string | undefined> };
 
 const GITHUB_API = 'https://api.github.com';
 const ID_TEXT = /^[A-Za-z0-9_-]{1,64}$/;
+const NOREPLY = /^[^\s@<>]{1,100}@users\.noreply\.github\.com$/;
+/** 127.0.0.0/8, ::1 or localhost: where HARNESS_TEST=1 may point GitHub (the fake), and nowhere else. */
+const loopbackHost = (h: string) => /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h) || h === '[::1]' || h === 'localhost';
+/** Credential shapes a config never holds (D-48, D-64): keys live in harnessd's environment or secrets.toml. */
+const CREDENTIAL_SHAPES = [/sk-or-[A-Za-z0-9-]{20,}/, /sk-ant-[A-Za-z0-9_-]{20,}/, /\bgh[opusr]_[A-Za-z0-9]{36,}/, /\bgithub_pat_[A-Za-z0-9_]{20,}/, /\bAKIA[0-9A-Z]{16}\b/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/];
 
 /** Rejects keys a section doesn't know, so a typo can't silently fall back to local mode or no trust. */
 function onlyKeys(t: Record<string, unknown>, known: string[], where: string): void {
@@ -122,21 +130,21 @@ function onlyKeys(t: Record<string, unknown>, known: string[], where: string): v
 function publicKeyAt(v: unknown, where: string): string {
   if (typeof v !== 'string') throw new Error(`config: ${where} must be an "ed25519:…" public key`);
   try {
-    parsePublicKey(v);
+    // Stored canonically, so pins compare as strings (two encodings of one key are one key).
+    return publicKeyText(parsePublicKey(v));
   } catch (e) {
     if (e instanceof KeyError) throw new Error(`config: ${where}: ${e.message}`);
     throw e;
   }
-  return v;
 }
 
-/** A GitHub remote: https, no userinfo, query or fragment; its `owner/name`. Elsewhere only under HARNESS_TEST=1 (fake GitHub). */
+/** A GitHub remote: https, no userinfo, query or fragment; its `owner/name`. On a loopback host only under HARNESS_TEST=1 (fake GitHub). */
 function githubRemote(v: unknown, where: string, test: boolean): { remote: string; repo: string } {
   let u: URL;
   try { u = new URL(String(v)); } catch { throw new Error(`config: ${where}.remote is not a URL`); }
   if (u.protocol !== 'https:') throw new Error(`config: ${where}.remote must be https`);
   if (u.username || u.password || u.search || u.hash) throw new Error(`config: ${where}.remote may not carry credentials, a query or a fragment`);
-  if (u.hostname !== 'github.com' && !test) throw new Error(`config: ${where}.remote must be on github.com`);
+  if (u.hostname !== 'github.com' && !(test && loopbackHost(u.hostname))) throw new Error(`config: ${where}.remote must be on github.com`);
   const m = /^\/([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100}?)(?:\.git)?$/.exec(u.pathname);
   if (!m) throw new Error(`config: ${where}.remote must be https://<host>/<owner>/<repo>.git`);
   return { remote: String(v), repo: `${m[1]}/${m[2]}` };
@@ -158,21 +166,29 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
     if (!Array.isArray(v) || !v.every((s) => typeof s === 'string' && re.test(s))) throw new Error(`config: ${name} is malformed`);
     return v as string[];
   };
-  const table = (v: unknown) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {});
+  const table = (v: unknown, name: string) => {
+    if (v === undefined) return {};
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`config: ${name} must be a table`);
+    return v as Record<string, unknown>;
+  };
+  onlyKeys(raw, ['device_id', 'principal', 'server_url', 'auth', 'server_key', 'trust', 'limits', 'setup', 'agents', 'ui', 'providers', 'projects'], 'the config');
 
-  const limits = table(raw.limits);
+  const limits = table(raw.limits, '[limits]');
+  onlyKeys(limits, ['max_concurrent_agents', 'ports_per_agent', 'port_range'], '[limits]');
   const range = limits.port_range ?? [3100, 3999];
   if (!Array.isArray(range) || range.length !== 2 || !range.every(Number.isSafeInteger)) throw new Error('config: limits.port_range must be [start, end]');
   const [start, end] = range as [number, number];
   if (start < 1024 || end < start || end >= EPHEMERAL_FLOOR) throw new Error(`config: limits.port_range must lie within 1024..${EPHEMERAL_FLOOR - 1}`);
 
-  const setup = table(raw.setup);
-  const agents = table(raw.agents);
+  const setup = table(raw.setup, '[setup]');
+  onlyKeys(setup, ['allowed_domains', 'timeout_seconds'], '[setup]');
+  const agents = table(raw.agents, '[agents]');
   onlyKeys(agents, ['provider', 'model', 'max_budget_usd', 'daily_budget_usd', 'read_allow'], '[agents]');
   const budget = agents.max_budget_usd;
   if (budget !== undefined && (typeof budget !== 'number' || !(budget > 0) || budget > 1000)) throw new Error('config: agents.max_budget_usd must be a number above 0, at most 1000');
   const daily = agents.daily_budget_usd;
   if (daily !== undefined && (typeof daily !== 'number' || !(daily > 0) || daily > 1000)) throw new Error('config: agents.daily_budget_usd must be a number above 0, at most 1000');
+  if (budget !== undefined && daily !== undefined && (budget as number) > (daily as number)) throw new Error('config: agents.max_budget_usd (a session\'s cap) can\'t be above agents.daily_budget_usd (D-116)');
 
   const auth = raw.auth ?? 'local-token';
   if (auth !== 'device-key' && auth !== 'local-token') throw new Error('config: auth must be "device-key" or "local-token"');
@@ -181,31 +197,39 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
   if (!deviceKey && raw.server_key !== undefined) throw new Error('config: server_key is for auth = "device-key"');
   if (deviceKey && (budget === undefined || daily === undefined)) throw new Error('config: auth = "device-key" needs agents.max_budget_usd and agents.daily_budget_usd (D-116)');
 
-  const trust = table(raw.trust);
+  const trust = table(raw.trust, '[trust]');
   onlyKeys(trust, ['devices'], '[trust]');
   const trustedDevices: Record<string, TrustedDeviceConfig> = Object.create(null) as Record<string, TrustedDeviceConfig>;
-  for (const [id, v] of Object.entries(table(trust.devices))) {
+  for (const [id, v] of Object.entries(table(trust.devices, 'trust.devices'))) {
     if (!ID_TEXT.test(id)) throw new Error(`config: trust.devices has a malformed device id "${id}"`);
-    const d = table(v);
+    const d = table(v, `trust.devices.${id}`);
     onlyKeys(d, ['human', 'key'], `trust.devices.${id}`);
     if (typeof d.human !== 'string' || !ID_TEXT.test(d.human)) throw new Error(`config: trust.devices.${id}.human is missing or malformed`);
     trustedDevices[id] = { humanId: d.human, key: publicKeyAt(d.key, `trust.devices.${id}.key`) };
   }
+  // One key, one device: a pin shared by two devices, or the server's own key as a device, is a mistake (D-111).
+  const pinned = Object.entries(trustedDevices);
+  for (const [id, d] of pinned) {
+    const twin = pinned.find(([other, o]) => other !== id && o.key === d.key);
+    if (twin) throw new Error(`config: trust.devices.${id} and trust.devices.${twin[0]} pin the same key`);
+    if (serverKey && d.key === serverKey) throw new Error(`config: trust.devices.${id} pins the server's key`);
+  }
 
-  const ui = table(raw.ui);
+  const ui = table(raw.ui, '[ui]');
   onlyKeys(ui, ['port'], '[ui]');
   const uiPort = ui.port === undefined ? null : int(ui.port, 'ui.port', 0, 1024, 65535);
   const providers: Record<string, ProviderConfig> = Object.assign(Object.create(null) as Record<string, ProviderConfig>,
-    Object.fromEntries(Object.entries(table(raw.providers)).map(([name, v]) => [name, parseProvider(name, table(v))])));
+    Object.fromEntries(Object.entries(table(raw.providers, '[providers]')).map(([name, v]) => [name, parseProvider(name, table(v, `providers.${name}`))])));
   const provider = agents.provider === undefined ? null : str(agents.provider, 'agents.provider', PROVIDER_NAME);
   if (provider && !Object.hasOwn(providers, provider)) throw new Error(`config: agents.provider is "${provider}", but there's no [providers.${provider}]`);
   if (provider && agents.model !== undefined) throw new Error('config: set the model in [providers.<name>], not agents.model, when agents.provider is set');
   const serverUrl = str(raw.server_url ?? 'ws://127.0.0.1:7400', 'server_url');
   if (!/^wss?:\/\//.test(serverUrl)) throw new Error('config: server_url must be ws:// or wss://');
 
-  const projects = (Array.isArray(raw.projects) ? raw.projects : []).map((p, i): ProjectConfig => {
-    const t = table(p);
+  if (raw.projects !== undefined && !Array.isArray(raw.projects)) throw new Error('config: projects must be an array of [[projects]] tables');
+  const projects = ((raw.projects as unknown[] | undefined) ?? []).map((p, i): ProjectConfig => {
     const where = `projects[${i}]`;
+    const t = table(p, where);
     onlyKeys(t, ['id', 'repo', 'base_branch', 'secrets', 'integration', 'remote', 'github_api', 'commit_name', 'commit_email', 'require_dispatch'], where);
     const repo = str(t.repo, `${where}.repo`);
     if (!path.isAbsolute(repo)) throw new Error(`config: ${where}.repo must be an absolute path`);
@@ -217,13 +241,18 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
     }
     const remote = github ? githubRemote(t.remote, where, test) : null;
     let githubApi = GITHUB_API;
-    if (t.github_api !== undefined) {
-      if (!test && t.github_api !== GITHUB_API) throw new Error(`config: ${where}.github_api must be ${GITHUB_API}`);
-      githubApi = str(t.github_api, `${where}.github_api`).replace(/\/+$/, '');
+    if (t.github_api !== undefined && t.github_api !== GITHUB_API) {
+      // The gh token goes wherever this points: GitHub, or under HARNESS_TEST=1 the fake on this machine (TH-24).
+      let u: URL | null = null;
+      try { u = new URL(String(t.github_api)); } catch { /* refused below */ }
+      if (!test || !u || !['http:', 'https:'].includes(u.protocol) || !loopbackHost(u.hostname) || u.username || u.password || u.search || u.hash) {
+        throw new Error(`config: ${where}.github_api must be ${GITHUB_API}`);
+      }
+      githubApi = String(t.github_api).replace(/\/+$/, '');
     }
     const commitIdentity = github ? {
       name: str(t.commit_name, `${where}.commit_name`, /^[^\u0000-\u001f<>]{1,100}$/),
-      email: str(t.commit_email, `${where}.commit_email`, /^[^\s@<>]{1,100}@[^\s@<>]{1,100}$/),
+      email: str(t.commit_email, `${where}.commit_email`, test ? /^[^\s@<>]{1,100}@[^\s@<>]{1,100}$/ : NOREPLY),
     } : null;
     // D-112: forced on with device keys or GitHub integration; only loopback local-token stacks may leave it off.
     if (t.require_dispatch !== undefined && typeof t.require_dispatch !== 'boolean') throw new Error(`config: ${where}.require_dispatch must be true or false`);
@@ -253,6 +282,7 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
     if (own.humanId !== principal) throw new Error(`config: trust.devices.${deviceId}.human must be this device's principal (${principal})`);
   }
   if (uiPort !== null && uiPort >= start && uiPort <= end) throw new Error('config: ui.port must lie outside limits.port_range (agents may bind those ports)');
+  if (uiPort !== null && Number(new URL(serverUrl).port) === uiPort) throw new Error('config: ui.port is server_url\'s port');
 
   return {
     deviceId,
@@ -373,6 +403,16 @@ export function parseProvider(name: string, t: Record<string, unknown>): Provide
  */
 export function renderConfig(raw: Record<string, unknown>, opts: ParseOptions & { token?: string } = {}): string {
   parseConfig(raw, opts.token ?? (raw.auth === 'device-key' ? '' : 'x'.repeat(32)), opts);
+  // Strict parsing refuses unknown keys; this refuses a credential in a known one (D-48, D-64).
+  const walk = (v: unknown, where: string): void => {
+    if (typeof v === 'string') {
+      if (CREDENTIAL_SHAPES.some((re) => re.test(v)) || (opts.token && opts.token.length >= 8 && v.includes(opts.token))) {
+        throw new Error(`config: ${where} looks like a credential; keys never go in config.toml`);
+      }
+    } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${where}[${i}]`));
+    else if (typeof v === 'object' && v !== null) for (const [k, x] of Object.entries(v)) walk(x, where ? `${where}.${k}` : k);
+  };
+  walk(raw, '');
   return stringify(raw);
 }
 
