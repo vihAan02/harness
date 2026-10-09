@@ -259,7 +259,8 @@ export async function verifySquash(repo: string, merge: string, base: string, he
 
 /**
  * Another member's device settled this land while this one was away (D-115): GitHub is never asked again. A land it
- * completed still gets this device's tidying up: its leases untracked, its worktree and branch removed if unchanged.
+ * completed still gets this device's tidying up: its leases untracked, its worktree and branch removed if unchanged,
+ * but only once this device has checked the squash itself. Another device's word is no reason to delete work.
  */
 async function settledElsewhere(c: Ctx): Promise<boolean> {
   const now = c.d.view(c.project.id).lands.get(c.land.id);
@@ -267,7 +268,19 @@ async function settledElsewhere(c: Ctx): Promise<boolean> {
   c.d.log(`${c.land.taskId}'s land was settled while this device was away (${now.status}${now.reason ? `: ${now.reason}` : ''}); not asking GitHub again`);
   if (now.status === 'completed' && now.newBaseSha) {
     c.d.leases.untrack(c.land.taskId);
-    await cleanup(c, now.newBaseSha);
+    const { project } = c;
+    const merge = now.newBaseSha;
+    const checked = await fetchBase(project.repo, project.remote!, project.baseBranch, project.id)
+      .then(async (tip) => (await gitRemote(project.repo, 'merge-base', '--is-ancestor', merge, tip).then(() => true, () => false)) && verifySquash(project.repo, merge, c.base, c.head))
+      .catch((e: Error) => { c.d.log(`kept ${c.land.taskId}'s branch and worktree: couldn't check its merge (${e.message.split('\n')[0]})`); return null; });
+    if (checked === null) return true;
+    if (!checked || !checked.ok) {
+      const why = !checked ? `isn't on ${project.baseBranch}` : `has parent ${checked.parent.slice(0, 12)}, trees ${checked.trees}`;
+      c.d.log(`SECURITY: ${c.land.taskId}'s land was recorded by another device as merged as ${merge.slice(0, 12)}, which ${why} here: not the approved head on the approved base. Its branch and worktree stay`);
+      c.d.journal().append(project.id, c.land.taskId, 'verification_failed', { land_id: c.land.id, merge, settled_by: 'another device' });
+      return true;
+    }
+    await cleanup(c, merge);
   }
   return true;
 }

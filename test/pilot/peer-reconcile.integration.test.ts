@@ -3,12 +3,14 @@
 // offline; past the threshold, B's harnessd settles A's land from what GitHub shows, read with B's own login, once.
 // - GitHub ran A's merge: the land completes (task landed, readers told), and A, waking, adds nothing.
 // - Nothing was merged: the land fails and A's reservation is released; A, waking, never asks GitHub to merge again.
+// - A peer records a merge that isn't the approved squash: A, waking, checks it itself and deletes nothing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Approvals } from '../../packages/daemon/src/approvals.ts';
+import { taskBranch } from '../../packages/daemon/src/git.ts';
 import { startPilotStack, type PilotStack } from '../support.ts';
 
 const CHILD = path.resolve(import.meta.dirname, 'harnessd-child.ts');
@@ -27,6 +29,8 @@ async function harnessdA(s: PilotStack, children: ChildProcess[], retryMs: numbe
   await s.until(() => lines.some((l) => l.ready), 30_000, 'A\'s harnessd to be ready');
   return { proc, logs: () => lines.map((l) => String(l.log ?? '')) };
 }
+const unsure = async (s: PilotStack) =>
+  (await s.db.pool.query("SELECT count(*)::int AS n FROM events WHERE project_id = $1 AND kind = 'land.progress' AND data->>'step' = 'outcome_unknown'", [s.project])).rows[0].n as number;
 const rows = async (s: PilotStack, kind: string, task: string) =>
   (await s.db.pool.query("SELECT data FROM events WHERE project_id = $1 AND kind = $2 AND data->>'task_id' = $3 ORDER BY seq", [s.project, kind, task])).rows.map((r) => r.data as Record<string, any>);
 const waitFor = async (what: string, pred: () => boolean | Promise<boolean>, ms = 30_000) => {
@@ -50,8 +54,8 @@ async function mergeRequested(s: PilotStack, name: string) {
   return task;
 }
 
-async function withStack(retryMs: number, body: (s: PilotStack, a: Awaited<ReturnType<typeof harnessdA>>) => Promise<void>) {
-  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, daemons: false, server: SERVER, sideOptions: { b: B } });
+async function withStack(retryMs: number, body: (s: PilotStack, a: Awaited<ReturnType<typeof harnessdA>>) => Promise<void>, b = B) {
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, daemons: false, server: SERVER, sideOptions: { b } });
   const children: ChildProcess[] = [];
   try {
     await s.b.daemon.start();
@@ -94,7 +98,7 @@ test('A falls asleep with nothing merged: B releases its reservation, and A, wak
   await withStack(3000, async (s, a) => {
     s.fake.mergeFault = 'error5xx'; // nothing merged: A will ask GitHub again after its retry wait
     const task = await mergeRequested(s, 'agent/sleepy2');
-    await waitFor('A to be unsure', async () => (await s.db.pool.query("SELECT count(*)::int AS n FROM events WHERE project_id = $1 AND kind = 'land.progress' AND data->>'step' = 'outcome_unknown'", [s.project])).rows[0].n === 1);
+    await waitFor('A to be unsure', async () => (await unsure(s)) === 1);
     a.proc.kill('SIGSTOP'); // asleep in its retry wait
     await waitFor('B\'s reconcile', async () => (await rows(s, 'land.failed', task)).length === 1, 20_000).catch((e: Error) => { throw new Error(`${e.message}; B: ${s.b.logs.slice(-15).join(' | ')}`); });
     const [failed] = await rows(s, 'land.failed', task);
@@ -108,4 +112,31 @@ test('A falls asleep with nothing merged: B releases its reservation, and A, wak
     assert.ok(!s.fake.prs().some((p) => p.merged));
     assert.equal((await rows(s, 'land.failed', task)).length, 1);
   });
+});
+
+test('a peer records a merge that isn\'t the approved squash: A, waking, checks it itself, and its branch and worktree stay', async () => {
+  // B's own harnessd never settles it here: the test speaks for a peer that says "merged, verified" without checking.
+  await withStack(3000, async (s, a) => {
+    s.fake.mergeFault = 'error5xx'; // A's merge request fails; A will look again after its retry wait
+    const task = await mergeRequested(s, 'agent/trusting');
+    await waitFor('A to be unsure', async () => (await unsure(s)) === 1);
+    a.proc.kill('SIGSTOP'); // asleep in its retry wait
+    const land = (await s.db.pool.query('SELECT id, pr_number, approved_head_sha, approved_base_sha FROM lands WHERE task_id = $1', [task])).rows[0];
+    s.fake.tamperNextSquash = true;
+    const merge = await s.fake.externalMerge(land.pr_number); // merged on GitHub, but not the approved head's tree
+    await waitFor('the server to take the peer\'s word, once A is silent', async () => {
+      const r = await s.b.daemon.link!.command(s.project, 'land.reconcile', {
+        land_id: land.id, pr_number: land.pr_number, observed_head_sha: land.approved_head_sha, observed_base_sha: land.approved_base_sha,
+        merged: true, merge_sha: merge, verified: true, changed: [],
+      }).catch((e: Error) => { if (/was heard from/.test(e.message)) return null; throw e; });
+      return (r?.result as { status?: string } | undefined)?.status === 'completed';
+    });
+
+    a.proc.kill('SIGCONT');
+    await waitFor('A to check the merge', () => a.logs().some((l) => l.includes(`SECURITY: ${task}'s land was recorded by another device as merged as ${merge.slice(0, 12)}`)), 20_000);
+    const worktree = path.join(s.a.home.worktrees, s.project, task);
+    assert.equal(fs.readFileSync(path.join(worktree, 'sleepy.txt'), 'utf8'), 'work\n', 'the worktree stays');
+    assert.equal(execFileSync('git', ['-C', s.a.repo, 'rev-parse', `refs/heads/${taskBranch(task)}`], { encoding: 'utf8' }).trim(), land.approved_head_sha, 'and its branch');
+    assert.equal(s.fake.mergesReceived, 1, 'A never asked GitHub to merge again');
+  }, { pollMs: 150, reconcileAfterMs: 600_000 });
 });
