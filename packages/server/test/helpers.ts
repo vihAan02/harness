@@ -42,6 +42,8 @@ export async function seedProject(pool: pg.Pool): Promise<string> {
  * Holds a project's lease lock in a transaction of its own, like a lease command in progress (D-97), until
  * `release()`. `queued()` finds a command waiting behind it and returns that command's transaction start,
  * which is what `now()` means in it; it returns null if `done()` turns true first (nothing waited).
+ * The query reads `pg_stat_activity` (a snapshot) before `pg_locks` (live), so a command that began and queued
+ * between the two reads shows as waiting with no transaction start yet: that one is looked at again.
  */
 export async function holdLeaseLock(pool: pg.Pool, projectId: string) {
   const tx = await pool.connect();
@@ -52,12 +54,12 @@ export async function holdLeaseLock(pool: pg.Pool, projectId: string) {
     tx,
     async queued(done: () => boolean): Promise<Date | null> {
       for (const until = Date.now() + 10_000; Date.now() < until; await sleep(5)) {
-        const waiting = (await pool.query<{ xact_start: Date }>(
+        const waiting = (await pool.query<{ xact_start: Date | null }>(
           `SELECT a.xact_start FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
            WHERE l.locktype = 'advisory' AND NOT l.granted AND l.objsubid = 1
              AND l.classid::bigint = (hashtext('harness.leases:' || $1)::bigint >> 32) & 4294967295
              AND l.objid::bigint = hashtext('harness.leases:' || $1)::bigint & 4294967295`, [projectId])).rows[0];
-        if (waiting) return waiting.xact_start;
+        if (waiting?.xact_start) return waiting.xact_start;
         if (done()) return null;
       }
       throw new Error('nothing queued for the lease lock, and nothing finished');
