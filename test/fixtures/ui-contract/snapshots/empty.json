@@ -1,0 +1,34 @@
+{
+  "v": 1,
+  "project_id": "prj_harness",
+  "head_seq": 3,
+  "integration_mode": "github",
+  "taken_at": "2026-10-09T10:41:00.000Z",
+  "device_id": "dev_vihaan_mbp",
+  "principal": "human_vihaan",
+  "connection": "connected",
+  "tasks": [],
+  "agents": [],
+  "devices": [
+    {
+      "device_id": "dev_vihaan_mbp",
+      "online": true,
+      "at": "2026-10-09T10:00:00.000Z"
+    },
+    {
+      "device_id": "dev_daniyal_mac",
+      "online": false,
+      "at": "2026-10-09T10:38:00.000Z"
+    }
+  ],
+  "messages": [],
+  "waits": [],
+  "lands": [],
+  "base_advances": [],
+  "budget": {
+    "day": "2026-10-09",
+    "spent_usd": 0,
+    "daily_budget_usd": 0.25,
+    "session_cap_usd": 0.1
+  }
+}
