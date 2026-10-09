@@ -200,11 +200,12 @@ export async function landExternal(ctx: HandlerContext, args: Record<string, unk
   if (!pr || pr.pr_number !== n) throw new CommandError('conflict', `${task.id}'s PR isn't #${n}`);
   const inFlight = (await ctx.tx.query<{ id: string }>("SELECT id FROM lands WHERE task_id = $1 AND status IN ('requested', 'accepted')", [task.id])).rows[0];
   if (inFlight) return { result: { status: 'reservation_active', land_id: inFlight.id }, events: [] };
-  if ((await ctx.tx.query('SELECT 1 FROM base_advances WHERE project_id = $1 AND new_sha = $2', [ctx.projectId, mergeSha])).rowCount) {
-    return { result: { status: 'known' }, events: [] };
-  }
+  // Another daemon's poll may have seen this merge first, as a move of the base outside the harness: its readers were
+  // told then, and the chain already moved. The task still lands, once, without a second notice.
+  const seen = (await ctx.tx.query<{ source: string; status: string }>('SELECT source, status FROM base_advances WHERE project_id = $1 AND new_sha = $2', [ctx.projectId, mergeSha])).rows[0];
+  if (seen && seen.source !== 'external') return { result: { status: 'known' }, events: [] };
   const tip = (await ctx.tx.query<{ tip_sha: string }>('SELECT tip_sha FROM project_bases WHERE project_id = $1 FOR UPDATE', [ctx.projectId])).rows[0]?.tip_sha;
-  if (tip && tip !== oldBase) return { result: { status: 'stale', tip }, events: [] };
+  if (!seen && tip && tip !== oldBase) return { result: { status: 'stale', tip }, events: [] };
   const id = `land_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
   const blobs = JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])));
   await ctx.tx.query(
@@ -213,16 +214,20 @@ export async function landExternal(ctx: HandlerContext, args: Record<string, unk
     [id, ctx.projectId, task.id, device, n, oldBase, pr.head_sha, mergeSha, changed.map((c) => c.path), blobs]);
   await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
   await ctx.tx.query("UPDATE task_prs SET state = 'closed', merged = true, merge_sha = $2, updated_at = now() WHERE task_id = $1", [task.id, mergeSha]);
-  await ctx.tx.query(
-    `INSERT INTO project_bases (project_id, tip_sha) VALUES ($1, $2) ON CONFLICT (project_id) DO UPDATE SET tip_sha = $2, updated_at = now()`,
-    [ctx.projectId, mergeSha]);
-  await ctx.tx.query(
-    "INSERT INTO base_advances (project_id, new_sha, old_sha, source, changed_blobs, observed_by) VALUES ($1, $2, $3, $4, $5, $6)",
-    [ctx.projectId, mergeSha, oldBase, `land:${id}`, blobs, device]);
+  if (seen) {
+    await ctx.tx.query('UPDATE base_advances SET source = $3 WHERE project_id = $1 AND new_sha = $2', [ctx.projectId, mergeSha, `land:${id}`]);
+  } else {
+    await ctx.tx.query(
+      `INSERT INTO project_bases (project_id, tip_sha) VALUES ($1, $2) ON CONFLICT (project_id) DO UPDATE SET tip_sha = $2, updated_at = now()`,
+      [ctx.projectId, mergeSha]);
+    await ctx.tx.query(
+      "INSERT INTO base_advances (project_id, new_sha, old_sha, source, changed_blobs, observed_by) VALUES ($1, $2, $3, $4, $5, $6)",
+      [ctx.projectId, mergeSha, oldBase, `land:${id}`, blobs, device]);
+  }
   const events: Events = [
     { kind: 'land.completed', data: { land_id: id, task_id: task.id, old_base_sha: oldBase, new_base_sha: mergeSha, changed_paths: changed.map((c) => c.path), external: true, pr_number: n } },
     ...await releaseOnLand(ctx, task.id, at),
   ];
-  events.push(...await noticeLanded(ctx, { task: task.id, agent: task.assignee_agent_id, landId: id, newBase: mergeSha }, changed));
+  if (!seen) events.push(...await noticeLanded(ctx, { task: task.id, agent: task.assignee_agent_id, landId: id, newBase: mergeSha }, changed));
   return { result: { status: 'landed', land_id: id }, events };
 }
