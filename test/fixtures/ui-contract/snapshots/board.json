@@ -1,0 +1,746 @@
+{
+  "v": 1,
+  "project_id": "prj_harness",
+  "head_seq": 240,
+  "integration_mode": "github",
+  "taken_at": "2026-10-09T10:41:00.000Z",
+  "device_id": "dev_vihaan_mbp",
+  "principal": "human_vihaan",
+  "connection": "connected",
+  "tasks": [
+    {
+      "id": "T-1",
+      "title": "Add the login form",
+      "text": "Add the login form. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t1.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": null,
+      "status": "open",
+      "state": "open",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": null,
+      "completed_at": null,
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-2",
+      "title": "Show presence on the board",
+      "text": "Show presence on the board. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t2.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_daniyal000000000ui",
+      "status": "in_progress",
+      "state": "awaiting_approval",
+      "state_detail": "waiting for human_daniyal to approve the start on dev_daniyal_mac",
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": null,
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-3",
+      "title": "Bridge health endpoint",
+      "text": "Bridge health endpoint. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t3.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "in_progress",
+      "state": "starting",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": null,
+      "session": {
+        "id": "s-3",
+        "agent_id": "agent_vihaan0000000000ui",
+        "device_id": "dev_vihaan_mbp",
+        "status": "starting",
+        "started_at": "2026-10-09T10:01:00.000Z",
+        "ended_at": null,
+        "end_reason": null,
+        "model": "anthropic/claude-haiku-5.5",
+        "cost_usd": 0.012,
+        "input_tokens": 2400,
+        "output_tokens": 310
+      },
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-4",
+      "title": "Board columns",
+      "text": "Board columns. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t4.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "in_progress",
+      "state": "running",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": null,
+      "session": {
+        "id": "s-4",
+        "agent_id": "agent_vihaan0000000000ui",
+        "device_id": "dev_vihaan_mbp",
+        "status": "waiting",
+        "started_at": "2026-10-09T10:01:00.000Z",
+        "ended_at": null,
+        "end_reason": null,
+        "model": "anthropic/claude-haiku-5.5",
+        "cost_usd": 0.012,
+        "input_tokens": 2400,
+        "output_tokens": 310
+      },
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [
+        "packages/ui/web/api.ts"
+      ],
+      "leases": [
+        {
+          "path": "packages/ui/web/model/board.ts",
+          "expires_at": "2026-10-09T10:42:00.000Z"
+        }
+      ],
+      "open_wait": {
+        "id": "wait_0001",
+        "task_id": "T-4",
+        "session_id": "s-4",
+        "on": {
+          "kind": "task",
+          "id": "T-12"
+        },
+        "outcome": "waiting",
+        "started_at": "2026-10-09T10:30:00.000Z",
+        "timeout_at": "2026-10-09T10:40:00.000Z",
+        "finished_at": null,
+        "reason": null
+      },
+      "cost_usd": 0.031
+    },
+    {
+      "id": "T-5",
+      "title": "Approvals panel",
+      "text": "Approvals panel. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t5.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "in_progress",
+      "state": "stopped",
+      "state_detail": "harnessd_restarted",
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": null,
+      "session": {
+        "id": "s-5",
+        "agent_id": "agent_vihaan0000000000ui",
+        "device_id": "dev_vihaan_mbp",
+        "status": "ended",
+        "started_at": "2026-10-09T10:01:00.000Z",
+        "ended_at": "2026-10-09T10:20:00.000Z",
+        "end_reason": "harnessd_restarted",
+        "model": "anthropic/claude-haiku-5.5",
+        "cost_usd": 0.012,
+        "input_tokens": 2400,
+        "output_tokens": 310
+      },
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0.044
+    },
+    {
+      "id": "T-6",
+      "title": "Messages view",
+      "text": "Messages view. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t6.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "blocked",
+      "state": "blocked",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": null,
+      "session": {
+        "id": "s-6",
+        "agent_id": "agent_vihaan0000000000ui",
+        "device_id": "dev_vihaan_mbp",
+        "status": "ended",
+        "started_at": "2026-10-09T10:01:00.000Z",
+        "ended_at": "2026-10-09T10:25:00.000Z",
+        "end_reason": "ended",
+        "model": "anthropic/claude-haiku-5.5",
+        "cost_usd": 0.012,
+        "input_tokens": 2400,
+        "output_tokens": 310
+      },
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-7",
+      "title": "Budget line",
+      "text": "Budget line. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t7.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "done",
+      "state": "done",
+      "state_detail": null,
+      "summary": "Added the budget line with words, not color alone.",
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:26:00.000Z",
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-8",
+      "title": "Router",
+      "text": "Router. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t8.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "done",
+      "state": "publish_pending_approval",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:27:00.000Z",
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-9",
+      "title": "Toast messages",
+      "text": "Toast messages. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t9.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "done",
+      "state": "publishing",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:28:00.000Z",
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-10",
+      "title": "Task detail",
+      "text": "Task detail. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t10.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "done",
+      "state": "publish_blocked",
+      "state_detail": "secret:openrouter_key",
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:29:00.000Z",
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": [
+        {
+          "rule": "secret:openrouter_key",
+          "path": "notes.txt",
+          "commit": "cccccccccccccccccccccccccccccccccccccccc"
+        }
+      ],
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-11",
+      "title": "Inbox view",
+      "text": "Inbox view. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t11.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "done",
+      "state": "pr_open",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:31:00.000Z",
+      "session": null,
+      "pr": {
+        "number": 120,
+        "url": "https://github.com/vihAan02/harness/pull/120",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "open",
+        "merged": false,
+        "merge_sha": null,
+        "mergeable_state": "clean",
+        "checks": {
+          "guard": "success",
+          "unit-linux": "success",
+          "full-macos": "pending"
+        },
+        "reviews": [
+          {
+            "login": "DaniyalMughal1",
+            "state": "COMMENTED",
+            "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "updated_at": "2026-10-09T10:40:00.000Z"
+      },
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-12",
+      "title": "Integration page",
+      "text": "Integration page. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t12.ts"
+      ],
+      "owner_human_id": "human_daniyal",
+      "priority": 0,
+      "assignee_agent_id": "agent_daniyal000000000ui",
+      "status": "done",
+      "state": "integrating",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:33:00.000Z",
+      "session": null,
+      "pr": {
+        "number": 121,
+        "url": "https://github.com/vihAan02/harness/pull/121",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "open",
+        "merged": false,
+        "merge_sha": null,
+        "mergeable_state": "clean",
+        "checks": {
+          "guard": "success",
+          "unit-linux": "success",
+          "full-macos": "success"
+        },
+        "reviews": [
+          {
+            "login": "vihAan02",
+            "state": "APPROVED",
+            "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "updated_at": "2026-10-09T10:40:00.000Z"
+      },
+      "land": {
+        "id": "land_00000000000000aa",
+        "task_id": "T-12",
+        "mode": "github",
+        "status": "accepted",
+        "step": "merge_requested",
+        "reason": null,
+        "detail": null,
+        "pr_number": 121,
+        "new_base_sha": null,
+        "requested_at": "2026-10-09T10:45:00.000Z",
+        "finished_at": null
+      },
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-14",
+      "title": "A11y pass",
+      "text": "A11y pass. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t14.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "in_progress",
+      "state": "fetch_pending",
+      "state_detail": "git fetch: unable to access https://github.com/vihAan02/harness.git",
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": null,
+      "session": {
+        "id": "s-14",
+        "agent_id": "agent_vihaan0000000000ui",
+        "device_id": "dev_vihaan_mbp",
+        "status": "ended",
+        "started_at": "2026-10-09T10:01:00.000Z",
+        "ended_at": "2026-10-09T10:35:00.000Z",
+        "end_reason": "ended",
+        "model": "anthropic/claude-haiku-5.5",
+        "cost_usd": 0.012,
+        "input_tokens": 2400,
+        "output_tokens": 310
+      },
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-15",
+      "title": "Shell and stylesheet",
+      "text": "Shell and stylesheet. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t15.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "landed",
+      "state": "landed",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:10:00.000Z",
+      "session": null,
+      "pr": {
+        "number": 118,
+        "url": "https://github.com/vihAan02/harness/pull/118",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "closed",
+        "merged": true,
+        "merge_sha": "dddddddddddddddddddddddddddddddddddddddd",
+        "mergeable_state": "clean",
+        "checks": {
+          "guard": "success",
+          "unit-linux": "success",
+          "full-macos": "success"
+        },
+        "reviews": [],
+        "updated_at": "2026-10-09T10:40:00.000Z"
+      },
+      "land": {
+        "id": "land_00000000000000bb",
+        "task_id": "T-15",
+        "mode": "github",
+        "status": "completed",
+        "step": null,
+        "reason": null,
+        "detail": null,
+        "pr_number": 118,
+        "new_base_sha": "dddddddddddddddddddddddddddddddddddddddd",
+        "requested_at": "2026-10-09T10:45:00.000Z",
+        "finished_at": "2026-10-09T10:12:00.000Z"
+      },
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    },
+    {
+      "id": "T-16",
+      "title": "Dark mode",
+      "text": "Dark mode. Keep to the scope; run the tests the task lists.",
+      "scope": [
+        "packages/ui/web/model/t16.ts"
+      ],
+      "owner_human_id": "human_vihaan",
+      "priority": 0,
+      "assignee_agent_id": "agent_vihaan0000000000ui",
+      "status": "abandoned",
+      "state": "abandoned",
+      "state_detail": null,
+      "summary": null,
+      "created_at": "2026-10-09T10:00:00.000Z",
+      "assigned_at": "2026-10-09T10:01:00.000Z",
+      "completed_at": "2026-10-09T10:05:00.000Z",
+      "session": null,
+      "pr": null,
+      "land": null,
+      "publish_blocked": null,
+      "stale_reads": [],
+      "leases": [],
+      "open_wait": null,
+      "cost_usd": 0
+    }
+  ],
+  "agents": [
+    {
+      "id": "agent_vihaan0000000000ui",
+      "name": "agent/vihaan-ui",
+      "vendor": "claude",
+      "human_id": "human_vihaan",
+      "device_id": "dev_vihaan_mbp",
+      "online": true,
+      "active_task_id": "T-4",
+      "live_session_id": "s-4"
+    },
+    {
+      "id": "agent_daniyal000000000ui",
+      "name": "agent/daniyal-ui",
+      "vendor": "claude",
+      "human_id": "human_daniyal",
+      "device_id": "dev_daniyal_mac",
+      "online": false,
+      "active_task_id": null,
+      "live_session_id": null
+    }
+  ],
+  "devices": [
+    {
+      "device_id": "dev_vihaan_mbp",
+      "online": true,
+      "at": "2026-10-09T10:00:00.000Z"
+    },
+    {
+      "device_id": "dev_daniyal_mac",
+      "online": false,
+      "at": "2026-10-09T10:38:00.000Z"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg_0030",
+      "kind": "question",
+      "from": "agent_daniyal000000000ui",
+      "to": "agent_vihaan0000000000ui",
+      "from_task": "T-12",
+      "to_task": "T-4",
+      "in_reply_to": null,
+      "text": "Which field of ProjectSnapshot carries the budget?",
+      "priority": "normal",
+      "sent_at": "2026-10-09T10:30:00.000Z",
+      "seq": 30
+    },
+    {
+      "id": "msg_0031",
+      "kind": "answer",
+      "from": "agent_vihaan0000000000ui",
+      "to": "agent_daniyal000000000ui",
+      "from_task": "T-4",
+      "to_task": "T-12",
+      "in_reply_to": "msg_0030",
+      "text": "`budget`: day, spent_usd, daily_budget_usd, session_cap_usd.",
+      "priority": "normal",
+      "sent_at": "2026-10-09T10:31:00.000Z",
+      "seq": 31
+    },
+    {
+      "id": "msg_0036",
+      "kind": "question",
+      "from": "agent_daniyal000000000ui",
+      "to": "agent_vihaan0000000000ui",
+      "from_task": "T-12",
+      "to_task": "T-4",
+      "in_reply_to": null,
+      "text": "Is the banner role=status or role=alert?",
+      "priority": "normal",
+      "sent_at": "2026-10-09T10:36:00.000Z",
+      "seq": 36
+    },
+    {
+      "id": "msg_0037",
+      "kind": "task_blocked",
+      "from": "agent_vihaan0000000000ui",
+      "to": "human_vihaan",
+      "from_task": "T-6",
+      "to_task": "T-6",
+      "in_reply_to": null,
+      "text": "A sync conflict in packages/ui/web/app.ts; resolve it in the worktree, then unblock.",
+      "priority": "normal",
+      "sent_at": "2026-10-09T10:37:00.000Z",
+      "seq": 37
+    },
+    {
+      "id": "msg_0038",
+      "kind": "claim_conflict",
+      "from": "harness",
+      "to": "agent_vihaan0000000000ui",
+      "from_task": null,
+      "to_task": "T-4",
+      "in_reply_to": null,
+      "text": "agent/daniyal-ui is also editing packages/ui/web/api.ts (T-12).",
+      "priority": "high",
+      "sent_at": "2026-10-09T10:38:00.000Z",
+      "seq": 38
+    },
+    {
+      "id": "msg_0039",
+      "kind": "dependency_changed",
+      "from": "harness",
+      "to": "agent_vihaan0000000000ui",
+      "from_task": "T-15",
+      "to_task": "T-4",
+      "in_reply_to": null,
+      "text": "T-15 landed; packages/ui/web/api.ts changed since you read it.",
+      "priority": "high",
+      "sent_at": "2026-10-09T10:39:00.000Z",
+      "seq": 39
+    }
+  ],
+  "waits": [
+    {
+      "id": "wait_0001",
+      "task_id": "T-4",
+      "session_id": "s-4",
+      "on": {
+        "kind": "task",
+        "id": "T-12"
+      },
+      "outcome": "waiting",
+      "started_at": "2026-10-09T10:30:00.000Z",
+      "timeout_at": "2026-10-09T10:40:00.000Z",
+      "finished_at": null,
+      "reason": null
+    }
+  ],
+  "lands": [
+    {
+      "id": "land_00000000000000aa",
+      "task_id": "T-12",
+      "mode": "github",
+      "status": "accepted",
+      "step": "merge_requested",
+      "reason": null,
+      "detail": null,
+      "pr_number": 121,
+      "new_base_sha": null,
+      "requested_at": "2026-10-09T10:45:00.000Z",
+      "finished_at": null
+    },
+    {
+      "id": "land_00000000000000bb",
+      "task_id": "T-15",
+      "mode": "github",
+      "status": "completed",
+      "step": null,
+      "reason": null,
+      "detail": null,
+      "pr_number": 118,
+      "new_base_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "requested_at": "2026-10-09T10:45:00.000Z",
+      "finished_at": "2026-10-09T10:12:00.000Z"
+    }
+  ],
+  "base_advances": [
+    {
+      "old_sha": "dddddddddddddddddddddddddddddddddddddddd",
+      "new_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "changed_paths": [
+        "README.md"
+      ],
+      "at": "2026-10-09T10:39:00.000Z"
+    }
+  ],
+  "budget": {
+    "day": "2026-10-09",
+    "spent_usd": 0.205,
+    "daily_budget_usd": 0.25,
+    "session_cap_usd": 0.1
+  }
+}
