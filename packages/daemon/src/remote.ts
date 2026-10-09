@@ -77,6 +77,19 @@ export async function fetchBase(repo: string, remote: string, branch: string, pr
   });
 }
 
+/**
+ * A PR's head, fetched by its pull ref (`refs/pull/<n>/head`, which GitHub keeps after the head branch is deleted), into
+ * `refs/harness/<project>/pull/<n>`, so another member's device can check a squash against it (D-115). Returns the head.
+ */
+export async function fetchPullHead(repo: string, remote: string, projectId: string, pr: number): Promise<string> {
+  if (!Number.isSafeInteger(pr) || pr < 1) throw new RemoteError(`malformed PR number ${pr}`);
+  const ref = `refs/harness/${projectId}/pull/${pr}`;
+  return serially(repo, async () => {
+    await gitRemote(repo, 'fetch', '--no-tags', '--no-write-fetch-head', '--', remote, `+refs/pull/${pr}/head:${ref}`);
+    return gitRemote(repo, 'rev-parse', '--verify', `${ref}^{commit}`);
+  });
+}
+
 /** Is `sha` on the fetched base (an ancestor of it, or it)? The check every receiver makes before trusting a commit. */
 export async function onFetchedBase(repo: string, projectId: string, sha: string): Promise<boolean> {
   if (!SHA.test(sha)) return false;

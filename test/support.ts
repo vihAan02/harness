@@ -215,6 +215,8 @@ export async function startPilotStack(p: {
   daemons?: boolean; daemonOptions?: Partial<DaemonOptions>; fake?: FakeGitHubOptions;
   /** Options for one side's harnessd only, such as its UI socket. */
   sideOptions?: { a?: Partial<DaemonOptions>; b?: Partial<DaemonOptions> };
+  /** The coordinator's timings, such as how soon a silent device is offline and a peer may settle its land (D-115). */
+  server?: { offlineAfterMs?: number; reconcileAfterMs?: number };
 } = {}) {
   const cleanup: (() => Promise<void> | void)[] = [];
   const errors: unknown[] = [];
@@ -236,7 +238,7 @@ export async function startPilotStack(p: {
     await db.pool.query("INSERT INTO project_memberships (project_id, human_id, role) VALUES ($1, 'human_a', 'owner'), ($1, 'human_b', 'owner')", [project]);
     await db.pool.query("INSERT INTO devices (id, human_id, name, public_key) VALUES ('dev_a', 'human_a', 'mac-a', $1), ('dev_b', 'human_b', 'mac-b', $2)", [keys.a.publicKey, keys.b.publicKey]);
     const serverKey = generateKeyPair();
-    const server = await startServer({ pool: db.pool, databaseUrl: TEST_DATABASE_URL, schema: db.schema, serverKey: parsePrivateKey(serverKey.privateKeyPem), port: 0, onError: (e) => errors.push(e) });
+    const server = await startServer({ pool: db.pool, databaseUrl: TEST_DATABASE_URL, schema: db.schema, serverKey: parsePrivateKey(serverKey.privateKeyPem), port: 0, onError: (e) => errors.push(e), ...p.server });
     cleanup.push(() => server.close());
     const fake = await FakeGitHub.start({ ...p.fake, ...(p.files ? { files: p.files } : {}) });
     cleanup.push(() => fake.close());

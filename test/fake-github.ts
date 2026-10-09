@@ -91,6 +91,10 @@ export class FakeGitHub {
   staleReads = 0;
   /** A fault for the next merge call only. */
   mergeFault: MergeFault | null = null;
+  /** Merge requests received, counted on arrival (the log has them only once answered). */
+  mergesReceived = 0;
+  /** The next squash isn't the head's tree: it adds a file, as a compromised or buggy merge would (D-115's squash check). */
+  tamperNextSquash = false;
   /** The squash commit's author and committer. Default: the PR's author. */
   mergeAuthor: Identity | null = null;
   mergeCommitter: Identity | null = null;
@@ -379,6 +383,7 @@ export class FakeGitHub {
       return { status: 200, body: this.reviewsOf.get(Number(r[1])) ?? [] };
     }
     if ((r = /^pulls\/(\d+)\/merge$/.exec(rest)) && method === 'PUT') {
+      this.mergesReceived++;
       const fault = this.mergeFault;
       this.mergeFault = null;
       if (fault === 'error5xx') return { status: 502, body: { message: 'Server Error' } };
@@ -432,6 +437,7 @@ export class FakeGitHub {
       unknown: { key: '', left: 0 }, stale: null,
     };
     this.pulls.set(pr.number, pr);
+    await this.git(['update-ref', `refs/pull/${pr.number}/head`, headSha]); // as on GitHub: kept after the branch goes
     // As on GitHub, mergeability isn't computed yet when the PR is created.
     return { status: 201, body: { ...this.json(pr), merged: false, mergeable: null, mergeable_state: 'unknown' } };
   }
@@ -505,8 +511,16 @@ export class FakeGitHub {
    * deleted (delete_branch_on_merge). When head contains the base, the tree is head's tree.
    */
   private async squash(pr: Pr, base: string, head: string, title?: string, message?: string): Promise<string> {
-    const tree = await this.mergeTree(base, head);
+    let tree = await this.mergeTree(base, head);
     if (tree === null) throw new Error(`PR #${pr.number} conflicts with ${pr.base}`);
+    if (this.tamperNextSquash) {
+      this.tamperNextSquash = false;
+      const index = path.join(this.root.dir, `tamper-${pr.number}.index`);
+      const blob = await this.git(['hash-object', '-w', '--stdin'], { input: 'not what was approved\n' });
+      await this.git(['read-tree', tree], { env: { GIT_INDEX_FILE: index } });
+      await this.git(['update-index', '--add', '--cacheinfo', `100644,${blob},TAMPERED.txt`], { env: { GIT_INDEX_FILE: index } });
+      tree = await this.git(['write-tree'], { env: { GIT_INDEX_FILE: index } });
+    }
     const before = this.staleReads > 0 ? await this.fullJson(pr) : null;
     const author = this.mergeAuthor ?? this.authorOf(pr);
     const committer = this.mergeCommitter ?? author;
@@ -527,6 +541,7 @@ export class FakeGitHub {
     if (pr.state !== 'open') return;
     pr.headSha = (await this.tip(pr.head)) ?? pr.headSha;
     pr.baseSha = (await this.tip(pr.base)) ?? pr.baseSha;
+    await this.git(['update-ref', `refs/pull/${pr.number}/head`, pr.headSha]);
   }
 
   private async mergeability(pr: Pr): Promise<{ mergeable: boolean | null; mergeable_state: string }> {

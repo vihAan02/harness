@@ -124,6 +124,10 @@ export type LandArmArgs = { land_id: string; head_sha: string; base_sha: string 
 /** `land.reconcile` (another member device, when the reserving one has been offline ≥ 10 minutes): GitHub's evidence (D-115). */
 export type LandReconcileArgs = {
   land_id: string; pr_number: number; observed_head_sha: string; observed_base_sha: string; merged: boolean; merge_sha?: string; changed?: ChangedBlob[];
+  /** The PR's state on GitHub, when not merged. */
+  state?: 'open' | 'closed';
+  /** Merged: whether the squash is the approved head on the approved base (D-115). Only `true` completes the land. */
+  verified?: boolean;
 };
 export type LandStep = 'merged' | 'setup' | 'awaiting_approval' | 'testing' | 'tested' | 'checking' | 'merge_requested' | 'outcome_unknown';
 export type LandFailReason =

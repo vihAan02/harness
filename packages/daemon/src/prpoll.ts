@@ -7,7 +7,8 @@
 // - the task's PRs: the device that published a task's PR polls it (head, state, checks, reviews, mergeability) and
 //   reports only changes (`pr.status`). A PR merged on GitHub without the harness is reported as `land.external`.
 import { changedBetween, blobsAt } from './integrate.ts';
-import { fetchBase, gitRemote, lsRemoteBase } from './remote.ts';
+import { fetchBase, fetchPullHead, gitRemote, lsRemoteBase } from './remote.ts';
+import { verifySquash } from './integrate-remote.ts';
 import type { GitHubClient } from './github.ts';
 import type { ProjectConfig } from './config.ts';
 import type { ProjectView } from './view.ts';
@@ -23,6 +24,8 @@ export type PollerDeps = {
   advanceBase: (p: ProjectConfig, tip: string) => Promise<void>;
   log: (msg: string) => void;
   intervalMs?: number;
+  /** How long another device's GitHub land waits, its device silent, before this one settles it (D-115). Default 10 min. */
+  reconcileAfterMs?: number;
 };
 
 const ZERO = '0'.repeat(40);
@@ -74,6 +77,7 @@ export class Poller {
       try {
         await this.pollBase(p);
         await this.pollPrs(p);
+        await this.pollPeerLands(p);
       } catch (e) {
         failed = true;
         this.d.log(`polling ${p.id}: ${(e as Error).message}`);
@@ -121,6 +125,35 @@ export class Poller {
       // Merged on GitHub, and no harness land is in flight for it: a merge outside the harness (D-115's honest limit).
       const inFlight = [...view.lands.values()].some((l) => l.taskId === pr.taskId && (l.status === 'requested' || l.status === 'accepted'));
       if (live.merged && live.merge_commit_sha && !inFlight) await this.reportExternal(p, pr.taskId, pr.prNumber, live.merge_commit_sha);
+    }
+  }
+
+  /**
+   * D-115: a GitHub land whose device has been offline past the threshold (asleep mid-merge, say) is settled here from
+   * GitHub's evidence, read with this human's own login, so a reservation never outlives its device. The coordinator
+   * checks the silence too, from the heartbeats. Merged: with the squash check, so a merge that isn't the approved head
+   * on the approved base is reported as such and never lands. Not merged: the land fails and the reservation goes.
+   */
+  async pollPeerLands(p: ProjectConfig): Promise<void> {
+    const view = this.d.view(p.id);
+    const after = this.d.reconcileAfterMs ?? 10 * 60_000;
+    for (const land of view.lands.values()) {
+      if (land.mode !== 'github' || (land.status !== 'requested' && land.status !== 'accepted') || land.deviceId === this.d.deviceId) continue;
+      const presence = view.devices.get(land.deviceId);
+      if (!land.prNumber || !land.approvedHead || !land.approvedBase || !presence || presence.online || Date.now() - Date.parse(presence.at) < after) continue;
+      const pr = await this.d.github(p).pull(land.prNumber);
+      const tip = await fetchBase(p.repo, p.remote!, p.baseBranch, p.id);
+      await this.d.advanceBase(p, tip);
+      const args: Record<string, unknown> = { land_id: land.id, pr_number: land.prNumber, observed_head_sha: pr.head.sha, observed_base_sha: tip, merged: false, state: pr.state };
+      if (pr.merged && pr.merge_commit_sha) {
+        const merge = pr.merge_commit_sha;
+        if (!(await gitRemote(p.repo, 'merge-base', '--is-ancestor', merge, tip).then(() => true, () => false))) continue; // not on the base we fetched yet
+        await fetchPullHead(p.repo, p.remote!, p.id, land.prNumber); // the approved head, for the tree check
+        const v = await verifySquash(p.repo, merge, land.approvedBase, land.approvedHead);
+        Object.assign(args, { merged: true, merge_sha: merge, verified: v.ok, changed: await changedBlobsBetween(p.repo, v.parent, merge) });
+      }
+      const r = await this.d.send(p.id, 'land.reconcile', args) as { status: string; reason?: string };
+      this.d.log(`settled ${land.taskId}'s land for ${land.deviceId}, offline since ${presence.at}: PR #${land.prNumber} ${pr.merged ? 'merged' : pr.state}; the land ${r.status}${r.reason ? ` (${r.reason})` : ''}`);
     }
   }
 

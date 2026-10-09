@@ -217,6 +217,7 @@ async function reconcile(c: Ctx): Promise<void> {
   await report(c, 'outcome_unknown').catch(() => {});
   const wait = c.d.o.github?.retryMs ?? 30_000;
   for (let attempt = 0; !c.d.stopping; attempt++) {
+    if (await settledElsewhere(c)) return;
     try {
       // Awaited inside the try: a failure while completing is retried here, never lost.
       const pr = await c.gh.pull(c.pr);
@@ -249,6 +250,28 @@ async function ourSquash(c: Ctx): Promise<string | null> {
   return null;
 }
 
+/** D-115's squash check: the merged commit counts only if its parent is the approved base and its tree the approved head's. */
+export async function verifySquash(repo: string, merge: string, base: string, head: string): Promise<{ ok: boolean; parent: string; trees: 'equal' | 'differ' }> {
+  const parent = await git(repo, 'rev-parse', `${merge}^1`);
+  const [mergeTree, headTree] = await Promise.all([git(repo, 'rev-parse', `${merge}^{tree}`), git(repo, 'rev-parse', `${head}^{tree}`)]);
+  return { ok: parent === base && mergeTree === headTree, parent, trees: mergeTree === headTree ? 'equal' : 'differ' };
+}
+
+/**
+ * Another member's device settled this land while this one was away (D-115): GitHub is never asked again. A land it
+ * completed still gets this device's tidying up: its leases untracked, its worktree and branch removed if unchanged.
+ */
+async function settledElsewhere(c: Ctx): Promise<boolean> {
+  const now = c.d.view(c.project.id).lands.get(c.land.id);
+  if (!now || now.status === 'requested' || now.status === 'accepted') return false;
+  c.d.log(`${c.land.taskId}'s land was settled while this device was away (${now.status}${now.reason ? `: ${now.reason}` : ''}); not asking GitHub again`);
+  if (now.status === 'completed' && now.newBaseSha) {
+    c.d.leases.untrack(c.land.taskId);
+    await cleanup(c, now.newBaseSha);
+  }
+  return true;
+}
+
 /** Step 5 and 6: verify the merge on the base we fetched, then land.complete, then tidy up. */
 async function complete(c: Ctx, merge: string): Promise<void> {
   const { project, land } = c;
@@ -260,11 +283,20 @@ async function complete(c: Ctx, merge: string): Promise<void> {
     return reconcile(c);
   }
   await c.d.advanceProjectBase(project, tip);
-  const parent = await git(project.repo, 'rev-parse', `${merge}^1`);
-  const [mergeTree, headTree] = await Promise.all([git(project.repo, 'rev-parse', `${merge}^{tree}`), git(project.repo, 'rev-parse', `${c.head}^{tree}`)]);
-  if (parent !== c.base || mergeTree !== headTree) {
-    // It's on the base whatever it holds: readers must hear of it. But it isn't what was approved: say so, loudly.
-    c.d.log(`SECURITY: the merge ${merge.slice(0, 12)} of ${land.taskId} isn't the approved head on the approved base (parent ${parent.slice(0, 12)}, trees ${mergeTree === headTree ? 'equal' : 'differ'})`);
+  const v = await verifySquash(project.repo, merge, c.base, c.head);
+  const parent = v.parent;
+  if (!v.ok) {
+    // Not what was approved: it never counts as landed (D-115), and its branch and worktree stay for the human. It is on
+    // the base whatever it holds, so the poller reports the move (base.observe) and readers hear of it.
+    c.d.log(`SECURITY: the merge ${merge.slice(0, 12)} of ${land.taskId} isn't the approved head on the approved base (parent ${parent.slice(0, 12)}, trees ${v.trees}); its land fails, and nothing is cleaned up`);
+    c.d.journal().append(project.id, land.taskId, 'verification_failed', { land_id: land.id, merge });
+    if (c.d.view(project.id).lands.get(land.id)?.status === 'accepted') {
+      await c.d.report(project.id, 'land.fail', {
+        land_id: land.id, reason: 'verification_failed', detail: `merged as ${merge.slice(0, 12)}: parent ${parent.slice(0, 12)}, trees ${v.trees}`,
+        evidence: { state: 'closed', merged: true, merge_sha: merge, head_sha: c.head },
+      });
+    }
+    return;
   }
   // Once only: a retry after the coordinator recorded it goes straight to the cleanup.
   if (c.d.view(project.id).lands.get(land.id)?.status !== 'completed') {
