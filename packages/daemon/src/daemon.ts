@@ -52,6 +52,7 @@ import { MIN_START_USD, ProviderCircuit, RATE_LIMIT_STOP, SpendLedger } from './
 import { UiRpc } from './uirpc.ts';
 import { checkDispatch, DISPATCH_OF, makeDispatch, sessionApprovalHash, StartRefused, STARTS, type StartFailedReason, type Verdict } from './dispatch.ts';
 import { pathsSha256, taskSha256 } from '@harness/protocol/signing';
+import { Outbox } from './outbox.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -147,7 +148,11 @@ export type DaemonOptions = {
   uiPollMs?: number;
   /** The D-119 check for loopback Postgres that takes password-less logins (TH-22), for tests. Default: findTrustPostgres. */
   localServices?: { check?: () => Promise<TrustLogin[]> };
+  /** The human accepts a new coordinator database with this epoch (D-113): `harnessd --accept-coordinator <epoch>`. */
+  acceptCoordinator?: string;
 };
+/** ~/.harness/state.json: the coordinator this device serves (D-113), and how far it has acted on each project's log. */
+type SavedState = { epoch?: string; cursors: Record<string, number> };
 
 /** What a human's dispatch needs beyond its kind and task (protocol.md §12). */
 export type DispatchRequest = {
@@ -212,6 +217,10 @@ export class Daemon {
   linkState: LinkState = 'connecting'; // for status and health (D-111)
   /** This device's key with device-key auth (D-111): the handshake's, and the one dispatches are signed with (D-112). */
   deviceKey: KeyObject | null = null;
+  /** Reports that must reach the coordinator, across restarts (D-113). */
+  outbox: Outbox | null = null;
+  /** A coordinator this device never served answered (D-113): harnessd acts on nothing of it until its human accepts it. */
+  coordinatorChanged: { served: string; seen: string } | null = null;
   ui: UiRpc | null = null;
   /** The write-ahead journal (D-113), keyed by the coordinator's epoch, so it exists from the first welcome. */
   journalInstance: Journal | null = null;
@@ -260,7 +269,8 @@ export class Daemon {
     for (const o of this.orphans) {
       this.log(`killed orphaned agent process ${o.pid} (session ${o.sessionId}, task ${o.taskId}); changed: ${o.changedPaths.join(', ') || 'nothing'}`);
     }
-    const saved = readJson<{ cursors: Record<string, number> }>(this.home.state, { cursors: {} }).cursors;
+    const saved = readJson<SavedState>(this.home.state, { cursors: {} }).cursors;
+    this.outbox = new Outbox(this.home.outbox);
     const deviceKey = this.config.auth === 'device-key' ? (this.o.deviceKey ?? loadDeviceKey(this.home)) : null;
     this.deviceKey = deviceKey;
     checkAuthTarget(this.config); // before anything connects
@@ -269,7 +279,9 @@ export class Daemon {
       handshake: (subscribe) => new Handshake({ config: this.config, deviceKey, clientKind: 'harnessd', subscribe }),
       cursors: Object.fromEntries(this.config.projects.map((p) => [p.id, saved[p.id] ?? 0])),
       onEvent: (e, replayed) => this.onEvent(e, replayed),
-      onCursor: () => writeJsonAtomic(this.home.state, { cursors: this.link!.cursors }),
+      onCursor: () => this.saveState(),
+      outbox: this.outbox,
+      acceptEpoch: (epoch) => this.acceptEpoch(epoch),
       ...(this.o.heartbeatMs ? { heartbeatMs: this.o.heartbeatMs } : {}),
       log: this.log,
       onState: (state) => {
@@ -299,10 +311,45 @@ export class Daemon {
     }
   }
 
+  /** The cursors, with the coordinator they belong to (D-113). */
+  saveState(): void {
+    const served = readJson<SavedState>(this.home.state, { cursors: {} }).epoch;
+    const epoch = this.link?.epoch ?? served;
+    writeJsonAtomic(this.home.state, { ...(epoch ? { epoch } : {}), cursors: this.link!.cursors });
+  }
+
+  /**
+   * D-113: this device serves the coordinator whose epoch it saved. Another epoch is a new coordinator database: its
+   * event numbers, tasks and sessions aren't the ones this device's cursors, journals and outbox describe. The link
+   * stops before anything of it is used, running agents stop (their work stays), and the human decides: restarted
+   * with `--accept-coordinator <epoch>`, this device starts afresh with it, from the start of each project's log;
+   * the old coordinator's unsent reports go to the outbox's dead/, never to the new one.
+   */
+  acceptEpoch(epoch: string | null): boolean {
+    if (epoch === null) return true; // a server from before epochs (0B): nothing to compare
+    const served = readJson<SavedState>(this.home.state, { cursors: {} }).epoch;
+    if (served === epoch) return true;
+    if (served === undefined || this.o.acceptCoordinator === epoch) {
+      if (served !== undefined) {
+        for (const p of Object.keys(this.link!.cursors)) this.link!.cursors[p] = 0;
+        this.link!.dropDurable(`for coordinator ${served}, not ${epoch}`);
+        this.log(`D-113: serving the new coordinator ${epoch} (was ${served}), as its human accepted; each project's log is read from the start`);
+      }
+      writeJsonAtomic(this.home.state, { epoch, cursors: this.link!.cursors });
+      return true;
+    }
+    this.coordinatorChanged = { served, seen: epoch };
+    this.log(`D-113: the coordinator's epoch is ${epoch}, but this device serves ${served}: a new coordinator database. harnessd acts on nothing of it until you accept it: restart harnessd with --accept-coordinator ${epoch}`);
+    this.stopAllFor('coordinator_changed');
+    return false;
+  }
+
   /** The UI's health line (protocol.md §12): who this is, and the link's state. */
   health(): Record<string, unknown> {
     return {
       device_id: this.config.deviceId, principal: this.config.principal, connection: this.linkState, epoch: this.link?.epoch ?? null,
+      // D-113: a coordinator this device never served, and the reports still waiting for (or refused by) the coordinator.
+      coordinator_changed: this.coordinatorChanged, outbox: { pending: this.outbox?.pending() ?? 0, dead: this.outbox?.dead() ?? [] },
       // D-116: the provider circuit (null when closed) and the day's spend on this device.
       provider_circuit: this.circuit.state(), spent_today_usd: this.spend.spent(), daily_budget_usd: this.config.agents.dailyBudgetUsd,
     };
@@ -2093,9 +2140,10 @@ export class Daemon {
     if (active >= limit) throw new StartRefused('capacity', `already running ${active} task(s); the limit is ${limit} (D-38)`);
   }
 
+  /** A report the coordinator must get: through the durable outbox, so a restart sends it again until answered (D-113). */
   async report(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string): Promise<void> {
     if (!this.link) throw new Error('start() first');
-    await this.link.command(projectId, name, args, asAgent);
+    await this.link.command(projectId, name, args, asAgent, undefined, true);
   }
 
   async runApprovedSetup(project: ProjectConfig, taskId: string, worktree: string, setup: NonNullable<RepoConfig['setup']>, scratchName = taskId): Promise<void> {

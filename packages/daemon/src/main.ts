@@ -8,6 +8,9 @@ import { LockHeld } from './lockfile.ts';
 import { resolveProvider, type ResolvedProvider } from './provider.ts';
 
 const home = harnessHome();
+// `--accept-coordinator <epoch>`: this human accepts a new coordinator database (D-113), and this device starts afresh with it.
+const accept = process.argv.indexOf('--accept-coordinator');
+const acceptCoordinator = accept === -1 ? undefined : process.argv[accept + 1];
 let config: LocalConfig;
 try {
   config = loadConfig(home);
@@ -24,7 +27,10 @@ try {
   process.exit(2);
 }
 // The UI bridge talks to harnessd over an owner-only socket in ~/.harness/run (D-117).
-const daemon = new Daemon({ home, config, provider, uiSocket: path.join(home.run, 'harnessd.sock'), log: (m) => console.log(`harnessd: ${m}`) });
+const daemon = new Daemon({
+  home, config, provider, uiSocket: path.join(home.run, 'harnessd.sock'), log: (m) => console.log(`harnessd: ${m}`),
+  ...(acceptCoordinator ? { acceptCoordinator } : {}),
+});
 try {
   await daemon.start();
 } catch (e) {

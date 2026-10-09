@@ -4,7 +4,10 @@
 //   marked `replayed`, so they're folded into the view but never acted on twice (D-78). Later
 //   reconnects resume from the last event seen.
 // - Commands wait in an outbox until the server answers. After a reconnect they are resent with the
-//   same command_id, which is safe because commands are idempotent (D-74).
+//   same command_id, which is safe because commands are idempotent (D-74). Durable ones (harnessd's reports, D-113)
+//   are also on disk (outbox.ts): a restart sends them again first, in order, before anything new.
+// - The coordinator's epoch is checked at every welcome (D-113): a coordinator harnessd never served is a new
+//   database, and nothing of it is trusted or acted on until the human accepts it (`coordinator_changed`).
 // - Sends a heartbeat while connected (D-75).
 // - With device keys (D-111), nothing the server sends is trusted until its challenge verifies against the pinned
 //   server key. Until then every error and close is transient: a process squatting the port can't make harnessd
@@ -12,9 +15,10 @@
 import { randomUUID } from 'node:crypto';
 import { CLOSE_DEVICE_REPLACED, PROTOCOL_VERSION, type Command, type EventMessage, type ServerMessage, type Subscription } from '@harness/protocol';
 import { serverFrame, ServerIdentityError, untrustedText, type Handshake } from './identity.ts';
+import type { Outbox } from './outbox.ts';
 
-/** The link's state, for `harness status` and the UI's health (D-111, D-117). */
-export type LinkState = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused';
+/** The link's state, for `harness status` and the UI's health (D-111, D-113, D-117). */
+export type LinkState = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused' | 'coordinator_changed';
 
 export type LinkOptions = {
   url: string;
@@ -26,8 +30,12 @@ export type LinkOptions = {
   heartbeatMs?: number; // default 10000
   log?: (msg: string) => void;
   onState?: (state: LinkState) => void;
+  /** Where durable commands wait across restarts (D-113). Without one, `durable` is ignored. */
+  outbox?: Outbox;
+  /** Whether this coordinator is the one harnessd served (D-113); false stops the link as `coordinator_changed`. */
+  acceptEpoch?: (epoch: string | null) => boolean;
 };
-type Pending = { msg: Command; resolve: (v: { seqs: number[]; result: unknown }) => void; reject: (e: Error) => void };
+type Pending = { msg: Command; durable: boolean; resolve: (v: { seqs: number[]; result: unknown }) => void; reject: (e: Error) => void };
 
 export class CommandFailed extends Error {
   code: string;
@@ -60,6 +68,8 @@ export class ServerLink {
     this.o = o;
     this.cursors = { ...o.cursors };
     this.seen = Object.fromEntries(Object.keys(o.cursors).map((p) => [p, 0]));
+    // What a previous run left unanswered goes first, in order. Nobody awaits it any more: the answer only clears it.
+    for (const e of o.outbox?.load() ?? []) this.pending.set(e.msg.command_id, { msg: e.msg, durable: true, resolve: () => {}, reject: () => {} });
   }
 
   start(): void {
@@ -84,18 +94,32 @@ export class ServerLink {
     if (this.isCaughtUp()) for (const w of this.caughtUpWaiters.splice(0)) w();
   }
 
-  /** Sends a command; `asAgent` sends it for one of this human's agents (D-18). */
-  /** `commandId`, when the caller has one (the UI's), makes a retry of the same command idempotent on the server. */
-  command(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string, commandId?: string): Promise<{ seqs: number[]; result: unknown }> {
+  /**
+   * Sends a command; `asAgent` sends it for one of this human's agents (D-18). `commandId`, when the caller has one
+   * (the UI's), makes a retry of the same command idempotent on the server. `durable`: on disk before it's sent, and
+   * sent again after a restart until the server answers (D-113).
+   */
+  command(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string, commandId?: string, durable = false): Promise<{ seqs: number[]; result: unknown }> {
     if (this.stopped) return Promise.reject(new Error('link stopped'));
     const msg: Command = {
       v: PROTOCOL_VERSION, type: 'command', command_id: commandId ?? randomUUID(), project_id: projectId, name, args, ...(asAgent ? { as_agent: asAgent } : {}),
     };
     if (this.pending.has(msg.command_id)) return Promise.reject(new CommandFailed('conflict', `command ${msg.command_id} is already in flight`));
+    const onDisk = durable && !!this.o.outbox;
+    if (onDisk) this.o.outbox!.put(msg);
     return new Promise((resolve, reject) => {
-      this.pending.set(msg.command_id, { msg, resolve, reject });
+      this.pending.set(msg.command_id, { msg, durable: onDisk, resolve, reject });
       if (this.ready) this.ws?.send(JSON.stringify(msg));
     });
+  }
+
+  /** Durable commands that must not reach this coordinator (D-113): moved to the outbox's dead/, with `why`. */
+  dropDurable(why: string): void {
+    for (const [id, p] of this.pending) {
+      if (!p.durable) continue;
+      this.pending.delete(id);
+      this.o.outbox!.bury(id, p.msg.name, `not sent: ${why}`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -120,7 +144,9 @@ export class ServerLink {
       backoff = welcomed ? 250 : Math.min(backoff * 2, 10_000);
       await new Promise((r) => setTimeout(r, backoff));
     }
-    if (this.fatal) {
+    if (this.fatal === 'coordinator_changed') {
+      this.setState('coordinator_changed');
+    } else if (this.fatal) {
       this.setState(this.fatal === 'replaced' ? 'replaced' : 'refused');
       this.o.log?.(`server refused this daemon (${this.fatal}); not reconnecting`);
     }
@@ -162,7 +188,14 @@ export class ServerLink {
           }
           return; // a welcome, an event or a result before the server proved its key is never trusted
         }
+        if (this.fatal) return; // stopped this connection: nothing more from it is acted on
         if (m.type === 'welcome') {
+          // A coordinator this harnessd never served (a new database) is checked before anything of it is used (D-113).
+          if (this.o.acceptEpoch && !this.o.acceptEpoch(m.epoch ?? null)) {
+            this.fatal = 'coordinator_changed';
+            ws.close();
+            return;
+          }
           welcomed = true;
           this.ready = true;
           this.epoch = m.epoch ?? null;
@@ -188,6 +221,10 @@ export class ServerLink {
           const p = this.pending.get(m.command_id);
           if (!p) return;
           this.pending.delete(m.command_id);
+          if (p.durable) {
+            if (m.ok) this.o.outbox!.remove(m.command_id);
+            else this.o.outbox!.bury(m.command_id, p.msg.name, `${m.error.code}: ${m.error.message}`);
+          }
           if (m.ok) p.resolve({ seqs: m.seqs, result: m.result });
           else p.reject(new CommandFailed(m.error.code, m.error.message));
         } else if (m.type === 'error') {
