@@ -79,12 +79,14 @@ test('through the socket: a human\'s lifecycle commands, signed by harnessd: sta
     const created = await ui.call<{ result: { task_id: string } }>('command', { project_id: s.project, name: 'task.create', args: { title: 'notes', text: 'Add notes.', scope: [] }, command_id: randomUUID() });
     const task = created.result.task_id;
     await s.until(() => s.a.daemon.view(s.project).tasks.has(task), 10_000, 'the task in A\'s view');
-    await dispatch('start', task, { agent_id: agent });
+    // What the human saw is checked against harnessd's own view: a different task is "changed since you looked".
+    await assert.rejects(dispatch('start', task, { args: { assignee_agent_id: agent }, expected: { task_sha256: '0'.repeat(64) } }), /conflict: T-\d+ isn't what you saw/);
+    await dispatch('start', task, { args: { assignee_agent_id: agent } });
     await s.until(() => s.a.daemon.running.has(task), 20_000, 'the session');
     const started = s.a.acted.find((e) => e.kind === 'task.assigned' && (e.data as { task_id: string }).task_id === task)!;
     assert.equal((started.data as { dispatch: { envelope: { issuer_device_id: string } } }).dispatch.envelope.issuer_device_id, 'dev_a', 'signed by this device');
     fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'notes.md'), 'notes\n');
-    await dispatch('complete', task, { summary: 'Added notes.' });
+    await dispatch('complete', task, { args: { summary: 'Added notes.' } });
     type Pending = { id: string; kind: string; task_id: string; hash: string };
     let req: Pending | undefined;
     for (const end = Date.now() + 20_000; !req; await new Promise((r) => setTimeout(r, 50))) {

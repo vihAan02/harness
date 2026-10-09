@@ -31,7 +31,8 @@ export type UiRpcHost = {
   resetProvider(): void;
   /** A human's lifecycle command, signed by harnessd (D-112). */
   dispatch(projectId: string, kind: DispatchKind, taskId: string, o: {
-    agentId?: string; text?: string; reason?: string; summary?: string; expected?: { pr_number: number; head_sha: string; base_sha: string };
+    agentId?: string; text?: string; reason?: string; summary?: string;
+    expected?: { task_sha256?: string; pr_number?: number; head_sha?: string; base_sha?: string };
   }, commandId: string): Promise<{ seqs: number[]; result: unknown }>;
   log(m: string): void;
 };
@@ -214,12 +215,23 @@ export class UiRpc {
         if (!DISPATCH_KINDS.includes(kind)) throw new UiRpcError('bad_request', `kind must be one of ${DISPATCH_KINDS.join(', ')}`);
         if (typeof params.task_id !== 'string' || !ID.test(params.task_id)) throw new UiRpcError('bad_request', 'task_id is missing or malformed');
         if (typeof params.command_id !== 'string' || !UUID.test(params.command_id)) throw new UiRpcError('bad_request', 'command_id must be a UUID');
-        const text = (k: string) => (params[k] === undefined ? undefined : typeof params[k] === 'string' ? params[k] as string : (() => { throw new UiRpcError('bad_request', `${k} must be text`); })());
-        const e = params.expected as Record<string, unknown> | undefined;
+        // { args: the command's own args, expected: what the human saw } (protocol.md §12; the CLI's PB2b sends the same).
+        const object = (v: unknown, what: string) => {
+          if (v === undefined) return {} as Record<string, unknown>;
+          if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new UiRpcError('bad_request', `${what} must be an object`);
+          return v as Record<string, unknown>;
+        };
+        const args = object(params.args, 'args');
+        const expected = object(params.expected, 'expected');
+        const text = (o: Record<string, unknown>, k: string) => (o[k] === undefined ? undefined : typeof o[k] === 'string' ? o[k] as string : (() => { throw new UiRpcError('bad_request', `${k} must be text`); })());
         const r = await this.host.dispatch(project, kind, params.task_id, {
-          ...(text('agent_id') ? { agentId: text('agent_id') } : {}), ...(text('text') !== undefined ? { text: text('text') } : {}),
-          ...(text('reason') ? { reason: text('reason') } : {}), ...(text('summary') ? { summary: text('summary') } : {}),
-          ...(e ? { expected: { pr_number: e.pr_number as number, head_sha: e.head_sha as string, base_sha: e.base_sha as string } } : {}),
+          ...(text(args, 'assignee_agent_id') ? { agentId: text(args, 'assignee_agent_id') } : {}), ...(text(args, 'text') !== undefined ? { text: text(args, 'text') } : {}),
+          ...(text(args, 'reason') ? { reason: text(args, 'reason') } : {}), ...(text(args, 'summary') ? { summary: text(args, 'summary') } : {}),
+          expected: {
+            ...(text(expected, 'task_sha256') ? { task_sha256: text(expected, 'task_sha256') } : {}),
+            ...(expected.pr_number !== undefined ? { pr_number: expected.pr_number as number } : {}),
+            ...(text(expected, 'head_sha') ? { head_sha: text(expected, 'head_sha') } : {}), ...(text(expected, 'base_sha') ? { base_sha: text(expected, 'base_sha') } : {}),
+          },
         }, params.command_id);
         return { seqs: r.seqs, result: r.result };
       }

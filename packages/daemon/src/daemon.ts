@@ -51,7 +51,7 @@ import { screenText } from './screen.ts';
 import { MIN_START_USD, ProviderCircuit, RATE_LIMIT_STOP, SpendLedger } from './budget.ts';
 import { UiRpc } from './uirpc.ts';
 import { checkDispatch, DISPATCH_OF, makeDispatch, sessionApprovalHash, StartRefused, STARTS, type StartFailedReason, type Verdict } from './dispatch.ts';
-import { pathsSha256 } from '@harness/protocol/signing';
+import { pathsSha256, taskSha256 } from '@harness/protocol/signing';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -150,7 +150,8 @@ export type DaemonOptions = {
 /** What a human's dispatch needs beyond its kind and task (protocol.md §12). */
 export type DispatchRequest = {
   agentId?: string; text?: string; reason?: string; summary?: string;
-  expected?: { pr_number: number; head_sha: string; base_sha: string };
+  /** What the human saw: the task's hash, and for integrate the PR, its head and the base. A difference is a conflict. */
+  expected?: { task_sha256?: string; pr_number?: number; head_sha?: string; base_sha?: string };
 };
 /** A dispatch harnessd won't build, with a code the UI shows (protocol.md §12). */
 export class DispatchRefused extends Error {
@@ -768,6 +769,10 @@ export class Daemon {
     // The device that acts: the agent's own (D-113); an agent from before devices were bound runs on its human's.
     const target = agent.deviceId ?? (agent.humanId === this.config.principal ? this.config.deviceId : null);
     if (!target) throw new DispatchRefused('bad_request', `${agent.name} isn't bound to a device`);
+    const seen = { title: task.title, text: task.text, scope: task.scope, owner_human_id: task.ownerHumanId };
+    if (o.expected?.task_sha256 !== undefined && o.expected.task_sha256 !== taskSha256(seen)) {
+      throw new DispatchRefused('conflict', `${taskId} isn't what you saw (its title, text, scope or owner changed)`);
+    }
     const message = kind === 'reopen' ? (o.text ?? '') : kind === 'resume' ? o.text : undefined;
     let integrate: NonNullable<DispatchEnvelope['integrate']> | undefined;
     if (kind === 'integrate') {
@@ -775,12 +780,13 @@ export class Daemon {
       if (!x || !Number.isSafeInteger(x.pr_number) || typeof x.head_sha !== 'string' || typeof x.base_sha !== 'string') {
         throw new DispatchRefused('bad_request', 'integrate needs what you were shown: expected { pr_number, head_sha, base_sha }');
       }
-      const pr = await this.github(project).pull(x.pr_number);
-      if (pr.head.sha !== x.head_sha) throw new DispatchRefused('conflict', `PR #${x.pr_number}'s head is now ${pr.head.sha.slice(0, 12)}, not the ${x.head_sha.slice(0, 12)} you approved: look again`);
+      const shown = { pr_number: x.pr_number!, head_sha: x.head_sha, base_sha: x.base_sha };
+      const pr = await this.github(project).pull(shown.pr_number);
+      if (pr.head.sha !== shown.head_sha) throw new DispatchRefused('conflict', `PR #${shown.pr_number}'s head is now ${pr.head.sha.slice(0, 12)}, not the ${shown.head_sha.slice(0, 12)} you approved: look again`);
       const base = await this.fetchProjectBase(project);
-      if (base !== x.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${x.base_sha.slice(0, 12)} you approved: the PR needs updating first`);
-      const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', base, x.head_sha)).split('\0').filter(Boolean).sort();
-      integrate = { pr_number: x.pr_number, head_sha: x.head_sha, base_sha: base, paths_sha256: pathsSha256(changed) };
+      if (base !== shown.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${shown.base_sha.slice(0, 12)} you approved: the PR needs updating first`);
+      const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', base, shown.head_sha)).split('\0').filter(Boolean).sort();
+      integrate = { pr_number: shown.pr_number, head_sha: shown.head_sha, base_sha: base, paths_sha256: pathsSha256(changed) };
     }
     const dispatch = makeDispatch(this.deviceKey, {
       kind, projectId, taskId, agentId: agent.id, targetDeviceId: kind === 'integrate' ? this.config.deviceId : target,

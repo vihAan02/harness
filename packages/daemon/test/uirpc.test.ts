@@ -120,11 +120,13 @@ test('commands: an allowlist, no assignment without a dispatch, a UUID command i
     // A lifecycle command is a dispatch: harnessd builds and signs it (D-112). The socket checks its shape and passes it on.
     assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'merge', task_id: 'T-1', command_id: id }))!.error!.code, 'bad_request');
     assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'start', task_id: 'T-1', command_id: 'nope' }))!.error!.code, 'bad_request');
-    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'reopen', task_id: 'T-1', text: 7, command_id: id }))!.error!.code, 'bad_request');
+    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'reopen', task_id: 'T-1', args: { text: 7 }, command_id: id }))!.error!.code, 'bad_request');
+    assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'start', task_id: 'T-1', args: [], command_id: id }))!.error!.code, 'bad_request');
     const expected = { pr_number: 4, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40) };
     assert.deepEqual((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'integrate', task_id: 'T-1', expected, command_id: id }))!.result, { seqs: [8], result: null });
-    assert.deepEqual((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'start', task_id: 'T-2', agent_id: 'agent_x', command_id: id }))!.result, { seqs: [8], result: null });
-    assert.deepEqual(r.dispatches, [['prj_a', 'integrate', 'T-1', { expected }, id], ['prj_a', 'start', 'T-2', { agentId: 'agent_x' }, id]]);
+    const seen = { task_sha256: 'c'.repeat(64) };
+    assert.deepEqual((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'start', task_id: 'T-2', args: { assignee_agent_id: 'agent_x' }, expected: seen, command_id: id }))!.result, { seqs: [8], result: null });
+    assert.deepEqual(r.dispatches, [['prj_a', 'integrate', 'T-1', { expected }, id], ['prj_a', 'start', 'T-2', { agentId: 'agent_x', expected: seen }, id]]);
     assert.equal((await c.call(r.token, 'dispatch', { project_id: 'prj_a', kind: 'abandon', task_id: 'T-404', command_id: id }))!.error!.code, 'not_found', 'a refusal keeps its code');
     assert.deepEqual((await c.call(r.token, 'provider_reset'))!.result, { reset: true });
     assert.deepEqual(r.resets, [1]);
