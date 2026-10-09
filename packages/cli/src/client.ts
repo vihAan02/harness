@@ -82,6 +82,22 @@ export class CliClient {
     return (r.result ?? {}) as Record<string, unknown>;
   }
 
+  /** Resolves once `pred(view)` holds, checked again at each event; a CliError after `ms`. */
+  until(pred: (v: ProjectView) => boolean, ms = 10_000): Promise<void> {
+    if (pred(this.view)) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const prev = this.onEvent;
+      const timer = setTimeout(() => { this.onEvent = prev; reject(new CliError('the coordinator didn\'t send the change in time')); }, ms);
+      this.onEvent = (e) => {
+        prev?.(e);
+        if (!pred(this.view)) return;
+        clearTimeout(timer);
+        this.onEvent = prev;
+        resolve();
+      };
+    });
+  }
+
   close(): void {
     this.ws.close();
   }

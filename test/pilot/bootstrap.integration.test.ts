@@ -15,7 +15,7 @@ import { harnessHome } from '../../packages/daemon/src/home.ts';
 import { makeRepo, tempDir } from '../../packages/daemon/test/fixtures.ts';
 import { doctor } from '../../packages/cli/src/doctor.ts';
 import { applyPilot, ensureServerKey, parsePilot } from '../../packages/server/src/admin.ts';
-import { parsePrivateKey } from '../../packages/protocol/src/signing.ts';
+import { parsePrivateKey, taskSha256 } from '../../packages/protocol/src/signing.ts';
 import { startServer } from '../../packages/server/src/server.ts';
 import { freshSchema, TEST_DATABASE_URL } from '../../packages/server/test/helpers.ts';
 
@@ -30,6 +30,29 @@ const until = async (pred: () => boolean | Promise<boolean>, what: string, ms = 
 const harness = (home: string, ...args: string[]) =>
   promisify(execFile)(process.execPath, [CLI, ...args], { env: { ...process.env, HARNESS_HOME: home } }).then((r) => r.stdout);
 const said = (out: string, label: string) => new RegExp(`${label} = "(ed25519:[^"]+)"`).exec(out)![1]!;
+
+/** A stand-in for harnessd's socket (PA3c signs for real): records each request and answers with `reply`. */
+async function fakeHarnessd(home: string, reply: (req: { id: unknown; method: string; params: Record<string, unknown> }) => unknown) {
+  const run = path.join(home, 'run');
+  fs.mkdirSync(run, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(run, 'uirpc.token'), 'tok\n', { mode: 0o600 });
+  const seen: { method: string; params: Record<string, unknown> }[] = [];
+  const server = net.createServer((c) => {
+    c.setEncoding('utf8');
+    let buf = '';
+    c.on('data', (d: string) => {
+      buf += d;
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      const req = JSON.parse(buf.slice(0, nl)) as { id: unknown; token: string; method: string; params: Record<string, unknown> };
+      assert.equal(req.token, 'tok');
+      seen.push({ method: req.method, params: req.params });
+      c.write(`${JSON.stringify({ id: req.id, ...(reply(req) as object) })}\n`);
+    });
+  });
+  await new Promise<void>((r) => server.listen(path.join(run, 'harnessd.sock'), r));
+  return { seen, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
 
 test('two Macs join one project with no SQL: apply twice, setup on each, two identities connect, doctor checks', async () => {
   const t = tempDir('bootstrap');
@@ -105,6 +128,55 @@ test('two Macs join one project with no SQL: apply twice, setup on each, two ide
     for (const d of daemons) await d.stop();
     await server?.close();
     await db.drop();
+    t.cleanup();
+  }
+});
+
+test('with device keys the CLI never signs itself: harnessd is asked to sign each lifecycle command, for the task as the server stored it', async () => {
+  const t = tempDir('cli-dispatch');
+  const home = fs.mkdtempSync('/tmp/hb-'); // a short path: macOS caps Unix socket paths at 104 bytes
+  const db = await freshSchema();
+  let server: Awaited<ReturnType<typeof startServer>> | null = null;
+  let fake: Awaited<ReturnType<typeof fakeHarnessd>> | null = null;
+  try {
+    const port = await freePort();
+    const coordinator = ensureServerKey(path.join(t.dir, 'server.key'));
+    const key = said(await harness(home, 'setup', 'keygen', '--device', 'dev_a'), 'public_key');
+    const repo = makeRepo(t.dir, { 'README.md': 'a\n' }).repo;
+    await applyPilot(db.pool, parsePilot({
+      humans: [{ id: 'human_a', display_name: 'A' }], devices: [{ id: 'dev_a', human: 'human_a', name: 'A', public_key: key }],
+      projects: [{ id: 'prj_pilot', name: 'pilot' }], memberships: [{ project: 'prj_pilot', human: 'human_a', role: 'owner' }],
+      agents: [{ project: 'prj_pilot', name: 'agent/a-ui', human: 'human_a', device: 'dev_a' }],
+    }));
+    server = await startServer({ pool: db.pool, databaseUrl: TEST_DATABASE_URL, schema: db.schema, serverKey: parsePrivateKey(fs.readFileSync(path.join(t.dir, 'server.key'), 'utf8')), port });
+    await harness(home, 'setup', '--device', 'dev_a', '--principal', 'human_a', '--server-url', `ws://127.0.0.1:${port}`, '--server-key', coordinator.publicKey,
+      '--project', 'prj_pilot', '--repo', repo, '--integration', 'local');
+    const replies: unknown[] = [];
+    fake = await fakeHarnessd(home, () => replies.shift() ?? { ok: true, result: { seqs: [], result: null } });
+
+    // task add --assign: the task is created on the server, then harnessd is asked for a signed start of it.
+    const out = await harness(home, 'task', 'add', 'Login API', '--scope', 'src/api/**', '--text', 'Build POST /login.', '--assign', 'a-ui');
+    const id = /Created (T-\d+)/.exec(out)![1]!;
+    assert.match(out, new RegExp(`Signing a start of ${id} "Login API" \\(scope src/api/;`));
+    const agent = (await db.pool.query("SELECT id FROM agent_principals WHERE name = 'agent/a-ui'")).rows[0].id;
+    assert.deepEqual(fake.seen.map((x) => x.method), ['dispatch']);
+    const p = fake.seen[0]!.params;
+    assert.deepEqual([p.project_id, p.kind, p.task_id, p.args], ['prj_pilot', 'start', id, { assignee_agent_id: agent }]);
+    // The hash is of the task as the server stored it (scope normalized), the same one PB2a checks.
+    assert.deepEqual(p.expected, { task_sha256: taskSha256({ title: 'Login API', text: 'Build POST /login.', scope: ['src/api/'], owner_human_id: 'human_a' }) });
+    assert.match(String(p.command_id), /^[0-9a-f-]{36}$/);
+    assert.equal((await db.pool.query('SELECT assignee_agent_id FROM tasks WHERE id = $1', [id])).rows[0].assignee_agent_id, null, 'the CLI sent no unsigned assignment');
+
+    // resume, abandon: each its own kind and args. A conflict says the task changed, and nothing is retried.
+    await harness(home, 'task', 'resume', id, '--text', 'carry on');
+    replies.push({ ok: false, error: { code: 'conflict', message: `${id} changed` } });
+    await assert.rejects(harness(home, 'task', 'abandon', id, '--reason', 'not now'), /it changed since you looked/);
+    assert.deepEqual(fake.seen.slice(1).map((x) => [x.params.kind, x.params.args]), [['resume', { text: 'carry on' }], ['abandon', { reason: 'not now' }]]);
+  } finally {
+    await fake?.close();
+    await server?.close();
+    await db.drop();
+    fs.rmSync(home, { recursive: true, force: true });
     t.cleanup();
   }
 });
