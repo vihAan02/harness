@@ -832,7 +832,19 @@ export class Daemon {
       run.adapter.setHold(run.handle, SYNC_HOLD);
       let release = true;
       try {
-        const target = await branchTip(project.repo, project.baseBranch);
+        // GitHub mode (D-114): the base as harnessd fetched it from the remote, never the human's local branch. A notice
+        // naming a commit this base doesn't contain stays held (finishSync), so nothing named by the server is trusted.
+        let target: string;
+        if (project.integration === 'github') {
+          try {
+            target = await this.fetchProjectBase(project);
+          } catch (e) {
+            await this.report(run.projectId, 'sync.report', { session_id: run.sessionId, event: 'fetch_failed', reason: (e as Error).message.slice(0, 300) }, run.agent.id).catch(() => {});
+            throw e;
+          }
+        } else {
+          target = await branchTip(project.repo, project.baseBranch);
+        }
         const blockOn = async (oldBase: string, conflicts: string[]) => {
           await this.report(run.projectId, 'sync.report', {
             session_id: run.sessionId, event: 'conflict', old_base_sha: oldBase, new_base_sha: target, conflict_paths: this.reportablePaths(run, conflicts).slice(0, MAX_REPORT_PATHS),
@@ -1135,6 +1147,40 @@ export class Daemon {
 
   async advanceProjectBase(project: ProjectConfig, tip: string): Promise<void> {
     await advanceBaseRef(project.repo, project.id, tip);
+  }
+
+  /**
+   * Brings a finished task's PR up to date with the base (D-115): its branch has fallen behind, so GitHub's strict rule
+   * won't merge it. Merges the fetched base into the task's branch in its worktree (as the accountable human), scans
+   * what the push adds, and pushes with the lease. The approval was for the old head: the human approves the new one
+   * once CI is green. A conflict throws, naming the paths; the human reopens the task to resolve it.
+   */
+  async refreshPr(projectId: string, taskId: string): Promise<string> {
+    const project = this.project(projectId);
+    const worktree = this.worktreeOf(projectId, taskId);
+    if (!fs.existsSync(worktree)) throw new Error(`${taskId}'s worktree isn't on this device`);
+    if (this.running.has(taskId)) throw new Error(`${taskId}'s agent is running`);
+    const task = this.view(projectId).tasks.get(taskId)!;
+    const agent = this.view(projectId).agents.get(task.assignee!)!;
+    const base = await this.fetchProjectBase(project);
+    const r = await syncWorktree({
+      worktree, target: base, taskId, agent: { name: agent.name, email: `${agent.id}@harness.invalid` },
+      ...(project.commitIdentity ? { identity: project.commitIdentity } : {}),
+    });
+    if (!r.ok) throw Object.assign(new Error(`updating ${taskId} with ${project.baseBranch} conflicts in ${r.conflicts.join(', ')}: reopen it to resolve them`), { conflicts: r.conflicts });
+    const j = this.journal();
+    const head = await branchTip(project.repo, taskBranch(taskId));
+    const pushed = (j.last(projectId, taskId, 'pushed')?.head as string | undefined) ?? null;
+    const gate = await scanPublish(project.repo, { head, base, pushed, prText: '', secrets: this.heldSecrets(projectId) });
+    if (gate.blocked.length) {
+      await this.report(projectId, 'publish.blocked', { task_id: taskId, reasons: gate.blocked.slice(0, 50) });
+      throw new Error(`the update of ${taskId} is blocked by the publish gate`);
+    }
+    const branch = this.remoteBranch(projectId, taskId);
+    await pushBranch(project.repo, project.remote!, head, branch, pushed);
+    j.append(projectId, taskId, 'pushed', { head, branch, refresh: true });
+    this.log(`${taskId}'s PR is up to date with ${project.baseBranch} again, at ${head.slice(0, 12)}`);
+    return head;
   }
 
   /** This human's GitHub login (from their own token), for CODEOWNERS and review checks. */
