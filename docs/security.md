@@ -157,11 +157,22 @@ All three are defined in [validation.md](validation.md#7-security-and-robustness
 - **T-3, forged server command:** an unsigned or wrongly signed command is rejected. For the pilot: a lifecycle event whose dispatch is missing, signed by an unpinned key, replayed, expired, aimed at another device or carrying a different task text is refused and reported, and no agent starts (D-112). **Built, scripted** (PA3):
   - **End to end** (`test/security/t3-forged-dispatch.integration.test.ts`): a device the coordinator's registry has, but this Mac never pinned, starts this human's agent. The server accepts the dispatch; harnessd refuses it (`unknown_issuer`), and the server frees the agent.
   - **Each refusal reason** (missing, malformed, policy widening, unknown issuer, issuer mismatch, a change after signing, expiry, kind, target, epoch, the task's or message's content, and replay) is a unit test in `packages/daemon/test/dispatch.test.ts`.
+  - **Every case of validation.md §7, end to end:** each forged start is written straight into the coordinator's log, as a compromised server could. The cases are a missing dispatch, a key no Mac pinned, the coordinator's own key, another human named, a change after signing, an extra field, expiry, another epoch, another device, and another task text or scope. Each is refused with its reason, journaled and reported, and nothing runs. A valid one starts once (after this human's approval). Its replay in another event, for another task, and after a restart is refused.
 - **T-4, remote start without approval:** it's blocked. For the pilot: a valid dispatch from the other human waits for a single-use local approval; refusing or ignoring it starts nothing (D-112). **Built, scripted** (D-34, PA3; `test/security/t4-remote-start.integration.test.ts`):
   - Another human's start waits for this human's single-use approval. Denied, nothing runs, and the agent is freed; approved, it runs.
   - Another human's abandon stops the agent and keeps its work, through a restart too.
+  - **Nothing starts** when the approval goes unanswered until the dispatch expires (`approval_expired`, and the agent is freed), or when it's given after that.
+  - **An approval covers its dispatch only:** the next start of the same task, a reopen, asks again.
+  - **The negative control:** this human's own start needs no approval.
 - **T-5, a message asking to disable checks:** it's held for the human (D-118).
-- **T-5b, a request to widen local policy:** a dispatch or server value that would add to the local allowlists, secrets, limits, budgets or pins is refused outright, with no approval path (D-112).
+- **T-5b, a request to widen local policy:** a dispatch or server value that would add to the local allowlists, secrets, limits, budgets or pins is refused outright, with no approval path (D-112). **Built, scripted** (D-52, D-32; `test/security/t5b-policy-widening.integration.test.ts`). These channels each ask for a wider allowlist, more secrets, higher budgets or a new pinned key:
+  - a dispatch envelope field (refused as `policy_widening`);
+  - values in the coordinator's events, written straight into its log;
+  - another human's task text and scope;
+  - a peer's message;
+  - a teammate's `harness.yaml`.
+
+  The local config stays byte-for-byte the same, on disk and in harnessd, and the session that runs gets exactly the local policy. The only pending approvals are reviews of text. **The negative control:** `harness.yaml`'s lowered port block takes effect.
 - **Localhost reach (TH-22):** an agent can't log in to a local database as a superuser, open a Unix socket, use the UI bridge without a token, or complete a hello without the device key (D-117, D-119).
 
 Their full definitions are in [validation.md §7](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test).
