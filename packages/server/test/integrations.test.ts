@@ -4,8 +4,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { generateKeyPair, parsePrivateKey } from '@harness/protocol/signing';
 import { executeCommand, CommandError } from '../src/commands.ts';
-import { freshSchema, seedProject } from './helpers.ts';
+import { dispatchFor, freshSchema, seedProject } from './helpers.ts';
 
 let db: Awaited<ReturnType<typeof freshSchema>>;
 let project: string;
@@ -13,6 +14,9 @@ let local: string;
 const human = { principal: 'human_test', deviceId: null };
 const device = { principal: 'human_test', deviceId: 'dev_1' };
 const other = { principal: 'human_test', deviceId: 'dev_2' };
+/** The human's CLI on dev_1, with its device key (D-111): its lifecycle commands carry dispatches it signed (D-112). */
+const owner = { principal: 'human_test', deviceId: 'dev_1', authDeviceId: 'dev_1' };
+const key1 = generateKeyPair();
 const cmd = (projectId: string, name: string, args: Record<string, unknown>, asAgent?: string) =>
   ({ v: 1 as const, type: 'command' as const, command_id: randomUUID(), project_id: projectId, name, args, ...(asAgent ? { as_agent: asAgent } : {}) });
 const run = (name: string, args: Record<string, unknown>, caller: { principal: string; deviceId: string | null } = human, p = project) => executeCommand(db.pool, caller, cmd(p, name, args));
@@ -21,14 +25,20 @@ const rejects = (p: Promise<unknown>, code: string, re?: RegExp) => assert.rejec
 const SHA = (c: string) => c.repeat(40);
 const kinds = async (seqs: number[]) => (await db.pool.query('SELECT kind, data FROM events WHERE seq = ANY($1) AND project_id = $2 ORDER BY seq', [seqs, project])).rows;
 
-/** A task its agent ran on dev_1 and finished. */
+/** A task its agent ran on dev_1 and finished. In the GitHub project the human acts from dev_1, with signed dispatches. */
 async function finished(name: string, p = project) {
-  const agent = res(await run('agent.create', { name, vendor: 'claude' }, human, p)).agent_id as string;
-  const task = res(await run('task.create', { title: name, text: name, scope: [], assignee_agent_id: agent }, human, p)).task_id as string;
+  const github = p === project;
+  const caller = github ? owner : human;
+  const signed = async (kind: 'start' | 'complete', task: string, agent: string) => github
+    ? { dispatch: await dispatchFor(db.pool, parsePrivateKey(key1.privateKeyPem), { kind, projectId: p, taskId: task, agentId: agent, targetDevice: 'dev_1', issuerHuman: 'human_test', issuerDevice: 'dev_1' }) }
+    : {};
+  const agent = res(await run('agent.create', { name, vendor: 'claude' }, caller, p)).agent_id as string;
+  const task = res(await run('task.create', { title: name, text: name, scope: [] }, caller, p)).task_id as string;
+  await run('task.assign', { task_id: task, assignee_agent_id: agent, ...await signed('start', task, agent) }, caller, p);
   const session = randomUUID();
   await executeCommand(db.pool, device, cmd(p, 'session.report', { session_id: session, status: 'working', task_id: task, worktree: `/w/${task}`, branch: `b/${task}` }, agent));
   const read = (path: string, hash: string | null) => executeCommand(db.pool, device, cmd(p, 'readset.add', { session_id: session, entries: [{ path, hash, source: 'read_tool', confidence: 'high' }] }, agent));
-  return { agent, task, session, read, complete: () => run('task.complete', { task_id: task }, human, p) };
+  return { agent, task, session, read, complete: async () => run('task.complete', { task_id: task, ...await signed('complete', task, agent) }, caller, p) };
 }
 const publish = (task: string, n: number, head = SHA('2'), caller = device) =>
   run('pr.publish', { task_id: task, pr_number: n, url: `https://github.com/o/r/pull/${n}`, head_sha: head, base_sha: SHA('1'), remote_ref: `refs/heads/harness/p/e/${task}` }, caller);
@@ -40,7 +50,7 @@ before(async () => {
   project = await seedProject(db.pool);
   local = await seedProject(db.pool);
   await db.pool.query("UPDATE projects SET integration_mode = 'github', github_repo = 'o/r' WHERE id = $1", [project]);
-  await db.pool.query("INSERT INTO devices (id, human_id, name) VALUES ('dev_1', 'human_test', 'laptop'), ('dev_2', 'human_test', 'other')");
+  await db.pool.query("INSERT INTO devices (id, human_id, name, public_key) VALUES ('dev_1', 'human_test', 'laptop', $1), ('dev_2', 'human_test', 'other', NULL)", [key1.publicKey]);
 });
 after(async () => { await db?.drop(); });
 

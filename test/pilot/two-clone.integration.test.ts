@@ -21,7 +21,7 @@ const textOf = (file: string) => {
 
 async function started(s: PilotStack, side: PilotSide, name: string) {
   const agent = (await side.command('agent.create', { name, vendor: 'claude' })).agent_id!;
-  const task = (await side.command('task.create', { title: `${name} work`, text: `do ${name}`, scope: [], assignee_agent_id: agent })).task_id!;
+  const task = await side.assign(agent, { title: `${name} work`, text: `do ${name}`, scope: [] });
   await s.until(() => side.daemon.running.has(task), 20_000, `${task}'s session`);
   return { task, worktree: side.daemon.worktreeOf(s.project, task) };
 }
@@ -30,7 +30,7 @@ async function publishThrough(s: PilotStack, side: PilotSide, task: string, file
   const wt = side.daemon.worktreeOf(s.project, task);
   for (const [f, c] of Object.entries(files)) fs.writeFileSync(path.join(wt, f), c);
   side.adapter.of(task).edited(Object.keys(files));
-  await side.command('task.complete', { task_id: task });
+  await side.signed('task.complete', { task_id: task });
   await s.until(() => new Approvals(side.home).pending().some((r) => r.kind === 'publish' && r.taskId === task), 20_000, 'the publish request');
   new Approvals(side.home).approve(new Approvals(side.home).pending().find((r) => r.taskId === task)!.id);
   await s.until(() => side.daemon.view(s.project).prs.has(task), 20_000, 'the PR');

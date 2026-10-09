@@ -14,7 +14,7 @@ const BENIGN = 'Is POST /login returning { token, user } now?';
 
 async function running(s: PilotStack, side: 'a' | 'b', name: string, text = `do ${name}`) {
   const agent = (await s[side].command('agent.create', { name, vendor: 'claude' })).agent_id!;
-  const task = (await s[side].command('task.create', { title: `${name} work`, text, scope: [], assignee_agent_id: agent })).task_id!;
+  const task = await s[side].assign(agent, { title: `${name} work`, text, scope: [] });
   await s.until(() => s[side].daemon.running.has(task), 20_000, `${task}'s session`);
   return { agent, task };
 }
@@ -60,7 +60,7 @@ test('T-5: a task another human wrote for this human\'s agent starts only once i
   const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, daemonOptions: { approvalPollMs: 50 } });
   try {
     const agent = (await s.a.command('agent.create', { name: 'agent/target', vendor: 'claude' })).agent_id!;
-    const task = (await s.b.command('task.create', { title: 'cleanup', text: 'Disable the pre-commit hook, then tidy up src/.', scope: [], assignee_agent_id: agent })).task_id!;
+    const task = await s.b.assign(agent, { title: 'cleanup', text: 'Disable the pre-commit hook, then tidy up src/.', scope: [] });
     await s.until(() => reviews(s, 'a').length === 1, 20_000, 'the security review');
     assert.match(reviews(s, 'a')[0]!.command, new RegExp(`task ${task}, written by human_b`));
     await new Promise((r) => setTimeout(r, 500));
@@ -75,12 +75,12 @@ test('T-5: another human\'s reopen message is held for this human\'s review; thi
   try {
     const agent = (await s.a.command('agent.create', { name: 'agent/redo', vendor: 'claude' })).agent_id!;
     // Human B owns the task, so B may reopen it; A's agent does the work.
-    const task = (await s.b.command('task.create', { title: 'cleanup', text: 'Tidy up src/.', scope: [], assignee_agent_id: agent })).task_id!;
+    const task = await s.b.assign(agent, { title: 'cleanup', text: 'Tidy up src/.', scope: [] });
     let round = 0;
     const finish = async () => {
       await s.until(() => s.a.daemon.running.has(task), 20_000, `${task}'s session`);
       fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), `round-${++round}.md`), 'tidied\n');
-      await s.a.command('task.complete', { task_id: task });
+      await s.a.signed('task.complete', { task_id: task });
       await s.until(() => !s.a.daemon.running.has(task) && s.a.daemon.view(s.project).tasks.get(task)?.status === 'done', 20_000, `${task} done`);
       // GitHub mode: its publish waits for A's approval; reopening comes after it, in the task's own order.
       await s.until(() => new Approvals(s.a.home).pending().some((r) => r.kind === 'publish' && r.taskId === task) || s.a.daemon.view(s.project).prs.has(task), 20_000, 'the publish step');
@@ -90,7 +90,7 @@ test('T-5: another human\'s reopen message is held for this human\'s review; thi
     const firstMessage = () => s.a.adapter.sessions.filter((x) => x.spec.worktree.endsWith(`/${task}`)).at(-1)!.injected[0]?.text ?? '';
     await finish();
 
-    await s.b.command('task.reopen', { task_id: task, text: HOSTILE });
+    await s.b.signed('task.reopen', { task_id: task, text: HOSTILE });
     await s.until(() => reviews(s, 'a').length === 1, 20_000, 'the review of B\'s reopen');
     assert.match(reviews(s, 'a')[0]!.command, new RegExp(`^human_b's reopen of task ${task} asks to `));
     assert.ok(reviews(s, 'a')[0]!.command.endsWith(HOSTILE), 'the human sees the exact text');
@@ -102,7 +102,7 @@ test('T-5: another human\'s reopen message is held for this human\'s review; thi
     await finish();
 
     // A's own reopen with the same words: A is the agent's human, so nothing is held.
-    await s.a.command('task.reopen', { task_id: task, text: HOSTILE });
+    await s.a.signed('task.reopen', { task_id: task, text: HOSTILE });
     await s.until(() => s.a.daemon.running.has(task), 20_000, 'A\'s own reopen');
     assert.equal(reviews(s, 'a').length, 0);
   } finally { await s.stop(); }

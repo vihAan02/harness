@@ -1,6 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, type KeyObject } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import pg from 'pg';
+import type { DispatchEnvelope, DispatchKind, SignedDispatch } from '@harness/protocol';
+import { messageSha256, newNonce, signDispatch, taskSha256 } from '@harness/protocol/signing';
 import { createPool, migrate } from '../src/db.ts';
 import type { HandlerContext } from '../src/handler.ts';
 import { lockLeases } from '../src/leases.ts';
@@ -75,4 +77,26 @@ export async function holdLeaseLock(pool: pg.Pool, projectId: string) {
 /** Returns once the server's clock is past `at`. */
 export async function untilPast(pool: pg.Pool, at: Date | string): Promise<void> {
   while (!(await pool.query<{ past: boolean }>('SELECT clock_timestamp() > $1::timestamptz AS past', [at])).rows[0]!.past) await sleep(5);
+}
+
+/**
+ * A dispatch for a human's lifecycle command on `taskId` (D-112; protocol.md §11), signed with the issuing device's
+ * key, from the task as the server stores it and the coordinator's epoch. Ten minutes to live: tests never need more.
+ */
+export async function dispatchFor(pool: pg.Pool, key: KeyObject, o: {
+  kind: DispatchKind; projectId: string; taskId: string; agentId: string; targetDevice: string;
+  issuerHuman: string; issuerDevice: string; message?: string; integrate?: NonNullable<DispatchEnvelope['integrate']>;
+}): Promise<SignedDispatch> {
+  const t = (await pool.query<{ title: string; text: string; scope: string[]; owner_human_id: string }>(
+    'SELECT title, text, scope, owner_human_id FROM tasks WHERE id = $1', [o.taskId])).rows[0];
+  if (!t) throw new Error(`dispatchFor: no task ${o.taskId}`);
+  const epoch = (await pool.query<{ epoch: string }>('SELECT epoch FROM coordinator_epoch')).rows[0]!.epoch;
+  const now = Date.now();
+  return signDispatch(key, {
+    v: 1, kind: o.kind, project_id: o.projectId, task_id: o.taskId, agent_id: o.agentId, target_device_id: o.targetDevice,
+    issuer_human_id: o.issuerHuman, issuer_device_id: o.issuerDevice, epoch, nonce: newNonce(),
+    issued_at: new Date(now).toISOString(), expires_at: new Date(now + 10 * 60_000).toISOString(),
+    task_sha256: taskSha256(t), ...(o.message === undefined ? {} : { message_sha256: messageSha256(o.message) }),
+    ...(o.integrate ? { integrate: o.integrate } : {}),
+  });
 }
