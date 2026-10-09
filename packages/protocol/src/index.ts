@@ -135,3 +135,69 @@ export type LandFailReason =
 export type DerivedTaskState =
   | 'open' | 'awaiting_approval' | 'starting' | 'running' | 'stopped' | 'blocked' | 'done' | 'publish_pending_approval' | 'publishing' | 'publish_blocked'
   | 'pr_open' | 'integrating' | 'outcome_unknown' | 'fetch_pending' | 'landed' | 'abandoned';
+
+/**
+ * One project as the UI renders it (D-117; protocol.md §12): `ProjectView.snapshot()` plus what only this device's
+ * harnessd knows (its approvals, its publishing, its link). JSON-serializable. Every string that came from a task, an
+ * agent, a peer, the server or GitHub is untrusted: the UI shows it as text only.
+ */
+export type ProjectSnapshot = {
+  v: 1;
+  project_id: string; head_seq: number; integration_mode: IntegrationMode; taken_at: string;
+  /** This harnessd's device and human. */
+  device_id: string; principal: string;
+  connection: SnapshotConnection;
+  tasks: TaskSnapshot[]; agents: AgentSnapshot[]; devices: { device_id: string; online: boolean; at: string }[];
+  /** The latest 200, oldest first. */
+  messages: MessageSnapshot[];
+  waits: WaitSnapshot[]; lands: LandSnapshot[];
+  /** Moves of the base made outside the harness (D-114), oldest first. */
+  base_advances: { old_sha: string; new_sha: string; changed_paths: string[]; at: string }[];
+  /** This device's spend on the UTC day (D-116). */
+  budget: { day: string; spent_usd: number; daily_budget_usd: number | null; session_cap_usd: number | null };
+};
+export type SnapshotConnection = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused' | 'coordinator_changed';
+export type TaskSnapshot = {
+  id: string; title: string; text: string; scope: string[]; owner_human_id: string; priority: number;
+  assignee_agent_id: string | null;
+  /** The server's status; `state` is what the UI shows. */
+  status: string; state: DerivedTaskState;
+  /** Why it's in that state, where there's a reason: a session's end, a land's failure, a sync's fetch error. Untrusted text. */
+  state_detail: string | null;
+  summary: string | null; created_at: string; assigned_at: string | null; completed_at: string | null;
+  session: SessionSnapshot | null; pr: PrSnapshot | null; land: LandSnapshot | null;
+  publish_blocked: { rule: string; path?: string; commit?: string }[] | null;
+  /** Files its agent read that have changed since (D-91). */
+  stale_reads: string[];
+  leases: { path: string; expires_at: string }[];
+  open_wait: WaitSnapshot | null;
+  /** All its sessions, in USD at the configured prices. */
+  cost_usd: number;
+};
+export type SessionSnapshot = {
+  id: string; agent_id: string; device_id: string; status: string; started_at: string; ended_at: string | null; end_reason: string | null;
+  model: string | null; cost_usd: number; input_tokens: number; output_tokens: number;
+};
+export type PrSnapshot = {
+  number: number; url: string; head_sha: string; base_sha: string; state: 'open' | 'closed'; merged: boolean; merge_sha: string | null;
+  mergeable_state: string | null; checks: Record<string, string>; reviews: { login: string; state: string; commit_id: string }[]; updated_at: string;
+};
+export type LandSnapshot = {
+  id: string; task_id: string; mode: 'local' | 'github' | 'external'; status: 'requested' | 'accepted' | 'rejected' | 'completed' | 'failed';
+  step: string | null; reason: string | null; detail: string | null; pr_number: number | null; new_base_sha: string | null;
+  requested_at: string; finished_at: string | null;
+};
+export type AgentSnapshot = {
+  id: string; name: string; vendor: string; human_id: string;
+  /** The device of its latest session, and whether that device is online; null before its first session. */
+  device_id: string | null; online: boolean | null;
+  active_task_id: string | null; live_session_id: string | null;
+};
+export type MessageSnapshot = {
+  id: string; kind: string; from: string; to: string | null; from_task: string | null; to_task: string | null; in_reply_to: string | null;
+  text: string; priority: string; sent_at: string; seq: number;
+};
+export type WaitSnapshot = {
+  id: string; task_id: string; session_id: string; on: { kind: string; id: string };
+  outcome: 'waiting' | 'resolved' | 'timed_out' | 'cancelled'; started_at: string; timeout_at: string; finished_at: string | null; reason: string | null;
+};

@@ -83,6 +83,7 @@ export class ProjectView {
   prs = new Map<string, PrInfo>(); // by task (D-114)
   publishBlocked = new Map<string, { reasons: { rule: string; commit?: string; path?: string }[]; at: string }>(); // by task (D-114)
   baseAdvances: BaseAdvanceInfo[] = []; // outside the harness (D-114)
+  fetchFailed = new Map<string, { reason: string; at: string }>(); // by task: its last sync couldn't fetch the base, and no sync since (D-114)
   events: EventMessage[] = [];
 
   constructor(projectId: string) {
@@ -193,7 +194,11 @@ export class ProjectView {
         }
         break;
       }
+      case 'worktree.sync_fetch_failed':
+        this.fetchFailed.set(s('task_id'), { reason: s('reason'), at: e.at });
+        break;
       case 'worktree.synced': {
+        this.fetchFailed.delete(s('task_id'));
         const r = this.reads.get(s('task_id'));
         for (const p of asStrings(d.stale_paths)) { const x = r?.get(p); if (x) x.stale = true; }
         break;
