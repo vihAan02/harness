@@ -19,3 +19,6 @@ export { readPolicyFor } from './readpolicy.ts';
 export { agentConfigDir, portEnv } from './resources.ts';
 export { checkAuthTarget, createDeviceKey, devicePublicKey, Handshake, isLoopbackUrl, loadDeviceKey, serverFrame, ServerIdentityError, untrustedText } from './identity.ts';
 export { type LinkState } from './link.ts';
+// The Claude Code version this runtime is pinned to, and the one installed (D-49), for `harness doctor`: the CLI reaches
+// the adapters only through harnessd's package.
+export { PINNED as CLAUDE_PINNED, installedSdkVersion as installedClaudeSdkVersion } from '@harness/adapters';
