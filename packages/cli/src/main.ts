@@ -7,6 +7,8 @@ import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, rend
 import { PROTOCOL_VERSION, type EventMessage } from '@harness/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { CliClient, CliError } from './client.ts';
+import { doctor, renderChecks } from './doctor.ts';
+import { keygen, writeSetup } from './setup.ts';
 
 const USAGE = `usage: harness <command> [--project <id>]
 
@@ -30,11 +32,17 @@ const USAGE = `usage: harness <command> [--project <id>]
   log [--follow] [--kind <prefix>]            the project's event log
   metrics [--json]                            A/B metrics for this run, from the event log (validation.md §4)
   approve [<id>] [--yes]                      review and approve a repo's setup or test command (D-52)
+  setup keygen [--device <id>]                make this Mac's device key once, and print its fingerprint to read aloud
+  setup --device <id> --principal <human> --server-key ed25519:… --project <id> --repo <abs path>
+        [--trust-device <id>=<human>:ed25519:…]… [--server-url ws://127.0.0.1:7400] [--base-branch main]
+        [--integration github --remote <https url> --commit-name <name> --commit-email <noreply>]
+        [--provider <name>] [--force]       write config.toml for the pilot (D-111): only the keys you typed are pinned
+  doctor [--offline]                          check this Mac is ready for the pilot; prints each fix, never a secret
   --version`;
 
 type Args = { positional: string[]; flags: Record<string, string | true> };
 /** Flags that never take a value, so `harness claim T --force a b` keeps `a` as a path. */
-const BOOLEAN_FLAGS = new Set(['force', 'no-tests', 'no-wait', 'follow', 'json', 'yes', 'version']);
+const BOOLEAN_FLAGS = new Set(['force', 'no-tests', 'no-wait', 'follow', 'json', 'yes', 'version', 'offline']);
 function parseArgs(argv: string[]): Args {
   const out: Args = { positional: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -94,6 +102,13 @@ async function main(argv: string[]): Promise<void> {
   if (a.flags.version || command === '-v') return void console.log(`harness ${pkg.version} (protocol v${PROTOCOL_VERSION})`);
 
   if (command === 'approve') return approve(argv.slice(1));
+  if (command === 'setup') return setup(a, argv);
+  if (command === 'doctor') {
+    const checks = await doctor(harnessHome(), { offline: a.flags.offline === true });
+    console.log(renderChecks(checks));
+    if (checks.some((c) => c.ok === false)) process.exitCode = 1;
+    return;
+  }
 
   if (command === 'agent' && sub === 'add') {
     const name = rest[0] ?? fail('usage: harness agent add <name>');
@@ -283,6 +298,24 @@ async function land(c: CliClient, task: string, o: { tests: boolean; wait: boole
   const code = await Promise.race([finished, c.closed.then(() => { console.error('Lost the connection to the server.'); return 1; })]);
   clearTimeout(timer);
   process.exitCode = code;
+}
+
+/** `harness setup keygen` and `harness setup …` (PB1; D-111): one Mac joins the pilot. */
+function setup(a: Args, argv: string[]) {
+  const home = harnessHome();
+  if (a.positional[1] === 'keygen') return void console.log(keygen(home, flag(a, 'device')));
+  if (a.positional.length > 1) fail('usage: harness setup keygen, or harness setup --device … (see harness --help)');
+  const need = (k: string) => flag(a, k) ?? fail(`harness setup needs --${k}`);
+  const integration = flag(a, 'integration') ?? 'github';
+  if (integration !== 'github' && integration !== 'local') fail('--integration must be github or local');
+  const file = writeSetup(home, {
+    device: need('device'), principal: need('principal'), serverUrl: flag(a, 'server-url') ?? 'ws://127.0.0.1:7400', serverKey: need('server-key'),
+    trust: argv.flatMap((x, i) => (argv[i - 1] === '--trust-device' ? [x] : [])), // repeatable
+    project: need('project'), repo: need('repo'), baseBranch: flag(a, 'base-branch') ?? 'main', integration,
+    remote: flag(a, 'remote'), commitName: flag(a, 'commit-name'), commitEmail: flag(a, 'commit-email'), provider: flag(a, 'provider'),
+    force: a.flags.force === true,
+  });
+  console.log(`wrote ${file}. Next: harness doctor`);
 }
 
 /** D-52: the local human approves a repo's setup command (and its manifests) before harnessd runs it. */
