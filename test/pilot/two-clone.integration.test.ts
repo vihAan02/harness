@@ -11,6 +11,13 @@ import { Journal } from '../../packages/daemon/src/journal.ts';
 import { startPilotStack, type PilotStack, type PilotSide } from '../support.ts';
 
 const FAST = { pollMs: 150 };
+/**
+ * A worktree file's text, or '' while a sync is rewriting it: Git replaces a file a merge changes (unlink, then create),
+ * so a read can land in between and find nothing. Waiting for the change is waiting until a read finds it.
+ */
+const textOf = (file: string) => {
+  try { return fs.readFileSync(file, 'utf8'); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw e; }
+};
 
 async function started(s: PilotStack, side: PilotSide, name: string) {
   const agent = (await side.command('agent.create', { name, vendor: 'claude' })).agent_id!;
@@ -53,7 +60,7 @@ test('A lands a change B read; B fetches the confirmed merge, syncs, and is told
     const writer = await started(s, s.a, 'agent/writer-a');
     const merge = await landThrough(s, s.a, writer.task, { 'shared.ts': 'export const v = 2; // changed by A\n' });
     // B's clone never had A's commits; harnessd fetched them, verified the merge is on the base, and merged it.
-    await s.until(() => fs.readFileSync(path.join(reader.worktree, 'shared.ts'), 'utf8').includes('changed by A'), 20_000, 'B\'s branch to have A\'s change');
+    await s.until(() => textOf(path.join(reader.worktree, 'shared.ts')).includes('changed by A'), 20_000, 'B\'s branch to have A\'s change');
     await s.until(() => s.b.adapter.of(reader.task).injected.some((i) => /Your branch now includes this change/.test(i.text)), 20_000, 'the landed notice, after the sync');
     const delivered = s.b.adapter.of(reader.task).injected.find((i) => /Your branch now includes this change/.test(i.text))!;
     assert.match(delivered.text, new RegExp(`merged ${merge.slice(0, 12)}`));
@@ -65,7 +72,7 @@ test('A lands a change B read; B fetches the confirmed merge, syncs, and is told
     // The other way: B lands a change A's agent read.
     const writerB = await started(s, s.b, 'agent/writer-b');
     const mergeB = await landThrough(s, s.b, writerB.task, { 'other.ts': 'export const w = 2; // changed by B\n' });
-    await s.until(() => fs.readFileSync(path.join(readerA.worktree, 'other.ts'), 'utf8').includes('changed by B'), 20_000, 'A\'s branch to have B\'s change');
+    await s.until(() => textOf(path.join(readerA.worktree, 'other.ts')).includes('changed by B'), 20_000, 'A\'s branch to have B\'s change');
     await s.until(() => s.a.adapter.of(readerA.task).injected.some((i) => new RegExp(`merged ${mergeB.slice(0, 12)}`).test(i.text)), 20_000, 'A told after its sync');
     // One land event per merge, and the chain moved twice, by the harness, with no outside-move notices.
     assert.equal((await s.db.pool.query("SELECT count(*)::int AS n FROM events WHERE project_id = $1 AND kind = 'land.completed'", [s.project])).rows[0].n, 2);
