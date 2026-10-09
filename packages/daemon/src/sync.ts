@@ -19,11 +19,12 @@ export type SyncResult =
  * Brings the worktree's branch up to `target` (the base branch's tip). `oldBase` is the merge base before
  * the sync, `changed` the files the sync brought in. A branch that already contains `target` is a no-op.
  */
-export async function syncWorktree(o: { worktree: string; target: string; taskId: string; agent: { name: string; email: string } }): Promise<SyncResult> {
+export async function syncWorktree(o: { worktree: string; target: string; taskId: string; agent: { name: string; email: string }; identity?: { name: string; email: string } }): Promise<SyncResult> {
   const oldBase = await git(o.worktree, 'merge-base', 'HEAD', o.target);
-  const wip = await commitAll(o.worktree, `Work in progress before sync\n\nHarness-Task: ${o.taskId}\nHarness-Sync: ${o.target}`, o.agent);
+  // In a GitHub project, commits are the accountable human's (D-114): `identity` authors and commits them.
+  const wip = await commitAll(o.worktree, `Work in progress before sync\n\nHarness-Task: ${o.taskId}\nHarness-Sync: ${o.target}`, o.identity ?? o.agent, o.identity);
   if (oldBase === o.target) return { ok: true, oldBase, newBase: o.target, wip, merge: null, changed: [] };
-  const r = await mergeCommit(o.worktree, o.target, `Sync ${o.taskId} with the base at ${o.target.slice(0, 12)}\n\nHarness-Task: ${o.taskId}\nHarness-Sync: ${o.target}`);
+  const r = await mergeCommit(o.worktree, o.target, `Sync ${o.taskId} with the base at ${o.target.slice(0, 12)}\n\nHarness-Task: ${o.taskId}\nHarness-Sync: ${o.target}`, o.identity);
   if (!r.ok) return { ok: false, oldBase, newBase: o.target, wip, conflicts: r.conflicts };
   return { ok: true, oldBase, newBase: o.target, wip, merge: r.commit, changed: await changedBetween(o.worktree, oldBase, o.target) };
 }
