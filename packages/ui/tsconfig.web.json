@@ -1,0 +1,20 @@
+{
+  // The browser modules (packages/ui/web, D-117): type-checked with the DOM and no Node types; nothing is emitted.
+  // The bridge serves each .ts file with its types stripped. Browser modules import only relative ./x.ts paths, and
+  // @harness/* with `import type` only.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true
+  },
+  "include": ["web"]
+}

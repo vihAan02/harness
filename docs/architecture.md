@@ -53,6 +53,13 @@ See [agent-adapters.md](agent-adapters.md).
   - If an agent never calls these tools, the harness still sees its edits (diffs), its reads (hooks), and its presence (adapter status).
   - The tools are an *added* channel for intent: questions, claims, waits.
 
+### The pilot's thin UI (D-117)
+- **Where it lives:** `packages/ui`, which depends only on `protocol` and `daemon` (`test/structure.test.ts`).
+  - **`src/`:** the bridge, a loopback HTTP server that asks `harnessd` over its owner-only socket ([protocol.md §12](protocol.md#12-the-uis-contract-d-117)).
+  - **`web/`:** browser modules served with their types stripped, type-checked with the DOM (`tsconfig.web.json`).
+- **What it never holds:** the device key, the views, approvals and signing all stay in `harnessd`.
+- **How it's built:** its app, style and test files come from Harness task sessions (D-110). The repo's `harness.yaml` is the setup and test those sessions run.
+
 ### Human CLI (0A) → dashboard (Phase 2)
 - **`harness agent add`:** register an agent principal (name, vendor) accountable to you (D-54).
 - **`harness task add` / `assign` / `done`:** create a task (owner human, assignee agent, scope, text), assign it (which starts a session), and mark it done. Tasks are written by humans (D-08).

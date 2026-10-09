@@ -1,0 +1,19 @@
+# This repository as a Harness project (D-110): the pilot builds its UI through Harness tasks.
+# harness.yaml is untrusted input (D-52): each command runs only after the human approves it, in the sandbox.
+setup:
+  command: npm ci --ignore-scripts --no-audit --no-fund
+  manifests:
+    - package.json
+    - package-lock.json
+    - packages/protocol/package.json
+    - packages/server/package.json
+    - packages/adapters/package.json
+    - packages/daemon/package.json
+    - packages/cli/package.json
+    - packages/ui/package.json
+test:
+  command: npm run typecheck && node --test "packages/ui/test/**/*.test.ts" test/structure.test.ts
+  manifests:
+    - package.json
+    - package-lock.json
+  timeout_seconds: 600

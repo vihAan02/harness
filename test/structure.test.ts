@@ -18,6 +18,7 @@ const ALLOWED: Record<string, string[]> = {
   adapters: ['protocol'],
   daemon: ['protocol', 'adapters'],
   cli: ['protocol', 'daemon'], // local approvals live in harnessd's state (D-52)
+  ui: ['protocol', 'daemon'], // the bridge asks harnessd over its socket (D-117); browser modules import types only
 };
 const AGENT_VENDOR_SDKS = ['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk', '@openai/codex-sdk', '@openai/codex', 'openai'];
 
