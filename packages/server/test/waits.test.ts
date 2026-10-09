@@ -257,3 +257,47 @@ test('a task wait that would close a cycle is refused, directly or through a cha
   x.release();
   await rejects(second, 'conflict', /is already waiting for your task/);
 });
+
+test('a wait belongs to its session: once the session ends it is cancelled, and the task\'s next session can wait (D-113)', async () => {
+  const a = await worker('agent/wa8');
+  const b = await worker('agent/wb8');
+  const session = (id: string, status: string, extra: Record<string, unknown> = {}) =>
+    executeCommand(db.pool, device, cmd('session.report', { session_id: id, status, ...extra }, a.agent));
+  const ask = async (text: string) => res(await a.as('message.send', { kind: 'question', to: 'agent/wb8', text })).message_id as string;
+
+  // The sweep: the session ends (harnessd restarted, say) while it waits; nobody is left to hear the answer.
+  const q1 = await ask('which shape?');
+  const w1 = await a.wait({ kind: 'answer', id: q1 }, 120);
+  await session(a.session, 'ended', { reason: 'harnessd_restarted' });
+  await b.as('message.send', { kind: 'answer', in_reply_to: q1, text: '{ token }' });
+  assert.equal(await sweepWaits(db.pool), 1);
+  assert.deepEqual(await ofWait(w1.wait_id), ['wait.started', 'wait.cancelled']);
+  assert.equal((await events(['wait.cancelled'])).find((e) => e.data.wait_id === w1.wait_id)!.data.reason, 'session_ended', 'not resolved: the answer came after the session ended');
+
+  // wait.start: the task's next session waits again before any sweep; the wait the ended session left is cancelled first.
+  const s2 = randomUUID();
+  await session(s2, 'working', { task_id: a.task, worktree: `/w/${a.task}`, branch: `harness/task/${a.task}` });
+  const q2 = await ask('which field?');
+  const w2 = res(await a.as('wait.start', { session_id: s2, on: { kind: 'answer', id: q2 } }));
+  await session(s2, 'ended', { reason: 'harnessd_restarted' });
+  const s3 = randomUUID();
+  await session(s3, 'working', { task_id: a.task, worktree: `/w/${a.task}`, branch: `harness/task/${a.task}` });
+  const r = await a.as('wait.start', { session_id: s3, on: { kind: 'answer', id: q2 } });
+  const w3 = res(r);
+  assert.equal(w3.outcome, 'waiting');
+  const kinds = (await db.pool.query('SELECT kind, data FROM events WHERE seq = ANY($1) AND project_id = $2 ORDER BY seq', [r.seqs, project])).rows;
+  assert.deepEqual(kinds.map((e) => [e.kind, e.data.wait_id, e.data.reason]), [['wait.cancelled', w2.wait_id, 'session_ended'], ['wait.started', w3.wait_id, undefined]]);
+  // A live session's open wait still allows only one.
+  await rejects(a.as('wait.start', { session_id: s3, on: { kind: 'answer', id: q2 } }), 'conflict', /one wait at a time/);
+});
+
+test('a task wait that an ended session left never counts toward a cycle (D-108, D-113)', async () => {
+  const a = await worker('agent/wa9');
+  const b = await worker('agent/wb9');
+  const wa = await a.wait({ kind: 'task', id: b.task }, 120);
+  assert.equal(wa.outcome, 'waiting');
+  // a's session ends before any sweep: its wait for b is left open, and no longer waits for anything.
+  await executeCommand(db.pool, device, cmd('session.report', { session_id: a.session, status: 'ended', reason: 'harnessd_restarted' }, a.agent));
+  const wb = await b.wait({ kind: 'task', id: a.task }, 120);
+  assert.equal(wb.outcome, 'waiting', 'b may wait for a: the wait that would have closed the cycle is gone with its session');
+});
