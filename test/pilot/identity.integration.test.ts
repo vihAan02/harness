@@ -126,7 +126,8 @@ test('a revoked device, or one replaced by another harnessd, stops reconnecting'
   const d = await pilotDevice(port);
   const server = await startServer({ pool: d.db.pool, databaseUrl: TEST_DATABASE_URL, schema: d.db.schema, serverKey: d.serverKey, port });
   const first = new Daemon({ home: d.home, config: d.config, heartbeatMs: 200, log: () => {} });
-  const second = new Daemon({ home: d.home, config: d.config, heartbeatMs: 200, log: () => {} });
+  // A misconfigured clone: another machine (another home) holding the same device key. One home can't run two (D-113).
+  const second = new Daemon({ home: tempHome(path.join(d.t.dir, 'clone')), config: d.config, deviceKey: loadDeviceKey(d.home), heartbeatMs: 200, log: () => {} });
   try {
     await first.start();
     await first.ready();

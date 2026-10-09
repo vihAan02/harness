@@ -18,10 +18,12 @@ import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, 
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink, type LinkState } from './link.ts';
 import { checkAuthTarget, Handshake, loadDeviceKey } from './identity.ts';
+import { Journal } from './journal.ts';
+import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
-import { renderMessage, renderTask, reopenedText, type MessageForAgent, type TaskForAgent } from './envelope.ts';
+import { renderMessage, renderTask, reopenedText, resumedText, type MessageForAgent, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
 import {
   addIntegrationWorktree, advanceBase, blobsAt, changedBetween, deleteMergedBranch, diffExcerpt, mergeCommit, removeIntegrationWorktree,
@@ -105,8 +107,11 @@ export type DaemonOptions = {
   adapters?: Record<string, AgentAdapter>;
   /** How often held leases are renewed. Default: about a third of each lease's TTL (D-97). */
   leaseRenewMs?: number;
-  /** Fault injection, for tests only (T-2). */
-  faults?: { leases?: LeaseFaults };
+  /**
+   * Fault injection, for tests only. `leases`: T-2. `crashAt`: harnessd SIGKILLs itself at that named point
+   * (D-113's crash windows): `after_assignment_receipt`, `during_setup`, `after_report_done`.
+   */
+  faults?: { leases?: LeaseFaults; crashAt?: string };
   /** This device's key, with device-key auth (D-111). Default: ~/.harness/device.key. */
   deviceKey?: KeyObject;
 };
@@ -132,6 +137,13 @@ export class Daemon {
   landsInFlight = 0; // lands (and recoveries) running now: stop() waits for them
   leases: LeaseKeeper; // renews this device's tasks' leases, presents them at land (D-97)
   linkState: LinkState = 'connecting'; // for status and health (D-111)
+  /** The write-ahead journal (D-113), keyed by the coordinator's epoch, so it exists from the first welcome. */
+  journalInstance: Journal | null = null;
+  releaseLock: (() => void) | null = null;
+  /** Until startup recovery has run, lifecycle events wait here, per task, so recovery always goes first (D-113). */
+  recovering = true;
+  buffered = new Map<string, EventMessage[]>();
+  recovered: Promise<void> = Promise.resolve();
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -156,6 +168,8 @@ export class Daemon {
 
   async start(): Promise<void> {
     for (const d of [this.home.root, this.home.worktrees, this.home.scratch, this.home.sessions, this.home.vendor, this.home.logs, this.home.pending]) ensureDir(d);
+    // First, before anything that could touch another harnessd's agents (D-113).
+    this.releaseLock = await acquireLock(path.join(this.home.root, 'harnessd.lock'));
     this.orphans = await killOrphans(this.sessions);
     for (const o of this.orphans) {
       this.log(`killed orphaned agent process ${o.pid} (session ${o.sessionId}, task ${o.taskId}); changed: ${o.changedPaths.join(', ') || 'nothing'}`);
@@ -177,6 +191,22 @@ export class Daemon {
       },
     });
     this.link.start();
+    // Recovery runs as soon as the logs are caught up, whether or not anyone awaits ready().
+    this.recovered = this.link.whenReady().then(() => this.link!.whenCaughtUp()).then(() => this.recover())
+      .catch((e: Error) => this.log(`recovery failed: ${e.message}`));
+  }
+
+  journal(): Journal {
+    this.journalInstance ??= new Journal(this.home, this.link?.epoch ?? 'none');
+    return this.journalInstance;
+  }
+
+  /** A test-only crash at a named point (D-113): SIGKILL, so nothing after it runs, as in a real crash. */
+  crashPoint(point: string): void {
+    if (this.o.faults?.crashAt === point) {
+      this.log(`fault injection: crashing at ${point}`);
+      process.kill(process.pid, 'SIGKILL');
+    }
   }
 
   /** Resolves once the server has welcomed this daemon and it has replayed each project's log. */
@@ -189,6 +219,7 @@ export class Daemon {
       if (mode !== p.integration) throw new Error(`${p.id}: config.toml says integration = "${p.integration}", but the coordinator says "${mode}"; fix the config (D-114)`);
     }
     await this.link.whenCaughtUp();
+    await this.recovered;
     this.recoverLands();
     this.leases.start();
   }
@@ -204,13 +235,18 @@ export class Daemon {
     this.views.get(e.project_id)?.apply(e);
     if (replayed) return;
     this.o.onEvent?.(e);
-    if (e.kind === 'task.assigned' || e.kind === 'task.reopened' || e.kind === 'task.completed' || e.kind === 'task.abandoned') {
+    if (LIFECYCLE.includes(e.kind)) {
       const taskId = (e.data as { task_id: string }).task_id;
-      const next: Promise<void> = (this.lifecycles.get(taskId) ?? Promise.resolve())
-        .then(() => this.lifecycle(e))
-        .catch((err: Error) => this.log(`${e.kind} ${taskId}: ${err.message}`))
-        .finally(() => { if (this.lifecycles.get(taskId) === next) this.lifecycles.delete(taskId); });
-      this.lifecycles.set(taskId, next);
+      // The receipt is durable before this returns, so before the link saves the cursor past it (D-113, link.ts).
+      if (this.isMine(e.project_id, taskId)) {
+        this.journal().append(e.project_id, taskId, 'received', { seq: e.seq, kind: e.kind });
+        if (e.kind === 'task.assigned') this.crashPoint('after_assignment_receipt');
+      }
+      if (this.recovering) {
+        this.buffered.set(taskId, [...(this.buffered.get(taskId) ?? []), e]);
+      } else {
+        this.chain(taskId, () => this.lifecycle(e), e.kind);
+      }
     }
     if (e.kind === 'message.sent') {
       const m = this.view(e.project_id).messages.get((e.data as { message_id: string }).message_id);
@@ -244,10 +280,101 @@ export class Daemon {
     }
   }
 
+  /** Runs `job` after the task's earlier lifecycle work, one at a time per task. */
+  chain(taskId: string, job: () => Promise<void>, what: string): void {
+    const next: Promise<void> = (this.lifecycles.get(taskId) ?? Promise.resolve())
+      .then(job)
+      .catch((err: Error) => this.log(`${what} ${taskId}: ${err.message}`))
+      .finally(() => { if (this.lifecycles.get(taskId) === next) this.lifecycles.delete(taskId); });
+    this.lifecycles.set(taskId, next);
+  }
+
+  /** A task whose agent is accountable to this daemon's human (D-112 narrows this to the agent's own device). */
+  isMine(projectId: string, taskId: string): boolean {
+    const view = this.views.get(projectId);
+    const task = view?.tasks.get(taskId);
+    const agent = task?.assignee ? view!.agents.get(task.assignee) : undefined;
+    return !!agent && agent.humanId === this.config.principal;
+  }
+
+  /**
+   * Startup recovery (D-113). Runs once the logs are caught up, before any lifecycle event that arrived meanwhile:
+   * 1. every session the server still shows live on this device, but that isn't running here, is reported ended;
+   * 2. each of this human's tasks is reconciled from its journal and its worktree, in its lifecycle chain;
+   * 3. then the buffered events run, in order.
+   * Nothing here ever starts an agent on a task that has run before: an interrupted task is `stopped`, and its
+   * human resumes it (task.resume).
+   */
+  async recover(): Promise<void> {
+    const mine = new Set(this.config.projects.filter((p) => (this.link!.modes[p.id] ?? 'local') === p.integration).map((p) => p.id));
+    const running = new Set([...this.running.values()].map((r) => r.sessionId));
+    for (const p of this.config.projects) {
+      if (!mine.has(p.id)) continue;
+      for (const s of this.view(p.id).sessions.values()) {
+        if (s.deviceId !== this.config.deviceId || s.status === 'ended' || running.has(s.id)) continue;
+        await this.report(p.id, 'session.report', { session_id: s.id, status: 'ended', reason: 'harnessd_restarted' }, s.agentId)
+          .catch((e: Error) => { if (!/has ended/.test(e.message)) this.log(`session ${s.id}: couldn't report it ended: ${e.message}`); });
+        this.sessions.markEnded(s.id, 'harnessd_restarted');
+      }
+    }
+    const tasks = new Map<string, string>(); // task → project
+    for (const [projectId, taskId] of this.journal().tasks()) if (mine.has(projectId)) tasks.set(taskId, projectId);
+    for (const p of this.config.projects) {
+      if (!mine.has(p.id)) continue;
+      for (const t of this.view(p.id).tasks.values()) if (this.isMine(p.id, t.id) && ['in_progress', 'blocked', 'done', 'abandoned'].includes(t.status)) tasks.set(t.id, p.id);
+    }
+    for (const [taskId, projectId] of tasks) this.chain(taskId, () => this.recoverTask(projectId, taskId), 'recovery of');
+    this.recovering = false;
+    for (const [taskId, events] of this.buffered) for (const e of events) this.chain(taskId, () => this.lifecycle(e), e.kind);
+    this.buffered.clear();
+  }
+
+  /** One task after a restart: see recover(). */
+  async recoverTask(projectId: string, taskId: string): Promise<void> {
+    const view = this.view(projectId);
+    const task = view.tasks.get(taskId);
+    if (!task || !this.isMine(projectId, taskId) || this.running.has(taskId)) return;
+    const j = this.journal();
+    const worktree = this.worktreeOf(projectId, taskId);
+    const hasWorktree = fs.existsSync(worktree);
+    const ranBefore = [...view.sessions.values()].some((s) => s.taskId === taskId);
+    if (task.status === 'in_progress' || task.status === 'blocked') {
+      if (!hasWorktree && !ranBefore && task.status === 'in_progress') {
+        // Assigned, never started: the crash came between the receipt and the worktree. Do what was asked.
+        this.log(`${taskId}: assigned but never started; starting it now`);
+        return this.lifecycle(synthetic(projectId, 'task.assigned', taskId));
+      }
+      if (!hasWorktree) {
+        j.append(projectId, taskId, 'stopped', { reason: 'worktree_missing' });
+        this.log(`${taskId}: it ran before, but its worktree isn't on this device; it stays stopped`);
+        return;
+      }
+      const setupIncomplete = j.has(projectId, taskId, 'setup_started') && !j.has(projectId, taskId, 'setup_ok');
+      j.append(projectId, taskId, 'stopped', { reason: setupIncomplete ? 'setup_incomplete' : 'harnessd_restarted' });
+      this.log(`${taskId}: its session was interrupted; its work stays in ${worktree}. Resume it with: harness task resume ${taskId}`);
+      return;
+    }
+    if (task.status === 'done' && hasWorktree && !j.has(projectId, taskId, 'committed')) {
+      // Completed, but the crash came before the commit: commit now, as the completion would have.
+      const agent = view.agents.get(task.assignee!)!;
+      const commit = await this.finishTask({ projectId, taskId, agent: { id: agent.id, name: agent.name }, ...(task.summary ? { summary: task.summary } : {}) });
+      j.append(projectId, taskId, 'committed', { sha: commit });
+      this.ports.release(taskId);
+      if (commit) await this.report(projectId, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: taskBranch(taskId), commit });
+      this.log(`${taskId}: recovered its completion: ${commit ? `committed ${commit.slice(0, 12)}` : 'nothing to commit'}`);
+      return;
+    }
+    if (task.status === 'abandoned' && hasWorktree) {
+      await this.teardownTask({ projectId, taskId }, { force: true });
+      j.append(projectId, taskId, 'abandoned');
+    }
+  }
+
   /**
    * The task lifecycle on this device (D-54), for agents accountable to this daemon's human:
    * - assigned: create the worktree from the base branch's tip, run setup, start the agent;
    * - reopened: start the agent again in the task's worktree, on its branch, with its human's message (D-107);
+   * - resumed: start a new session in a stopped task's preserved worktree, with a handoff (D-113);
    * - completed: let the agent finish its turn, stop it, commit its work, free its ports (the worktree
    *   and branch stay for review; land is 0B);
    * - abandoned: stop the agent and remove the worktree.
@@ -263,6 +390,7 @@ export class Daemon {
     const ref: AgentRef = { id: agent.id, name: agent.name, vendor: agent.vendor };
     if (e.kind === 'task.assigned') {
       if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      if (this.running.has(taskId)) return; // already running here: a replayed or duplicate assignment starts nothing
       const baseSha = await branchTip(project.repo, project.baseBranch);
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha, agentId: agent.id });
       if (this.stopping) return;
@@ -276,6 +404,19 @@ export class Daemon {
       const message = String((e.data as { text?: unknown }).text ?? '');
       await this.startAgent(ws, ref, { id: task.id, title: task.title, text: reopenedText(task.text, message), scope: task.scope, ownerHumanId: task.ownerHumanId });
       this.log(`${agent.name} started again on ${taskId} (reopened) in ${ws.worktree}`);
+    } else if (e.kind === 'task.resumed') {
+      if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      if (this.running.has(taskId)) return;
+      if (!fs.existsSync(this.worktreeOf(project.id, taskId))) throw new Error(`${taskId}'s worktree isn't on this device; it can't be resumed here`);
+      const j = this.journal();
+      // A crash during setup: run the approved setup again before the session (same hash, no new approval).
+      const forceSetup = j.has(project.id, taskId, 'setup_started') && !j.has(project.id, taskId, 'setup_ok');
+      const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha: '', agentId: agent.id, reuse: true, forceSetup });
+      if (this.stopping) return;
+      const diffStat = await git(ws.worktree, 'diff', '--stat', 'HEAD').catch(() => '');
+      const message = String((e.data as { text?: unknown }).text ?? '');
+      await this.startAgent(ws, ref, { id: task.id, title: task.title, text: resumedText(task.text, message, diffStat), scope: task.scope, ownerHumanId: task.ownerHumanId });
+      this.log(`${agent.name} resumed ${taskId} in ${ws.worktree}`);
     } else if (e.kind === 'task.completed') {
       const run = this.running.get(taskId);
       if (run) {
@@ -284,7 +425,9 @@ export class Daemon {
       }
       const worktree = this.worktreeOf(project.id, taskId);
       if (!fs.existsSync(worktree)) return;
+      this.crashPoint('after_report_done');
       const commit = await this.finishTask({ projectId: project.id, taskId, agent: ref, ...(task.summary ? { summary: task.summary } : {}) });
+      this.journal().append(project.id, taskId, 'committed', { sha: commit });
       this.ports.release(taskId);
       if (commit) await this.report(project.id, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: `harness/task/${taskId}`, commit });
       this.log(`${taskId} done: ${commit ? `committed ${commit.slice(0, 12)} on harness/task/${taskId}` : 'nothing to commit'}`);
@@ -292,6 +435,7 @@ export class Daemon {
       if (this.running.has(taskId)) await this.stopAgent(taskId, 'kill');
       this.leases.untrack(taskId);
       if (fs.existsSync(this.worktreeOf(project.id, taskId))) await this.teardownTask({ projectId: project.id, taskId }, { force: true });
+      this.journal().append(project.id, taskId, 'abandoned');
       this.log(`${taskId} abandoned; its worktree is removed`);
     }
   }
@@ -775,13 +919,15 @@ export class Daemon {
     await Promise.all(this.landing.values());
     await Promise.all(this.lifecycles.values()); // any that events started meanwhile
     await this.link?.stop();
+    this.releaseLock?.();
+    this.releaseLock = null;
   }
 
   /**
    * Creates the task's worktree from its base commit, runs the approved setup command in the
    * sandbox, and allocates its ports and agent config dir (local-runtime §3 steps 1 and 2).
    */
-  async prepareTask(t: { projectId: string; taskId: string; baseSha: string; agentId: string; reuse?: boolean }): Promise<TaskWorkspace> {
+  async prepareTask(t: { projectId: string; taskId: string; baseSha: string; agentId: string; reuse?: boolean; forceSetup?: boolean }): Promise<TaskWorkspace> {
     const project = this.project(t.projectId);
     if (!TASK_ID.test(t.taskId)) throw new Error(`invalid task id: ${t.taskId}`);
     this.checkCapacity(this.config.limits.maxConcurrentAgents);
@@ -791,13 +937,14 @@ export class Daemon {
     if (!t.reuse) {
       ensureDir(path.dirname(worktree));
       ({ branch } = await createWorktree(project.repo, worktree, t.taskId, t.baseSha));
+      this.journal().append(t.projectId, t.taskId, 'worktree', { base: t.baseSha });
       await this.report(t.projectId, 'worktree.report', { task_id: t.taskId, event: 'created', path: worktree, branch, base_sha: t.baseSha });
     }
 
     const repo = readRepoConfig(worktree);
     const policy = effectivePolicy(this.config, project, repo);
     this.checkCapacity(policy.maxConcurrentAgents);
-    if (repo.setup && !t.reuse) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
+    if (repo.setup && (!t.reuse || t.forceSetup)) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
     const ports = await this.ports.allocate(t.taskId, policy.portsPerAgent);
     const configDir = agentConfigDir(this.home, t.agentId);
     const env = portEnv(ports);
@@ -843,6 +990,7 @@ export class Daemon {
       pid: null, pidStart: null, configDir: ws.configDir, startedAt: new Date().toISOString(), vendor: agent.vendor,
     };
     this.sessions.save(record);
+    this.journal().append(ws.projectId, ws.taskId, 'session', { session_id: sessionId });
     await this.report(ws.projectId, 'session.report', {
       session_id: sessionId, status: 'starting', task_id: ws.taskId, worktree: ws.worktree, branch: ws.branch,
       ...(provider.model ? { model: provider.model.id } : {}), ...(provider.name ? { provider: provider.name } : {}),
@@ -1065,6 +1213,7 @@ export class Daemon {
       case 'ended': {
         Object.assign(run.record, { pid: null, endedAt: new Date().toISOString(), endReason: o.reason });
         this.sessions.save(run.record);
+        this.journal().append(run.projectId, run.taskId, 'ended', { session_id: run.sessionId, reason: o.reason });
         // The final running totals too: a session stopped mid-turn (budget, kill, hardening) never got its turn-end report (M8).
         const u = run.lastUsage;
         await report({
@@ -1151,6 +1300,11 @@ export class Daemon {
       await report('approved');
     }
     const logFile = path.join(this.home.logs, `setup-${project.id}-${taskId}.log`);
+    const forTask = scratchName === taskId; // not a land's setup
+    if (forTask) {
+      this.journal().append(project.id, taskId, 'setup_started', { hash });
+      this.crashPoint('during_setup');
+    }
     const result = await runSetup({
       home: this.home, worktree, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, scratchName),
       command: setup.command, allowedDomains: this.config.setup.allowedDomains, timeoutMs: this.config.setup.timeoutSeconds * 1000, logFile,
@@ -1159,6 +1313,7 @@ export class Daemon {
       await report('failed', { exit_code: result.exitCode });
       throw new Error(`setup command failed (exit ${result.exitCode}${result.timedOut ? ', timed out' : ''}); see ${logFile}`);
     }
+    if (forTask) this.journal().append(project.id, taskId, 'setup_ok', { hash });
     await report('ran', { exit_code: 0 });
   }
 
@@ -1172,4 +1327,12 @@ export class Daemon {
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
   }
+}
+
+/** The lifecycle events harnessd acts on (D-54, D-107, D-113). */
+const LIFECYCLE = ['task.assigned', 'task.reopened', 'task.resumed', 'task.completed', 'task.abandoned'];
+
+/** A lifecycle event recovery replays from state, for a task whose original event was handled before the crash. */
+function synthetic(projectId: string, kind: string, taskId: string): EventMessage {
+  return { v: 1, type: 'event', project_id: projectId, seq: 0, at: new Date().toISOString(), actor: { principal: 'harness', on_behalf_of: null, device_id: null }, kind, data: { task_id: taskId } };
 }
