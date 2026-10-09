@@ -19,7 +19,8 @@
     "server": "node packages/server/src/main.ts",
     "daemon": "node packages/daemon/src/main.ts",
     "demo": "node scripts/demo-0a.ts",
-    "demo:0b": "node scripts/demo-0b.ts"
+    "demo:0b": "node scripts/demo-0b.ts",
+    "admin": "node scripts/pilot/admin.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
