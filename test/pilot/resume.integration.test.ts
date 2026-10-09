@@ -9,7 +9,7 @@ import path from 'node:path';
 import { startPilotStack } from '../support.ts';
 
 test('a stopped task resumes with a handoff: the work so far, new files included, the wait it had, and its human\'s message', async () => {
-  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, portRanges: { a: [32300, 32349], b: [32350, 32399] } });
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, portRanges: { a: [30600, 30649], b: [30650, 30699] } });
   try {
     const agent = (await s.a.command('agent.create', { name: 'agent/resumed', vendor: 'claude' })).agent_id!;
     const other = (await s.a.command('task.create', { title: 'api', text: 'The API.', scope: [] })).task_id!;
