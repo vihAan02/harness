@@ -3,8 +3,8 @@
 // and deleted in the next is still published. Plus the commit messages and the PR's text. Two outcomes:
 // - blocked: a denied path (CI workflows, harness state, logs, keys, env files), a file over 1 MB, or text that
 //   looks like a credential or equals a secret harnessd holds. Nothing is pushed; the human sees why.
-// - held: a dependency change (lockfile, manifests' dependencies, .npmrc). It needs the human's approval, like any
-//   other publish, but the approval names it.
+// - held: a dependency change (lockfile, manifests' dependencies, .npmrc), or a change to how Git treats files
+//   (.gitattributes, .gitmodules). It needs the human's approval, like any other publish, but the approval names it.
 // The scan runs on the main repository by commit id; it reads objects, never a worktree.
 import { createHash } from 'node:crypto';
 import { git } from './git.ts';
@@ -32,6 +32,11 @@ const SECRET_PATTERNS: [string, RegExp][] = [
   ['private_key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
 ];
 const DEPENDENCY_FILES = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|\.npmrc|yarn\.lock|pnpm-lock\.yaml)$/;
+/** Files that change how Git reads others (`-diff` hides a file's content from a diff; a submodule points anywhere). */
+const GIT_BEHAVIOUR_FILES = /(^|\/)(\.gitattributes|\.gitmodules)$/;
+/** A patch's every added line, whatever Git would otherwise do with the file: binary and `-diff` content as text, no
+ * repository-configured conversion or external diff (TH-24; #99's review). */
+const AS_TEXT = ['--unified=0', '--no-color', '--text', '--no-textconv', '--no-ext-diff'];
 const DEPENDENCY_KEYS = /^[+-]\s*"(dependencies|devDependencies|optionalDependencies|peerDependencies|overrides|resolutions|bundleDependencies|scripts)"\s*:/;
 
 /** What a text contains that it shouldn't: credential shapes, or any of `secrets` (values harnessd holds, ≥ 8 characters). */
@@ -71,13 +76,14 @@ export async function scanPublish(repo: string, o: { head: string; base: string;
       const size = Number(await git(repo, 'cat-file', '-s', `${commit}:${path}`).catch(() => '0'));
       if (size > MAX_BLOB) { add(blocked, { rule: 'large_file', commit, path }); continue; }
       const patch = merge
-        ? await git(repo, 'diff', '--unified=0', '--no-color', `${parents[0]}`, commit, '--', path)
-        : await git(repo, 'show', '--format=', '--unified=0', '--no-color', commit, '--', path);
+        ? await git(repo, 'diff', ...AS_TEXT, `${parents[0]}`, commit, '--', path)
+        : await git(repo, 'show', '--format=', ...AS_TEXT, commit, '--', path);
       const added = patch.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).join('\n');
       for (const rule of secretsIn(added, o.secrets)) add(blocked, { rule: `secret:${rule}`, commit, path });
       if (DEPENDENCY_FILES.test(path) || (/(^|\/)package\.json$/.test(path) && patch.split('\n').some((l) => DEPENDENCY_KEYS.test(l)))) {
         add(held, { rule: 'dependency_change', commit, path });
       }
+      if (GIT_BEHAVIOUR_FILES.test(path)) add(held, { rule: 'git_attributes_change', commit, path });
     }
   }
   for (const rule of secretsIn(o.prText, o.secrets)) add(blocked, { rule: `pr_text:${rule}` });

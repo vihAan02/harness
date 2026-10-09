@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import type { ProjectSnapshot } from '../../packages/protocol/src/index.ts';
+import type { PendingApproval, ProjectSnapshot, PublishApprovalDetails } from '../../packages/protocol/src/index.ts';
 import { startPilotStack } from '../support.ts';
 
 async function rpcClient(socket: string) {
@@ -45,17 +45,24 @@ test('through the socket: a running task\'s state, its publish approved as shown
     fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'ui.txt'), 'hi\n');
     await s.a.signed('task.complete', { task_id: task });
     // The publish request, as the UI shows it, then approved with the hash it showed.
-    type Pending = { id: string; kind: string; task_id: string; command: string; hash: string };
-    let req: Pending | undefined;
+    let req: PendingApproval | undefined;
     for (const end = Date.now() + 20_000; !req; await new Promise((r) => setTimeout(r, 50))) {
-      req = (await ui.call<Pending[]>('pending_approvals')).find((r) => r.kind === 'publish' && r.task_id === task);
+      req = (await ui.call<PendingApproval[]>('pending_approvals')).find((r) => r.kind === 'publish' && r.task_id === task);
       if (Date.now() > end) assert.fail('no publish request');
     }
     assert.equal(await state(task), 'publish_pending_approval');
     assert.match(req.command, /ui\.txt/);
+    // What the hash binds, structured: the exact head on the exact base, and the PR's whole text.
+    assert.equal(req.kind, 'publish');
+    const shown = req.details as PublishApprovalDetails;
+    assert.match(shown.diffstat, /ui\.txt \| 1 \+/);
+    assert.deepEqual(shown.held, []);
     await ui.call('approve', { id: req.id, shown_hash: req.hash });
     for (const end = Date.now() + 20_000; (await state(task)) !== 'pr_open';) if (Date.now() > end) assert.fail(`state ${await state(task)}`);
     assert.equal(s.fake.prs().length, 1);
+    const opened = s.fake.prs()[0]!;
+    const published = s.a.daemon.view(s.project).prs.get(task)!;
+    assert.deepEqual([published.headSha, published.baseSha, opened.head, opened.title, opened.body], [shown.head_sha, shown.base_sha, shown.branch, shown.pr_title, shown.pr_body], 'the PR is what was shown');
     // A human's question through the socket reaches the coordinator as this human, and B's view.
     const r = await ui.call<{ seqs: number[] }>('command', { project_id: s.project, name: 'message.send', args: { kind: 'question', to: 'agent/ui', text: 'hello from the UI' }, command_id: randomUUID() });
     assert.equal(r.seqs.length, 1);
@@ -81,12 +88,15 @@ test('through the socket: a human\'s lifecycle commands, signed by harnessd: sta
     await s.until(() => s.a.daemon.view(s.project).tasks.has(task), 10_000, 'the task in A\'s view');
     // What the human saw is checked against harnessd's own view: a different task is "changed since you looked".
     await assert.rejects(dispatch('start', task, { args: { assignee_agent_id: agent }, expected: { task_sha256: '0'.repeat(64) } }), /conflict: T-\d+ isn't what you saw/);
-    await dispatch('start', task, { args: { assignee_agent_id: agent } });
+    await assert.rejects(dispatch('start', task, { args: { assignee_agent_id: agent } }), /bad_request: a start names the task as you saw it/);
+    // The UI sends back the hash of the task it showed, from the snapshot.
+    const shown = async () => ({ task_sha256: (await ui.call<ProjectSnapshot[]>('snapshot', { project_id: s.project }))[0]!.tasks.find((t) => t.id === task)!.task_sha256 });
+    await dispatch('start', task, { args: { assignee_agent_id: agent }, expected: await shown() });
     await s.until(() => s.a.daemon.running.has(task), 20_000, 'the session');
     const started = s.a.acted.find((e) => e.kind === 'task.assigned' && (e.data as { task_id: string }).task_id === task)!;
     assert.equal((started.data as { dispatch: { envelope: { issuer_device_id: string } } }).dispatch.envelope.issuer_device_id, 'dev_a', 'signed by this device');
     fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'notes.md'), 'notes\n');
-    await dispatch('complete', task, { args: { summary: 'Added notes.' } });
+    await dispatch('complete', task, { args: { summary: 'Added notes.' }, expected: await shown() });
     type Pending = { id: string; kind: string; task_id: string; hash: string };
     let req: Pending | undefined;
     for (const end = Date.now() + 20_000; !req; await new Promise((r) => setTimeout(r, 50))) {

@@ -362,6 +362,7 @@ export class Daemon {
       deviceId: this.config.deviceId, principal: this.config.principal, integrationMode: project.integration, connection: this.linkState,
       approvals: this.approvals.pending().filter((r) => r.projectId === projectId).map((r) => ({ taskId: r.taskId, kind: r.kind ?? 'setup' })),
       publishing, budget: { dailyBudgetUsd: this.config.agents.dailyBudgetUsd, sessionCapUsd: this.config.agents.maxBudgetUsd, spentUsd: this.spend.spent() },
+      repo: { githubRepo: project.githubRepo, baseBranch: project.baseBranch },
     });
   }
 
@@ -673,6 +674,7 @@ export class Daemon {
     const req = this.approvals.request({
       projectId: run.projectId, taskId: run.taskId, manifests: [], hash, kind: 'security_review',
       command: `a message from ${from} to ${run.agent.name} (${run.taskId}) asks to ${hits.map((h) => h.rule).join(', ')}; it's held until you release it. The exact text:\n${m.text}`,
+      details: { about: 'message', from, rules: [...new Set(hits.map((h) => h.rule))], text: m.text },
     });
     if (!this.reviewing.has(m.id)) {
       this.reviewing.add(m.id);
@@ -686,7 +688,7 @@ export class Daemon {
    * The screen for a task's text when another human wrote it, or for the message of another human's reopen or resume
    * (D-118): waits for the review. `key` makes each one its own review. Not true: denied, or unanswered in time.
    */
-  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string, what = `task ${taskId}, written by ${owner},`, key = `task:${taskId}`): Promise<true | 'denied' | 'unanswered'> {
+  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string, what = `task ${taskId}, written by ${owner},`, key = `task:${taskId}`, about: 'task' | 'reopen' | 'resume' = 'task'): Promise<true | 'denied' | 'unanswered'> {
     const hits = screenText(text);
     if (!hits.length) return true;
     const hash = reviewHash(key, text);
@@ -694,6 +696,7 @@ export class Daemon {
     const req = this.approvals.request({
       projectId, taskId, manifests: [], hash, kind: 'security_review',
       command: `${what} asks to ${hits.map((h) => h.rule).join(', ')}; your agent starts it only once you release it. The exact text:\n${text}`,
+      details: { about, from: owner, rules: [...new Set(hits.map((h) => h.rule))], text },
     });
     this.log(`held ${what.replace(/,$/, '')}: ${hits.map((h) => `${h.rule} ("${h.excerpt}")`).join('; ')}. Review it with: harness approve ${req.id}`);
     const deadline = Date.now() + (this.o.approvalTimeoutMs ?? 30 * 60_000);
@@ -780,6 +783,8 @@ export class Daemon {
     const target = agent.deviceId ?? (agent.humanId === this.config.principal ? this.config.deviceId : null);
     if (!target) throw new DispatchRefused('bad_request', `${agent.name} isn't bound to a device`);
     const seen = { title: task.title, text: task.text, scope: task.scope, owner_human_id: task.ownerHumanId };
+    // The human signs what they saw: every kind but integrate (whose PR is what they saw) names the task's hash.
+    if (kind !== 'integrate' && o.expected?.task_sha256 === undefined) throw new DispatchRefused('bad_request', `a ${kind} names the task as you saw it: expected.task_sha256`);
     if (o.expected?.task_sha256 !== undefined && o.expected.task_sha256 !== taskSha256(seen)) {
       throw new DispatchRefused('conflict', `${taskId} isn't what you saw (its title, text, scope or owner changed)`);
     }
@@ -822,6 +827,11 @@ export class Daemon {
     const req = this.approvals.request({
       projectId, taskId: task.id, manifests: [], hash, kind: 'agent_session',
       command: `${env.issuer_human_id} (device ${env.issuer_device_id}) asks your agent ${agent.name} to ${env.kind} task ${task.id}. It runs on this device only once you approve. The task, as written by ${task.ownerHumanId}:\n${task.title}\n${task.text}${message === undefined ? '' : `\nWith the message:\n${message}`}`,
+      details: {
+        kind: env.kind as 'start' | 'reopen' | 'resume', issuer_human_id: env.issuer_human_id, issuer_device_id: env.issuer_device_id, nonce: env.nonce, expires_at: env.expires_at,
+        agent_name: agent.name, task_id: task.id, task_title: task.title, task_text: task.text, task_scope: task.scope, task_owner_human_id: task.ownerHumanId,
+        task_sha256: env.task_sha256, message: message ?? null,
+      },
     });
     this.log(`${task.id}: ${env.issuer_human_id} asks ${agent.name} to ${env.kind} it; it waits for your approval: harness approve ${req.id}`);
     const deadline = Date.parse(env.expires_at);
@@ -870,8 +880,10 @@ export class Daemon {
    */
   async otherHumansMessageOk(e: EventMessage, projectId: string, taskId: string, kind: 'reopen' | 'resume', message: string): Promise<true | 'denied' | 'unanswered'> {
     const by = (e.data as { by?: unknown }).by;
-    if (typeof by !== 'string' || by === this.config.principal || !message) return true;
-    return this.taskScreenedOk(projectId, taskId, message, by, `${by}'s ${kind} of task ${taskId}`, `${kind}:${taskId}:${e.seq}`);
+    if (by === this.config.principal || !message) return true;
+    // The server always names who sent it, so an event without a sender is malformed or forged: screened, never let through.
+    const who = typeof by === 'string' && by ? by : '(unknown)';
+    return this.taskScreenedOk(projectId, taskId, message, who, `${who}'s ${kind} of task ${taskId}`, `${kind}:${taskId}:${e.seq}`, kind);
   }
 
   /**
@@ -1721,13 +1733,22 @@ export class Daemon {
     // The human approves this exact head and text (D-114). A dependency change is named in what they approve.
     const hash = publishHash(head, `${title}\n${body}`);
     if (!this.approvals.isApproved(project.id, hash)) {
-      const what = [
-        `publish ${taskId} to ${project.githubRepo} as ${branch} @ ${head.slice(0, 12)}`,
-        ...(gate.held.length ? [`dependency changes: ${gate.held.map((h) => h.path).join(', ')}`] : []),
-        `PR: ${title}`, await git(project.repo, 'diff', '--stat', `${base}...${head}`),
-      ].join('\n');
       if (j.read(projectId, taskId).some((r) => r.state === 'publish_denied' && r.hash === hash)) return; // its human said no
-      const req = this.approvals.request({ projectId, taskId, command: what, manifests: [], hash, kind: 'publish' });
+      // Everything the hash binds is shown (#105's review): the exact head, on which base, and the PR's whole text.
+      const diffstat = await git(project.repo, 'diff', '--stat', `${base}...${head}`);
+      const what = [
+        `publish ${taskId} to ${project.githubRepo} as ${branch} @ ${head} (on ${project.baseBranch} @ ${base})`,
+        ...(gate.held.length ? [`held for your approval: ${gate.held.map((h) => `${h.rule} (${h.path})`).join(', ')}`] : []),
+        diffstat,
+        '--- the PR, exactly as it will be opened ---', title, '', body,
+      ].join('\n');
+      const req = this.approvals.request({
+        projectId, taskId, command: what, manifests: [], hash, kind: 'publish',
+        details: {
+          github_repo: project.githubRepo!, branch, head_sha: head, base_sha: base, pr_title: title, pr_body: body,
+          held: gate.held.map((h) => ({ rule: h.rule, path: h.path ?? null })), diffstat,
+        },
+      });
       this.log(`${taskId} is ready to publish. Review it with: harness approve ${req.id}`);
       // Publishing is its human's decision (D-114): no deadline. A denial ends it; a reopen and a new commit ask again.
       if ((await this.waitForDecision(project.id, hash, req.id)) === 'denied') {

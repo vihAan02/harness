@@ -161,11 +161,17 @@ export type ProjectSnapshot = {
   base_advances: { old_sha: string; new_sha: string; changed_paths: string[]; at: string }[];
   /** This device's spend on the UTC day (D-116). */
   budget: { day: string; spent_usd: number; daily_budget_usd: number | null; session_cap_usd: number | null };
+  /** The project's repository on GitHub and its base branch, from this device's own config: PR links are built from it. */
+  repo: { github_repo: string | null; base_branch: string };
+  /** The latest security alerts (forged or replayed dispatches, unapproved merges), oldest first. Untrusted text. */
+  alerts: { seq: number; at: string; what: string; task_id: string | null; detail: string | null }[];
 };
 export type SnapshotConnection = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused' | 'coordinator_changed';
 export type TaskSnapshot = {
   id: string; title: string; text: string; scope: string[]; owner_human_id: string; priority: number;
   assignee_agent_id: string | null;
+  /** `taskSha256` of the task as shown: what a dispatch's `expected.task_sha256` names (D-112; protocol.md §12). */
+  task_sha256: string;
   /** The server's status; `state` is what the UI shows. */
   status: string; state: DerivedTaskState;
   /** Why it's in that state, where there's a reason: a session's end, a land's failure, a sync's fetch error. Untrusted text. */
@@ -207,3 +213,42 @@ export type WaitSnapshot = {
   id: string; task_id: string; session_id: string; on: { kind: string; id: string };
   outcome: 'waiting' | 'resolved' | 'timed_out' | 'cancelled'; started_at: string; timeout_at: string; finished_at: string | null; reason: string | null;
 };
+
+/**
+ * One local approval as `pending_approvals` returns it (D-117; protocol.md §12): `command` is the whole text the human
+ * reads, and `details` the same, structured, for the UI. `hash` is what the approval binds; `approve` must name it.
+ */
+export type PendingApproval = {
+  id: string; project_id: string; task_id: string; command: string; manifests: { path: string; sha256: string | null }[]; hash: string; requested_at: string;
+} & (
+  | { kind: 'setup' | 'test'; details: null }
+  // null below only on a request an older harnessd wrote: show `command`.
+  | { kind: 'publish'; details: PublishApprovalDetails | null }
+  | { kind: 'agent_session'; details: SessionApprovalDetails | null }
+  | { kind: 'security_review'; details: ReviewApprovalDetails | null }
+);
+/** A publish (D-114): the exact head on the exact base, and the PR exactly as it will be opened. Agent-written text. */
+export type PublishApprovalDetails = {
+  github_repo: string; branch: string; head_sha: string; base_sha: string; pr_title: string; pr_body: string;
+  /** Changes held for this approval (a dependency manifest, say), by the rule that held them. */
+  held: { rule: string; path: string | null }[];
+  diffstat: string;
+};
+/** Another human's start, reopen or resume of a task on this device's agent (D-112, D-34): what their dispatch binds. */
+export type SessionApprovalDetails = {
+  kind: 'start' | 'reopen' | 'resume'; issuer_human_id: string; issuer_device_id: string; nonce: string; expires_at: string; agent_name: string;
+  /** The task as written by its owner, which `task_sha256` binds. Untrusted text when another human wrote it. */
+  task_id: string; task_title: string; task_text: string; task_scope: string[]; task_owner_human_id: string; task_sha256: string;
+  /** A reopen's or resume's message. Untrusted text. */
+  message: string | null;
+};
+/** Text the T-5 screen held (D-118), by the rules it matched: a peer's message, or another human's task or message. */
+export type ReviewApprovalDetails = {
+  about: 'message' | 'task' | 'reopen' | 'resume';
+  /** Who wrote it: an agent's name, or a human's id. */
+  from: string;
+  rules: string[];
+  /** Exactly what the agent would read once released. Untrusted text. */
+  text: string;
+};
+export type ApprovalDetails = PublishApprovalDetails | SessionApprovalDetails | ReviewApprovalDetails;

@@ -6,7 +6,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Approvals } from '../../packages/daemon/src/approvals.ts';
+import type { SessionApprovalDetails } from '../../packages/protocol/src/index.ts';
+import { taskSha256 } from '../../packages/protocol/src/signing.ts';
+import { Approvals, pendingApproval } from '../../packages/daemon/src/approvals.ts';
 import { startPilotStack, type PilotStack } from '../support.ts';
 
 const dataOf = (e: { data: unknown }) => e.data as Record<string, any>;
@@ -23,6 +25,16 @@ test('T-4: another human\'s start waits for this human\'s approval; denied, the 
     const req = sessionApprovals(s)[0]!;
     assert.match(req.command, new RegExp(`human_b \\(device dev_b\\) asks your agent agent/helper to start task ${first}`));
     assert.ok(req.command.endsWith('docs\nWrite the docs.'), 'the human sees what it would start, as text');
+    // And the UI, structured: who asks, with which dispatch, and the task its hash binds.
+    const shown = pendingApproval(req);
+    assert.equal(shown.kind, 'agent_session');
+    const { nonce, expires_at, task_sha256, ...details } = shown.details as SessionApprovalDetails;
+    assert.deepEqual(details, {
+      kind: 'start', issuer_human_id: 'human_b', issuer_device_id: 'dev_b', agent_name: 'agent/helper',
+      task_id: first, task_title: 'docs', task_text: 'Write the docs.', task_scope: [], task_owner_human_id: 'human_b', message: null,
+    });
+    assert.equal(task_sha256, taskSha256({ title: 'docs', text: 'Write the docs.', scope: [], owner_human_id: 'human_b' }));
+    assert.ok(nonce && Date.parse(expires_at) > Date.now());
     await new Promise((r) => setTimeout(r, 500)); // ten approval polls: it doesn't start on its own
     assert.ok(!s.a.daemon.running.has(first) && s.a.adapter.sessions.length === 0, 'nothing runs before the approval');
     new Approvals(s.a.home).deny(req.id);

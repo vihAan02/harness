@@ -12,6 +12,8 @@ export type TaskInfo = {
   id: string; title: string; text: string; scope: string[]; ownerHumanId: string; priority: number;
   assignee: string | null; status: string; summary?: string;
   createdAt: string; assignedAt?: string; completedAt?: string;
+  /** Who issued its latest signed start, reopen or resume (D-112), where one was signed. */
+  dispatchedBy?: string;
 };
 export type SessionInfo = {
   id: string; agentId: string; taskId: string; deviceId: string; worktree: string; status: string; startedAt: string; endedAt?: string; endReason?: string;
@@ -67,6 +69,12 @@ export type OverlapInfo = { id: string; level: 'prospective' | 'observed'; paths
 
 const asStrings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
+/** The human who signed a lifecycle event's dispatch, from its envelope (D-112). */
+function issuer(d: Record<string, unknown>): { dispatchedBy?: string } {
+  const env = (d.dispatch as { envelope?: { issuer_human_id?: unknown } } | undefined)?.envelope;
+  return typeof env?.issuer_human_id === 'string' ? { dispatchedBy: env.issuer_human_id } : {};
+}
+
 export class ProjectView {
   projectId: string;
   head = 0;
@@ -114,14 +122,14 @@ export class ProjectView {
         this.claimsOf(s('task_id'));
         break;
       case 'task.assigned':
-        this.patchTask(s('task_id'), { assignee: s('assignee_agent_id'), status: 'in_progress', assignedAt: e.at });
+        this.patchTask(s('task_id'), { assignee: s('assignee_agent_id'), status: 'in_progress', assignedAt: e.at, ...issuer(d) });
         break;
       case 'task.completed':
         this.patchTask(s('task_id'), { status: 'done', completedAt: e.at, ...(d.summary ? { summary: s('summary') } : {}) });
         this.claims.delete(s('task_id'));
         break;
       case 'task.reopened': // back to its agent after it was done, with its human's message (D-107)
-        this.patchTask(s('task_id'), { status: 'in_progress', completedAt: undefined });
+        this.patchTask(s('task_id'), { status: 'in_progress', completedAt: undefined, ...issuer(d) });
         break;
       case 'task.abandoned':
         this.patchTask(s('task_id'), { status: 'abandoned', completedAt: e.at });

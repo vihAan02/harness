@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import type { PendingApproval } from '@harness/protocol';
 import { Approvals } from '../src/approvals.ts';
 import { UiRpc } from '../src/uirpc.ts';
 import { tempDir, tempHome } from './fixtures.ts';
@@ -90,10 +91,16 @@ test('approvals: listed with what the human must see; approved only with the exa
   try {
     const hash = 'a'.repeat(64);
     r.approvals.request({ projectId: 'prj_a', taskId: 'T-1', command: 'npm ci', manifests: [], hash, kind: 'setup' });
-    const other = r.approvals.request({ projectId: 'prj_a', taskId: 'T-2', command: 'publish T-2', manifests: [], hash: 'b'.repeat(64), kind: 'publish' });
+    // A publish request as an older harnessd wrote it, without details: asked again, it gains them and keeps its time.
+    const old = r.approvals.request({ projectId: 'prj_a', taskId: 'T-2', command: 'publish T-2', manifests: [], hash: 'b'.repeat(64), kind: 'publish' });
+    const details = { github_repo: 'o/r', branch: 'harness/T-2', head_sha: '1'.repeat(40), base_sha: '2'.repeat(40), pr_title: 'T-2', pr_body: 'Body.', held: [], diffstat: ' a | 1 +' };
+    const other = r.approvals.request({ projectId: 'prj_a', taskId: 'T-2', command: 'publish T-2', manifests: [], hash: 'b'.repeat(64), kind: 'publish', details });
+    assert.equal(other.requestedAt, old.requestedAt);
+    const again = { projectId: 'prj_a', taskId: 'T-2', command: 'publish T-2', manifests: [], hash: 'b'.repeat(64), kind: 'publish' as const, details: { ...details, pr_body: 'Another.' } };
+    assert.deepEqual(r.approvals.request(again).details, details, 'the first details stay');
     const c = await client(r.socket);
-    const listed = (await c.call(r.token, 'pending_approvals'))!.result as { id: string; kind: string; command: string; hash: string }[];
-    assert.deepEqual(listed.map((x) => [x.kind, x.command]), [['setup', 'npm ci'], ['publish', 'publish T-2']]);
+    const listed = (await c.call(r.token, 'pending_approvals'))!.result as PendingApproval[];
+    assert.deepEqual(listed.map((x) => [x.kind, x.command, x.details]), [['setup', 'npm ci', null], ['publish', 'publish T-2', details]]);
     const id = listed[0]!.id;
     assert.equal((await c.call(r.token, 'approve', { id, shown_hash: 'c'.repeat(64) }))!.error!.code, 'conflict', 'not what was shown');
     assert.equal((await c.call(r.token, 'approve', { id: id.slice(0, 4), shown_hash: hash }))!.error!.code, 'not_found', 'never a prefix');
