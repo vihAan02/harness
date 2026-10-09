@@ -154,8 +154,12 @@ Approvals are time-limited and recorded as events.
 All three are defined in [validation.md](validation.md#7-security-and-robustness-tests-from-s1-required-before-the-ab-test). They're required before the A/B gate and are repeated across people in Phase 1.
 
 **Added in Phase 1, built for the two-Mac pilot (D-110):**
-- **T-3, forged server command:** an unsigned or wrongly signed command is rejected. For the pilot: a lifecycle event whose dispatch is missing, signed by an unpinned key, replayed, expired, aimed at another device or carrying a different task text is refused and reported, and no agent starts (D-112).
-- **T-4, remote start without approval:** it's blocked. For the pilot: a valid dispatch from the other human waits for a single-use local approval; refusing or ignoring it starts nothing (D-112).
+- **T-3, forged server command:** an unsigned or wrongly signed command is rejected. For the pilot: a lifecycle event whose dispatch is missing, signed by an unpinned key, replayed, expired, aimed at another device or carrying a different task text is refused and reported, and no agent starts (D-112). **Built, scripted** (PA3):
+  - **End to end** (`test/security/t3-forged-dispatch.integration.test.ts`): a device the coordinator's registry has, but this Mac never pinned, starts this human's agent. The server accepts the dispatch; harnessd refuses it (`unknown_issuer`), and the server frees the agent.
+  - **Each refusal reason** (missing, malformed, policy widening, unknown issuer, issuer mismatch, a change after signing, expiry, kind, target, epoch, the task's or message's content, and replay) is a unit test in `packages/daemon/test/dispatch.test.ts`.
+- **T-4, remote start without approval:** it's blocked. For the pilot: a valid dispatch from the other human waits for a single-use local approval; refusing or ignoring it starts nothing (D-112). **Built, scripted** (D-34, PA3; `test/security/t4-remote-start.integration.test.ts`):
+  - Another human's start waits for this human's single-use approval. Denied, nothing runs, and the agent is freed; approved, it runs.
+  - Another human's abandon stops the agent and keeps its work, through a restart too.
 - **T-5, a message asking to disable checks:** it's held for the human (D-118).
 - **T-5b, a request to widen local policy:** a dispatch or server value that would add to the local allowlists, secrets, limits, budgets or pins is refused outright, with no approval path (D-112).
 - **Localhost reach (TH-22):** an agent can't log in to a local database as a superuser, open a Unix socket, use the UI bridge without a token, or complete a hello without the device key (D-117, D-119).

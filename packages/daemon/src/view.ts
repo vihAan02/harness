@@ -3,7 +3,11 @@
 // CLI builds one for `harness status` (coordination.md §8). Pure: no I/O.
 import type { EventMessage } from '@harness/protocol';
 
-export type AgentInfo = { id: string; name: string; vendor: string; humanId: string };
+export type AgentInfo = {
+  id: string; name: string; vendor: string; humanId: string;
+  /** The one device that runs it (D-113), when the coordinator binds agents to devices (PB2a); else its human's. */
+  deviceId?: string;
+};
 export type TaskInfo = {
   id: string; title: string; text: string; scope: string[]; ownerHumanId: string; priority: number;
   assignee: string | null; status: string; summary?: string;
@@ -98,7 +102,9 @@ export class ProjectView {
     const s = (k: string) => (typeof d[k] === 'string' ? (d[k] as string) : '');
     switch (e.kind) {
       case 'agent.created':
-        this.agents.set(s('agent_id'), { id: s('agent_id'), name: s('name'), vendor: s('vendor'), humanId: s('accountable_human_id') });
+        this.agents.set(s('agent_id'), {
+          id: s('agent_id'), name: s('name'), vendor: s('vendor'), humanId: s('accountable_human_id'), ...(s('device_id') ? { deviceId: s('device_id') } : {}),
+        });
         break;
       case 'task.created':
         this.tasks.set(s('task_id'), {
@@ -121,6 +127,14 @@ export class ProjectView {
         this.patchTask(s('task_id'), { status: 'abandoned', completedAt: e.at });
         this.claims.delete(s('task_id'));
         break;
+      case 'task.dispatch_rejected': // the target device refused a dispatch, or a start ended before a session (D-112, D-113)
+      case 'task.start_failed': {
+        const status = s('status');
+        // A refused start frees the agent: the task is open and unassigned again; a reopen's goes back to done.
+        if (status === 'open') this.patchTask(s('task_id'), { status, assignee: null, assignedAt: undefined });
+        else if (status === 'done') this.patchTask(s('task_id'), { status, completedAt: e.at });
+        break;
+      }
       case 'device.online':
       case 'device.offline':
         this.devices.set(s('device_id'), { online: e.kind === 'device.online', at: e.at });

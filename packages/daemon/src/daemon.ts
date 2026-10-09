@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   ClaudeAdapter, type AgentAdapter, type Auth, type HarnessTool, type Observation, type SessionHandle, type SessionSpec, type SessionStatus,
 } from '@harness/adapters';
-import type { EventMessage, ProjectSnapshot } from '@harness/protocol';
+import type { DispatchEnvelope, DispatchKind, EventMessage, ProjectSnapshot } from '@harness/protocol';
 import { Approvals, setupHash, testHash } from './approvals.ts';
 import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from './config.ts';
 import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, guardWorktrees, removeWorktree, TASK_ID, taskBranch } from './git.ts';
@@ -45,11 +45,12 @@ import { harnessTools } from './tools.ts';
 import { waitOutcomeText } from './tools/waits.ts';
 import { LeaseKeeper, type LeaseFaults } from './leases.ts';
 import { readPolicyFor } from './readpolicy.ts';
-import { ProjectView, type MessageInfo, type WaitInfo } from './view.ts';
+import { ProjectView, type AgentInfo, type MessageInfo, type TaskInfo, type WaitInfo } from './view.ts';
 import { snapshotOf } from './snapshot.ts';
 import { screenText } from './screen.ts';
 import { MIN_START_USD, ProviderCircuit, RATE_LIMIT_STOP, SpendLedger } from './budget.ts';
 import { UiRpc } from './uirpc.ts';
+import { checkDispatch, DISPATCH_OF, sessionApprovalHash, StartRefused, STARTS, type StartFailedReason, type Verdict } from './dispatch.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
@@ -356,7 +357,9 @@ export class Daemon {
       const taskId = (e.data as { task_id: string }).task_id;
       // The receipt is durable before this returns, so before the link saves the cursor past it (D-113, link.ts).
       if (this.isMine(e.project_id, taskId)) {
-        this.journal().append(e.project_id, taskId, 'received', { seq: e.seq, kind: e.kind });
+        // With its dispatch (D-112), so a recovery re-checks exactly what arrived.
+        const dispatch = (e.data as { dispatch?: unknown }).dispatch;
+        this.journal().append(e.project_id, taskId, 'received', { seq: e.seq, kind: e.kind, ...(dispatch === undefined ? {} : { dispatch }) });
         if (e.kind === 'task.assigned') this.crashPoint('after_assignment_receipt');
       }
       if (this.recovering) {
@@ -409,12 +412,12 @@ export class Daemon {
     this.lifecycles.set(taskId, next);
   }
 
-  /** A task whose agent is accountable to this daemon's human (D-112 narrows this to the agent's own device). */
+  /** A task whose agent is accountable to this daemon's human and, once agents are bound to devices, runs on this one (D-113). */
   isMine(projectId: string, taskId: string): boolean {
     const view = this.views.get(projectId);
     const task = view?.tasks.get(taskId);
     const agent = task?.assignee ? view!.agents.get(task.assignee) : undefined;
-    return !!agent && agent.humanId === this.config.principal;
+    return !!agent && agent.humanId === this.config.principal && (!agent.deviceId || agent.deviceId === this.config.deviceId);
   }
 
   /**
@@ -488,7 +491,7 @@ export class Daemon {
       return this.publishTask(projectId, taskId);
     }
     if (task.status === 'done') return;
-    if (task.status === 'abandoned' && hasWorktree) {
+    if (task.status === 'abandoned' && hasWorktree && !j.read(projectId, taskId).some((r) => r.state === 'abandoned' && r.kept)) {
       await this.teardownTask({ projectId, taskId }, { force: true });
       j.append(projectId, taskId, 'abandoned');
     }
@@ -510,18 +513,51 @@ export class Daemon {
     if (!task?.assignee) return;
     const agent = view.agents.get(task.assignee);
     if (!agent || agent.humanId !== this.config.principal) return; // another human's agent runs on their device
+    if (agent.deviceId && agent.deviceId !== this.config.deviceId) return; // and one bound to a device runs only there (D-113)
     const project = this.project(e.project_id);
     const ref: AgentRef = { id: agent.id, name: agent.name, vendor: agent.vendor };
+    // D-112: a human's lifecycle command carries a dispatch, checked here against this device's own pins and journal
+    // before anything acts. The agent's own report_done carries none.
+    const kind = DISPATCH_OF[e.kind];
+    let dispatch: DispatchEnvelope | null = null;
+    if (kind && project.requireDispatch && !(e.kind === 'task.completed' && e.actor.principal === agent.id)) {
+      dispatch = await this.acceptDispatch(e, kind, project.id, task, agent);
+      if (!dispatch) {
+        // Refused (or not approved), and reported. A refused abandon or complete still stops the agent; its work stays.
+        if ((kind === 'abandon' || kind === 'complete') && this.running.has(taskId)) {
+          await this.stopAgent(taskId);
+          this.journal().append(project.id, taskId, 'stopped', { reason: 'dispatch_refused' });
+        }
+        return;
+      }
+    }
+    try {
+      await this.act(e, project, task, agent, ref, dispatch);
+    } catch (err) {
+      // A dispatched start that ended before a session began is reported, which frees the agent (D-113).
+      if (dispatch && STARTS.includes(dispatch.kind) && !this.stopping && !this.running.has(taskId)) {
+        return this.startFailed(project.id, taskId, dispatch.nonce, startFailure(err), (err as Error).message);
+      }
+      throw err;
+    }
+  }
+
+  /** What a lifecycle event does on this device, once its dispatch (if any) is accepted: see lifecycle(). */
+  async act(e: EventMessage, project: ProjectConfig, task: TaskInfo, agent: AgentInfo, ref: AgentRef, dispatch: DispatchEnvelope | null): Promise<void> {
+    const taskId = task.id;
     // D-119: refused before a worktree, setup or ports exist; startAgent checks again (cached).
     if (e.kind === 'task.assigned' || e.kind === 'task.reopened') {
       await this.refuseIfTrustPostgres();
       this.refuseIfNoBudget(); // D-116: before a worktree, setup or ports exist
     }
     if (e.kind === 'task.assigned') {
-      if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      if (!this.adapters[agent.vendor]) throw new StartRefused('no_adapter', `no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return; // already running here: a replayed or duplicate assignment starts nothing
       // T-5 (D-118): a task another human wrote is screened like a peer's message, before anything is prepared.
-      if (task.ownerHumanId !== this.config.principal && !(await this.taskScreenedOk(project.id, taskId, `${task.title}\n${task.text}`, task.ownerHumanId))) return;
+      if (task.ownerHumanId !== this.config.principal) {
+        const screened = await this.taskScreenedOk(project.id, taskId, `${task.title}\n${task.text}`, task.ownerHumanId);
+        if (screened !== true) return this.heldNotStarted(project.id, taskId, dispatch, screened);
+      }
       // A GitHub project's tasks start from the base as the remote has it, fetched and verified (D-114).
       const baseSha = project.integration === 'github' ? await this.fetchProjectBase(project) : await branchTip(project.repo, project.baseBranch);
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha, agentId: agent.id });
@@ -529,19 +565,21 @@ export class Daemon {
       await this.startAgent(ws, ref, { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId });
       this.log(`${agent.name} started on ${taskId} in ${ws.worktree}`);
     } else if (e.kind === 'task.reopened') {
-      if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      if (!this.adapters[agent.vendor]) throw new StartRefused('no_adapter', `no adapter for ${agent.vendor} on this device`);
       if (!fs.existsSync(this.worktreeOf(project.id, taskId))) throw new Error(`${taskId}'s worktree isn't on this device; it can't be reopened here`);
       const message = String((e.data as { text?: unknown }).text ?? '');
-      if (!(await this.otherHumansMessageOk(e, project.id, taskId, 'reopen', message))) return;
+      const screened = await this.otherHumansMessageOk(e, project.id, taskId, 'reopen', message);
+      if (screened !== true) return this.heldNotStarted(project.id, taskId, dispatch, screened);
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha: '', agentId: agent.id, reuse: true });
       if (this.stopping) return;
       await this.startAgent(ws, ref, { id: task.id, title: task.title, text: reopenedText(task.text, message), scope: task.scope, ownerHumanId: task.ownerHumanId });
       this.log(`${agent.name} started again on ${taskId} (reopened) in ${ws.worktree}`);
     } else if (e.kind === 'task.resumed') {
-      if (!this.adapters[agent.vendor]) throw new Error(`no adapter for ${agent.vendor} on this device`);
+      if (!this.adapters[agent.vendor]) throw new StartRefused('no_adapter', `no adapter for ${agent.vendor} on this device`);
       if (this.running.has(taskId)) return;
       if (!fs.existsSync(this.worktreeOf(project.id, taskId))) throw new Error(`${taskId}'s worktree isn't on this device; it can't be resumed here`);
-      if (!(await this.otherHumansMessageOk(e, project.id, taskId, 'resume', String((e.data as { text?: unknown }).text ?? '')))) return;
+      const screened = await this.otherHumansMessageOk(e, project.id, taskId, 'resume', String((e.data as { text?: unknown }).text ?? ''));
+      if (screened !== true) return this.heldNotStarted(project.id, taskId, dispatch, screened);
       const j = this.journal();
       // A crash during setup: run the approved setup again before the session (same hash, no new approval).
       const forceSetup = j.has(project.id, taskId, 'setup_started') && !j.has(project.id, taskId, 'setup_ok');
@@ -569,6 +607,12 @@ export class Daemon {
     } else {
       if (this.running.has(taskId)) await this.stopAgent(taskId, 'kill');
       this.leases.untrack(taskId);
+      // Another human's abandon stops the agent and never deletes work (D-112): the worktree and branch stay here.
+      if (dispatch && dispatch.issuer_human_id !== this.config.principal) {
+        this.journal().append(project.id, taskId, 'abandoned', { kept: true, by: dispatch.issuer_human_id });
+        this.log(`${taskId} abandoned by ${dispatch.issuer_human_id}; its work stays in ${this.worktreeOf(project.id, taskId)}`);
+        return;
+      }
       if (fs.existsSync(this.worktreeOf(project.id, taskId))) await this.teardownTask({ projectId: project.id, taskId }, { force: true });
       this.journal().append(project.id, taskId, 'abandoned');
       this.log(`${taskId} abandoned; its worktree is removed`);
@@ -610,9 +654,9 @@ export class Daemon {
 
   /**
    * The screen for a task's text when another human wrote it, or for the message of another human's reopen or resume
-   * (D-118): waits for the review; false when it's denied or unanswered. `key` makes each one its own review.
+   * (D-118): waits for the review. `key` makes each one its own review. Not true: denied, or unanswered in time.
    */
-  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string, what = `task ${taskId}, written by ${owner},`, key = `task:${taskId}`): Promise<boolean> {
+  async taskScreenedOk(projectId: string, taskId: string, text: string, owner: string, what = `task ${taskId}, written by ${owner},`, key = `task:${taskId}`): Promise<true | 'denied' | 'unanswered'> {
     const hits = screenText(text);
     if (!hits.length) return true;
     const hash = reviewHash(key, text);
@@ -627,12 +671,96 @@ export class Daemon {
       if (this.approvals.isApproved(projectId, hash)) return true;
       if (!this.approvals.pending().some((r) => r.id === req.id && r.projectId === projectId)) {
         this.log(`${taskId}: not started; its human denied the review`);
-        return false;
+        return 'denied';
       }
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
     this.log(`${taskId}: not started; nobody released it`);
-    return false;
+    return 'unanswered';
+  }
+
+  /** A held text its human denied, or didn't release in time: a dispatched start that never began frees its agent (D-113). */
+  async heldNotStarted(projectId: string, taskId: string, dispatch: DispatchEnvelope | null, why: 'denied' | 'unanswered'): Promise<void> {
+    if (!dispatch || this.stopping) return;
+    await this.startFailed(projectId, taskId, dispatch.nonce, why === 'denied' ? 'approval_denied' : 'approval_expired', `held for review (T-5): ${why === 'denied' ? 'denied' : 'not released'}`);
+  }
+
+  /**
+   * D-112 on this device, before anything acts on a lifecycle event: its dispatch checked against this device's own
+   * pins, journal, epoch and view (dispatch.ts), and journaled before it acts. A start, reopen or resume another human
+   * issued then waits for this human's single-use approval (D-34), until the dispatch expires. Returns null when it
+   * was refused or not approved: that's reported, and the server frees the agent.
+   */
+  async acceptDispatch(e: EventMessage, kind: DispatchKind, projectId: string, task: TaskInfo, agent: AgentInfo): Promise<DispatchEnvelope | null> {
+    const j = this.journal();
+    const records = j.read(projectId, task.id);
+    // A recovery (seq 0, synthetic) re-checks the receipt it journaled: the same dispatch, at the seq it came with.
+    const receipt = e.seq === 0 ? records.filter((r) => r.state === 'received' && r.kind === e.kind).at(-1) : undefined;
+    const seq = receipt ? Number(receipt.seq) : e.seq;
+    const input = receipt ? receipt.dispatch : (e.data as { dispatch?: unknown }).dispatch;
+    const text = (e.data as { text?: unknown }).text;
+    const v = checkDispatch(input, kind, {
+      trusted: this.config.trustedDevices, deviceId: this.config.deviceId, epoch: this.link?.epoch ?? null, now: new Date(),
+      projectId, task: { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId }, agentId: agent.id,
+      ...((kind === 'reopen' || kind === 'resume') && typeof text === 'string' ? { message: text } : {}),
+      usedAt: (nonce) => {
+        const r = records.find((x) => x.state === 'dispatch' && x.nonce === nonce);
+        return r ? Number(r.seq) : null;
+      },
+      seq,
+    });
+    if (!v.ok) {
+      await this.refuseDispatch(projectId, task.id, kind, v);
+      return null;
+    }
+    const env = v.envelope;
+    if (!records.some((r) => r.state === 'dispatch' && r.nonce === env.nonce)) {
+      j.append(projectId, task.id, 'dispatch', { nonce: env.nonce, kind, seq, issuer_human_id: env.issuer_human_id, issuer_device_id: env.issuer_device_id, expires_at: env.expires_at });
+    }
+    if (STARTS.includes(kind) && env.issuer_human_id !== this.config.principal) {
+      const answer = await this.awaitSessionApproval(projectId, task, agent, env, typeof text === 'string' ? text : undefined);
+      if (answer === 'stopping') return null; // the next start re-checks it from the journal
+      if (answer !== 'approved') {
+        await this.startFailed(projectId, task.id, env.nonce, answer === 'denied' ? 'approval_denied' : 'approval_expired',
+          `${env.issuer_human_id}'s ${kind} was ${answer === 'denied' ? 'denied' : 'not approved before it expired'} on this device`);
+        return null;
+      }
+    }
+    return env;
+  }
+
+  /** A remote start, reopen or resume waits for this human's approval, bound to its nonce and hashes (D-34). */
+  async awaitSessionApproval(projectId: string, task: TaskInfo, agent: AgentInfo, env: DispatchEnvelope, message?: string): Promise<'approved' | 'denied' | 'expired' | 'stopping'> {
+    const hash = sessionApprovalHash(env);
+    if (this.approvals.isApproved(projectId, hash)) return 'approved';
+    const req = this.approvals.request({
+      projectId, taskId: task.id, manifests: [], hash, kind: 'agent_session',
+      command: `${env.issuer_human_id} (device ${env.issuer_device_id}) asks your agent ${agent.name} to ${env.kind} task ${task.id}. It runs on this device only once you approve. The task, as written by ${task.ownerHumanId}:\n${task.title}\n${task.text}${message === undefined ? '' : `\nWith the message:\n${message}`}`,
+    });
+    this.log(`${task.id}: ${env.issuer_human_id} asks ${agent.name} to ${env.kind} it; it waits for your approval: harness approve ${req.id}`);
+    const deadline = Date.parse(env.expires_at);
+    while (!this.stopping && Date.now() < deadline) {
+      if (this.approvals.isApproved(projectId, hash)) return 'approved';
+      if (!this.approvals.pending().some((r) => r.id === req.id && r.projectId === projectId)) return 'denied';
+      await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
+    }
+    return this.stopping ? 'stopping' : 'expired';
+  }
+
+  /** A dispatch this device won't act on, reported (`dispatch.rejected`): the server frees the agent, and raises an alert for a forgery. */
+  async refuseDispatch(projectId: string, taskId: string, kind: DispatchKind, v: Extract<Verdict, { ok: false }>): Promise<void> {
+    this.journal().append(projectId, taskId, 'dispatch_refused', { reason: v.reason, ...(v.nonce ? { nonce: v.nonce } : {}) });
+    this.log(`${taskId}: refused a ${kind} dispatch (${v.reason}): ${v.detail}`);
+    await this.report(projectId, 'dispatch.rejected', { task_id: taskId, ...(v.nonce ? { nonce: v.nonce } : {}), kind: v.kind ?? kind, reason: v.reason, detail: v.detail.slice(0, 500) })
+      .catch((err: Error) => this.log(`${taskId}: couldn't report the refused dispatch: ${err.message}`));
+  }
+
+  /** A dispatched start that ended before a session began (`task.start_failed`): the server frees the agent (D-113). */
+  async startFailed(projectId: string, taskId: string, nonce: string, reason: StartFailedReason, detail: string): Promise<void> {
+    this.journal().append(projectId, taskId, 'start_failed', { reason, nonce });
+    this.log(`${taskId}: not started (${reason}): ${detail}`);
+    await this.report(projectId, 'task.start_failed', { task_id: taskId, nonce, reason, detail: detail.slice(0, 500) })
+      .catch((err: Error) => this.log(`${taskId}: couldn't report the failed start: ${err.message}`));
   }
 
   async awaitReview(run: RunningAgent, m: MessageInfo, hash: string, id: string): Promise<void> {
@@ -654,7 +782,7 @@ export class Daemon {
    * T-5 (D-118): the message of a reopen or resume another human sent is screened like a peer's before the agent sees
    * it, each one on its own (its event's seq). This human's own messages, and the task's text already screened, aren't.
    */
-  async otherHumansMessageOk(e: EventMessage, projectId: string, taskId: string, kind: 'reopen' | 'resume', message: string): Promise<boolean> {
+  async otherHumansMessageOk(e: EventMessage, projectId: string, taskId: string, kind: 'reopen' | 'resume', message: string): Promise<true | 'denied' | 'unanswered'> {
     const by = (e.data as { by?: unknown }).by;
     if (typeof by !== 'string' || by === this.config.principal || !message) return true;
     return this.taskScreenedOk(projectId, taskId, message, by, `${by}'s ${kind} of task ${taskId}`, `${kind}:${taskId}:${e.seq}`);
@@ -1307,7 +1435,7 @@ export class Daemon {
     const left = this.refuseIfNoBudget(); // D-116: likewise
     if (this.running.has(ws.taskId)) throw new Error(`task ${ws.taskId} already has a running agent`);
     const adapter = this.adapters[agent.vendor];
-    if (!adapter) throw new Error(`no adapter for vendor ${agent.vendor}`);
+    if (!adapter) throw new StartRefused('no_adapter', `no adapter for vendor ${agent.vendor}`);
     const provider = this.provider();
     const sessionId = randomUUID();
     const record: SessionRecord = {
@@ -1554,12 +1682,12 @@ export class Daemon {
   refuseIfNoBudget(): number | null {
     const c = this.circuit.state();
     if (c) {
-      throw new Error(`D-116: the provider circuit is open (${c.kind}: ${c.reason}); ${c.kind === 'budget' ? 'it closes on the next UTC day' : 'fix the provider account, then reset it'}. No agent starts until then`);
+      throw new StartRefused('budget', `D-116: the provider circuit is open (${c.kind}: ${c.reason}); ${c.kind === 'budget' ? 'it closes on the next UTC day' : 'fix the provider account, then reset it'}. No agent starts until then`);
     }
     const daily = this.config.agents.dailyBudgetUsd;
     const left = this.spend.remaining(daily);
     if (left !== null && left < MIN_START_USD) {
-      throw new Error(`D-116: $${left.toFixed(2)} is left of today's $${daily} budget on this device; no agent starts with less than $${MIN_START_USD}`);
+      throw new StartRefused('budget', `D-116: $${left.toFixed(2)} is left of today's $${daily} budget on this device; no agent starts with less than $${MIN_START_USD}`);
     }
     return left;
   }
@@ -1847,7 +1975,7 @@ export class Daemon {
 
   checkCapacity(limit: number): void {
     const active = Object.keys(this.ports.list()).length;
-    if (active >= limit) throw new Error(`already running ${active} task(s); the limit is ${limit} (D-38)`);
+    if (active >= limit) throw new StartRefused('capacity', `already running ${active} task(s); the limit is ${limit} (D-38)`);
   }
 
   async report(projectId: string, name: string, args: Record<string, unknown>, asAgent?: string): Promise<void> {
@@ -1882,7 +2010,7 @@ export class Daemon {
     }).finally(() => this.forgetProcs(`${project.id}-${scratchName}`));
     if (result.exitCode !== 0) {
       await report('failed', { exit_code: result.exitCode });
-      throw new Error(`setup command failed (exit ${result.exitCode}${result.timedOut ? ', timed out' : ''}); see ${logFile}`);
+      throw new StartRefused('setup_failed', `setup command failed (exit ${result.exitCode}${result.timedOut ? ', timed out' : ''}); see ${logFile}`);
     }
     if (forTask) this.journal().append(project.id, taskId, 'setup_ok', { hash });
     await report('ran', { exit_code: 0 });
@@ -1898,6 +2026,11 @@ export class Daemon {
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
   }
+}
+
+/** Why a dispatched start failed, for `task.start_failed` (D-113). */
+function startFailure(err: unknown): StartFailedReason {
+  return err instanceof StartRefused ? err.reason : err instanceof ApprovalTimeout ? 'approval_expired' : 'error';
 }
 
 /** The lifecycle events harnessd acts on (D-54, D-107, D-113). */
