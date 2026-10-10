@@ -30,7 +30,7 @@ import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
 import { agentConfigDir, PortAllocator, portEnv, type PortBlock } from './resources.ts';
 import { runSetup } from './setup.ts';
-import { renderMessage, renderTask, reopenedText, resumedText, type MessageForAgent, type TaskForAgent } from './envelope.ts';
+import { renderMessage, renderTask, reopenedText, resumedText, waitedFor, type MessageForAgent, type TaskForAgent } from './envelope.ts';
 import { readRepoInstructions, sessionInstructions } from './instructions.ts';
 import {
   addIntegrationWorktree, advanceBase, blobsAt, changedBetween, deleteMergedBranch, diffExcerpt, mergeCommit, removeIntegrationWorktree,
@@ -608,9 +608,15 @@ export class Daemon {
       const forceSetup = j.has(project.id, taskId, 'setup_started') && !j.has(project.id, taskId, 'setup_ok');
       const ws = await this.prepareTask({ projectId: project.id, taskId, baseSha: '', agentId: agent.id, reuse: true, forceSetup });
       if (this.stopping) return;
-      const diffStat = await git(ws.worktree, 'diff', '--stat', 'HEAD').catch(() => '');
+      const changed = await git(ws.worktree, 'status', '--porcelain=v1', '--untracked-files=all').catch(() => '');
       const message = String((e.data as { text?: unknown }).text ?? '');
-      await this.startAgent(ws, ref, { id: task.id, title: task.title, text: resumedText(task.text, message, diffStat), scope: task.scope, ownerHumanId: task.ownerHumanId });
+      // What the earlier session was waiting for when it ended (D-113): its wait, open or cancelled with it.
+      const waited = [...this.view(project.id).waits.values()]
+        .filter((w) => w.taskId === taskId && (w.outcome === 'waiting' || w.reason === 'session_ended')).at(-1);
+      await this.startAgent(ws, ref, {
+        id: task.id, title: task.title, scope: task.scope, ownerHumanId: task.ownerHumanId,
+        text: resumedText(task.text, message, changed, { ...(waited ? { waited: `${waitedFor(waited.on)} (${waited.id})` } : {}), ...(task.summary ? { summary: task.summary } : {}) }),
+      });
       this.log(`${agent.name} resumed ${taskId} in ${ws.worktree}`);
     } else if (e.kind === 'task.completed') {
       const run = this.running.get(taskId);

@@ -198,6 +198,8 @@ export type PilotSide = {
    * (Daemon.dispatchCommand) also checks them against GitHub first; this signs what it's given, stale or not.
    */
   integrate: (task: string, x: { pr_number: number; head_sha: string; base_sha: string }) => Promise<Record<string, string>>;
+  /** This side's harnessd stops, and a new one starts on the same home and config (a restart; D-113's recovery runs). */
+  restart: () => Promise<void>;
 };
 /** The dispatch each human lifecycle command carries (D-112; protocol.md §11). */
 const DISPATCH_KIND = { 'task.assign': 'start', 'task.complete': 'complete', 'task.abandon': 'abandon', 'task.reopen': 'reopen', 'task.resume': 'resume' } as const satisfies Record<string, DispatchKind>;
@@ -269,7 +271,7 @@ export async function startPilotStack(p: {
       const adapter = new FakeAdapter();
       const logs: string[] = [];
       const acted: EventMessage[] = [];
-      const daemon = new Daemon({
+      const options: DaemonOptions = {
         home, config, deviceKey, heartbeatMs: 200, adapters: { claude: adapter },
         auth: { mode: 'api-key', apiKey: DUMMY_KEY }, // never the environment's key: the stand-in adapter calls no model
         // The stand-in adapter runs nothing in a sandbox, so D-119's loopback-Postgres probe has nothing to protect here.
@@ -277,8 +279,10 @@ export async function startPilotStack(p: {
         github: { token: async () => fake.token }, // the fake's token stands in for the human's gh login
         log: (m) => logs.push(m), onEvent: (e) => acted.push(e),
         ...p.daemonOptions, ...p.sideOptions?.[s],
-      });
-      cleanup.push(() => daemon.stop());
+      };
+      const daemon = new Daemon(options);
+      let sideOf: PilotSide | null = null;
+      cleanup.push(() => (sideOf?.daemon ?? daemon).stop());
       const client = await openDeviceClient(server.url, config, deviceKey, [{ project_id: project, after_seq: 0 }]);
       cleanup.push(() => client.close());
       const command = async (name: string, args: Record<string, unknown>): Promise<Record<string, string>> => {
@@ -317,7 +321,14 @@ export async function startPilotStack(p: {
         await signed('task.assign', { task_id: task, assignee_agent_id: agent });
         return task;
       };
-      return { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command, assign, signed, integrate };
+      const restart: PilotSide['restart'] = async () => {
+        await sideOf!.daemon.stop();
+        sideOf!.daemon = new Daemon(options);
+        await sideOf!.daemon.start();
+        await sideOf!.daemon.ready();
+      };
+      sideOf = { human, device, daemon, home, config, raw, repo: pair[s].repo, deviceKey, publicKey: keys[s].publicKey, adapter, client, logs, acted, command, assign, signed, integrate, restart };
+      return sideOf;
     };
     const a = await side('a');
     const b = await side('b');

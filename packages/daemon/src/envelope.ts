@@ -80,14 +80,26 @@ export function renderMessage(m: MessageForAgent): string {
  * work is in the worktree, maybe uncommitted. Resuming the vendor's own session isn't claimed, so the agent is told
  * what it needs to carry on: the task, what's changed so far, and its human's message if any.
  */
-export function resumedText(text: string, message: string, diffStat: string): string {
+/**
+ * The handoff a resumed session starts with (D-113): the task, what the earlier session left in the worktree (from `git
+ * status`, so new files count too), what it was waiting for when it ended, its last summary if it gave one, and the
+ * human's message. Resuming the vendor's own session isn't claimed.
+ */
+export function resumedText(text: string, message: string, changed: string, o: { waited?: string; summary?: string } = {}): string {
   return [
     text,
     '',
     '[Resumed] Your earlier session on this task was interrupted before it finished. Your work so far is in this worktree (some of it may not be committed). Look at it before carrying on; don\'t start over.',
-    ...(diffStat.trim() ? ['Changed so far:', diffStat.trim()] : ['Nothing in the worktree has changed yet.']),
+    ...(changed.trim() ? ['Changed so far (git status):', changed.replace(/^\n+|\s+$/g, '')] : ['Nothing in the worktree has changed yet.']),
+    ...(o.waited ? [`When it ended, your earlier session was waiting for ${o.waited}. That wait ended with it: if you still need it, call wait_for again.`] : []),
+    ...(o.summary?.trim() ? ['Your last summary:', o.summary.trim()] : []),
     ...(message.trim() ? ['Your human\'s message:', message] : []),
   ].join('\n');
+}
+
+/** What a wait was for, in words, for a resumed session (D-113). */
+export function waitedFor(on: { kind: string; id: string }): string {
+  return on.kind === 'answer' ? `the answer to your question ${on.id}` : on.kind === 'task' ? `task ${on.id} to land` : `lease ${on.id} to be released`;
 }
 
 export function reopenedText(text: string, message: string): string {
