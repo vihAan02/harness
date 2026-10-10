@@ -80,7 +80,11 @@ test('the gate: a workflow file is never pushed, and the human hears why; a task
     // It lands as it is, so the waits on it end (D-106): one land, completed, with no change.
     await s.until(() => s.b.daemon.view(s.project).tasks.get(idle.task)?.status === 'landed', 20_000, 'the empty land');
     const lands = [...s.b.daemon.view(s.project).lands.values()].filter((l) => l.taskId === idle.task);
-    assert.deepEqual(lands.map((l) => [l.status, l.changedPaths]), [['completed', []]]);
+    assert.deepEqual(lands.map((l) => [l.status, l.changedPaths, l.mode]), [['completed', [], 'github']]);
+    // Its worktree goes at once (nothing of it is anywhere but the base), and a restart has nothing left to keep.
+    await s.until(() => !fs.existsSync(idle.worktree), 20_000, 'the empty task\'s worktree to go');
+    await s.a.restart();
+    assert.ok(!s.a.logs.some((l) => l.includes(`kept ${idle.worktree}`)), 'nothing kept after the restart');
   } finally { await s.stop(); }
 });
 
