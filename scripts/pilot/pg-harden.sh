@@ -10,28 +10,38 @@
 #     agent that needs one (through a project secret, D-52). Its URL goes into ~/.harness/secrets.toml (0600).
 #   - Checks the result: a password-less login fails, ~/.pgpass works, and harness_agent can't run a program.
 # Undo: scripts/pilot/pg-harden.sh --undo restores the backup and clears your role's password.
-# Env: PGDATA (default Homebrew postgresql@18's), PGPORT (default 5432), PGBIN, HARNESS_HOME (default ~/.harness).
+# Run it once per cluster: D-119's probe checks every loopback listener, so a cluster left on trust still blocks agents.
+#   PGPORT=5432 scripts/pilot/pg-harden.sh      then      PGPORT=5433 PGBIN=/opt/homebrew/opt/postgresql@18/bin scripts/pilot/pg-harden.sh
+# Env: PGPORT (default 5432), PGBIN (default Homebrew postgresql@18's; any psql talks to any recent server), PGDATA
+# (optional: if set, it must be the data directory of the server on PGPORT), HARNESS_HOME (default ~/.harness).
+# The pg_hba.conf it edits is the one the server on PGPORT says it uses (SHOW hba_file), never a guessed path.
 # Passwords never go on a command line: they reach psql on stdin (or, for the restricted role's own check, in PGPASSWORD).
 set -euo pipefail
+umask 077
 
 PGBIN="${PGBIN:-$( (brew --prefix postgresql@18 2>/dev/null || echo /opt/homebrew/opt/postgresql@18) )/bin}"
-PGDATA="${PGDATA:-/opt/homebrew/var/postgresql@18}"
 PORT="${PGPORT:-5432}"
 ME="$(id -un)"
-HBA="$PGDATA/pg_hba.conf"
-BACKUP="$HBA.pre-harness"
 PGPASS="$HOME/.pgpass"
 HHOME="${HARNESS_HOME:-$HOME/.harness}"
 SECRETS="$HHOME/secrets.toml"
+export PGPASSFILE="$PGPASS"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'pg-harden: %s\n' "$*" >&2; exit 1; }
-# As your superuser, over loopback TCP, with ~/.pgpass if it has the password. SQL comes on stdin.
-su_sql() { "$PGBIN/psql" -X -q -h 127.0.0.1 -p "$PORT" -U "$ME" -d postgres -v ON_ERROR_STOP=1 -At -f -; }
+# As your superuser, over loopback TCP, never prompting: trust before hardening, ~/.pgpass after. SQL comes on stdin.
+su_sql() { "$PGBIN/psql" -X -q -w -h 127.0.0.1 -p "$PORT" -U "$ME" -d postgres -v ON_ERROR_STOP=1 -At -f -; }
 pgpass_password() { [ -f "$PGPASS" ] && awk -F: -v p="$PORT" -v u="$ME" '$1=="127.0.0.1" && $2==p && $4==u { print $5; exit }' "$PGPASS" || true; }
 
 [ -x "$PGBIN/psql" ] || die "no psql in $PGBIN; set PGBIN"
-[ -f "$HBA" ] || die "no $HBA; set PGDATA to your cluster's data directory"
+# Which files belong to the server on this port: ask it.
+HBA="$(echo 'SHOW hba_file;' | su_sql 2>/dev/null)" || die "can't log in as $ME to the Postgres on 127.0.0.1:$PORT (is it running? is ~/.pgpass right?)"
+DATADIR="$(echo 'SHOW data_directory;' | su_sql)"
+if [ -n "${PGDATA:-}" ] && [ "$(cd "$PGDATA" 2>/dev/null && pwd -P)" != "$(cd "$DATADIR" && pwd -P)" ]; then
+  die "PGDATA=$PGDATA, but the server on $PORT runs from $DATADIR: point PGPORT and PGDATA at the same cluster"
+fi
+[ -f "$HBA" ] && [ -w "$HBA" ] || die "the server on $PORT uses $HBA, which this user can't edit"
+BACKUP="$HBA.pre-harness"
 
 if [ "${1:-}" = "--undo" ]; then
   [ -f "$BACKUP" ] || die "no backup at $BACKUP: nothing to undo"
@@ -58,13 +68,15 @@ printf "SET password_encryption = 'scram-sha-256'; ALTER ROLE \"%s\" PASSWORD '%
 say "ok   $ME has a password, kept in $PGPASS (0600)"
 
 # 2. pg_hba.conf: trust becomes scram-sha-256 on every local and host line; the original is kept once.
-[ -f "$BACKUP" ] || cp "$HBA" "$BACKUP"
-sed -E 's/^((local|host|hostssl|hostnossl)[[:space:]].*[[:space:]])trust[[:space:]]*$/\1scram-sha-256/' "$HBA" > "$HBA.harness-tmp"
-mv "$HBA.harness-tmp" "$HBA"
-if grep -E '^(local|host|hostssl|hostnossl)[[:space:]]' "$HBA" | grep -q -E '[[:space:]](trust|password|md5)[[:space:]]*$'; then
-  die "$HBA still has a trust, password or md5 line; fix it by hand (the original is $BACKUP)"
-fi
+[ -f "$BACKUP" ] || cp -p "$HBA" "$BACKUP"
+# A trust method, with or without a trailing comment, becomes scram-sha-256. Written back in place, so the file keeps
+# its owner and mode.
+sed -E 's/^((local|host|hostssl|hostnossl)[[:space:]].*[[:space:]])trust([[:space:]]*(#.*)?)$/\1scram-sha-256\3/' "$HBA" > "$HBA.harness-tmp"
+cat "$HBA.harness-tmp" > "$HBA" && rm -f "$HBA.harness-tmp"
 echo "SELECT pg_reload_conf();" | su_sql >/dev/null
+# What the server actually reads (includes, IPv6, comments): no rule may trust, use a cleartext password or md5, or fail to parse.
+LEFT="$(echo "SELECT count(*) FROM pg_hba_file_rules WHERE auth_method IN ('trust', 'password', 'md5') OR error IS NOT NULL;" | su_sql)"
+[ "$LEFT" = 0 ] || die "$HBA still has $LEFT rule(s) with trust, password or md5, or that don't parse (SELECT * FROM pg_hba_file_rules); fix them by hand (the original is $BACKUP)"
 say "ok   $HBA: every loopback login needs a password (backup: $BACKUP)"
 
 # 3. harness_agent: no superuser, no createdb, no createrole; its own database. Its URL is a project secret (D-52).
