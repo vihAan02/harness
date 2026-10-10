@@ -134,3 +134,18 @@ test('the PR text fills every section of the template, and quotes the agent\'s w
   assert.deepEqual(outOfScope([], ['a']), []);
   assert.equal(prTitle({ taskId: 'T-7', title: 'a\nb' }), 'T-7: a b');
 });
+
+test('content Git would hide from a diff is scanned anyway: a binary-looking file, and a -diff one; .gitattributes is held', async () => {
+  const r = repo();
+  try {
+    const key = 'sk-ant-' + 'api03-abcdefghijklmnopqrstuvwxyz';
+    // A NUL byte makes Git call the file binary, and `-diff` tells it never to show one: both used to hide a key.
+    const binary = r.commit({ 'assets/data.bin': `\0\0header\n${key}\n` });
+    const hidden = r.commit({ '.gitattributes': 'notes.txt -diff\n', 'notes.txt': `token ${key}\n` });
+    const res = await scan(r, hidden);
+    assert.deepEqual(res.blocked.map((b) => [b.rule, b.commit, b.path]).sort((x, y) => String(x[2]).localeCompare(String(y[2]))), [
+      ['secret:anthropic_key', binary, 'assets/data.bin'], ['secret:anthropic_key', hidden, 'notes.txt'],
+    ]);
+    assert.deepEqual(res.held.map((h) => [h.rule, h.path]), [['git_attributes_change', '.gitattributes']]);
+  } finally { r.t.cleanup(); }
+});

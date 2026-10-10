@@ -101,3 +101,24 @@ test('the snapshot: JSON-safe, this device\'s spend today, sessions, PRs and lan
   const agent = snap.agents.find((a) => a.id === 'agent_run')!;
   assert.deepEqual([agent.device_id, agent.online, agent.live_session_id], ['dev_b', null, 's-other'], 'the device of its latest session; presence unknown until a heartbeat event');
 });
+
+test('what the UI needs to act: each task\'s hash for a dispatch, the configured repo, alerts, and a remote start that waits on its human', async () => {
+  const { taskSha256 } = await import('@harness/protocol/signing');
+  seq = 0;
+  const v = new ProjectView('prj');
+  v.apply(ev('agent.created', { agent_id: 'agent_b', name: 'agent/b', vendor: 'claude', accountable_human_id: 'human_b', device_id: 'dev_b' }));
+  v.apply(ev('task.created', { task_id: 'T-1', title: 'page', text: 'Build it.', scope: ['src/web/'], priority: 0, owner_human_id: 'human_a' }));
+  // human_a's signed start of human_b's agent: it waits for human_b's approval on dev_b (D-34).
+  v.apply(ev('task.assigned', { task_id: 'T-1', assignee_agent_id: 'agent_b', dispatch: { envelope: { issuer_human_id: 'human_a' }, sig: 'x' } }));
+  v.apply(ev('security.alert', { what: 'dispatch_rejected', task_id: 'T-1', reason: 'unknown_issuer' }));
+  const snap = snapshotOf(v, local({ repo: { githubRepo: 'vihAan02/harness', baseBranch: 'main' } }));
+  const t = snap.tasks[0]!;
+  assert.equal(t.task_sha256, taskSha256({ title: 'page', text: 'Build it.', scope: ['src/web/'], owner_human_id: 'human_a' }));
+  assert.deepEqual([t.state, t.state_detail], ['awaiting_approval', 'human_b approves it on dev_b']);
+  assert.deepEqual(snap.repo, { github_repo: 'vihAan02/harness', base_branch: 'main' });
+  assert.deepEqual(snap.alerts.map((a) => [a.what, a.task_id, a.detail]), [['dispatch_rejected', 'T-1', 'unknown_issuer']]);
+  // Its own human's start isn't waiting on anyone else: it's starting.
+  v.apply(ev('task.created', { task_id: 'T-2', title: 'api', text: 'x', scope: [], priority: 0, owner_human_id: 'human_b' }));
+  v.apply(ev('task.assigned', { task_id: 'T-2', assignee_agent_id: 'agent_b', dispatch: { envelope: { issuer_human_id: 'human_b' }, sig: 'x' } }));
+  assert.equal(snapshotOf(v, local()).tasks.find((x) => x.id === 'T-2')!.state, 'starting');
+});

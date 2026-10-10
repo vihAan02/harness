@@ -17,7 +17,7 @@ import net from 'node:net';
 import path from 'node:path';
 import type { DispatchKind, ProjectSnapshot } from '@harness/protocol';
 import { DISPATCH_KINDS } from '@harness/protocol/signing';
-import { Approvals } from './approvals.ts';
+import { Approvals, pendingApproval } from './approvals.ts';
 import { ensureDir } from './home.ts';
 
 /** What the RPC needs from harnessd. */
@@ -175,9 +175,7 @@ export class UiRpc {
       case 'health':
         return this.host.health();
       case 'pending_approvals':
-        return this.host.approvals.pending().map((r) => ({
-          id: r.id, project_id: r.projectId, task_id: r.taskId, kind: r.kind ?? 'setup', command: r.command, manifests: r.manifests, hash: r.hash, requested_at: r.requestedAt,
-        }));
+        return this.host.approvals.pending().map(pendingApproval);
       case 'approve': {
         const req = this.request(params.id);
         if (typeof params.shown_hash !== 'string' || !HASH.test(params.shown_hash) || params.shown_hash !== req.hash) {

@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { commitAll, createWorktree, git, guardWorktrees, taskBranch } from '../src/git.ts';
+import { ignoredPaths } from '../src/reads.ts';
 import { gitIn, makeRepo, tempDir } from './fixtures.ts';
 
 /** A task worktree under a guarded root, and a repository the "agent" made inside it, with a filter that leaves a marker. */
@@ -65,5 +66,19 @@ test('a .git replaced by a directory, and a directory that isn\'t a worktree: st
     await assert.rejects(git(stray, 'status'), /isn't a worktree of a project repository \(TH-25\)/);
     // Outside the guarded roots (the human's own checkout), Git is as before.
     assert.equal(await git(r.repo, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main');
+  } finally { r.t.cleanup(); }
+});
+
+test('which reads Git ignores is asked of the pinned repository, never one the agent made, so a read can\'t be hidden (#103)', async () => {
+  const r = redirected();
+  try {
+    guardWorktrees({ roots: [r.root], repos: [r.repo] });
+    const { wt, evil } = await r.worktree('T-5');
+    fs.writeFileSync(path.join(evil, '.git', 'info', 'exclude'), 'secret.txt\n');
+    fs.writeFileSync(path.join(wt, 'secret.txt'), 'read by the agent\n');
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(evil, '.git')}\n`);
+    // The positive control: plain Git follows the file, and the agent's exclude hides the read.
+    assert.equal(execFileSync('git', ['check-ignore', 'secret.txt'], { cwd: wt, encoding: 'utf8' }).trim(), 'secret.txt');
+    assert.deepEqual([...await ignoredPaths(wt, ['secret.txt', 'a.txt'])], [], 'harnessd\'s pinned Git ignores neither');
   } finally { r.t.cleanup(); }
 });

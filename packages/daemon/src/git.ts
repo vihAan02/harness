@@ -59,6 +59,18 @@ async function adminDirOf(worktree: string): Promise<string> {
   throw new Error(`refusing to run Git in ${worktree}: it isn't a worktree of a project repository (TH-25)`);
 }
 
+/**
+ * How harnessd runs Git in `cwd`, for a caller that drives the process itself (stdin): the same pinning as git() under a
+ * guarded root (TH-25), with no user or system config; plain elsewhere.
+ */
+export async function gitInvocation(cwd: string): Promise<{ args: string[]; env: Record<string, string> }> {
+  const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' };
+  const dir = real(cwd);
+  if (!guarded(dir)) return { args: [...SAFE], env };
+  const admin = await adminDirOf(dir);
+  return { args: [...SAFE, '--git-dir', admin, '--work-tree', dir], env: { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } };
+}
+
 async function plainGit(cwd: string, ...args: string[]): Promise<string> {
   const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' };
   const { stdout } = await run('git', [...SAFE, ...args], { cwd, env, maxBuffer: 64 * 1024 * 1024 });

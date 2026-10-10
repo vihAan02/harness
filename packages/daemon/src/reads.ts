@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { git } from './git.ts';
+import { git, gitInvocation } from './git.ts';
 
 /** Bigger files are recorded without a hash (always "changed"): hashing runs on the observation path. */
 export const MAX_HASH_BYTES = 16 * 1024 * 1024;
@@ -76,12 +76,17 @@ export function hashForRead(worktree: string, rel: string, format: ObjectFormat)
   }
 }
 
-/** Which of these worktree paths Git ignores (dependencies, build output, local env files). */
-export function ignoredPaths(worktree: string, paths: string[]): Promise<Set<string>> {
-  if (!paths.length) return Promise.resolve(new Set());
+/**
+ * Which of these worktree paths Git ignores (dependencies, build output, local env files). Asked of the pinned repository
+ * (TH-25): a `.git` the agent rewrote could otherwise make any read look ignored, and so never reported.
+ */
+export async function ignoredPaths(worktree: string, paths: string[]): Promise<Set<string>> {
+  if (!paths.length) return new Set();
+  const inv = await gitInvocation(worktree).catch(() => null);
+  if (!inv) return new Set(); // not a worktree it can pin: none counts as ignored, so every read is recorded
+  const { args, env } = inv;
   return new Promise((resolve) => {
-    const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' };
-    const child = execFile('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', 'check-ignore', '-z', '--stdin'],
+    const child = execFile('git', [...args, 'check-ignore', '-z', '--stdin'],
       { cwd: worktree, env, maxBuffer: 16 * 1024 * 1024 }, (_err, stdout) => {
         // Exit 1 means "none ignored"; anything else unexpected also counts as none (record rather than drop).
         resolve(new Set(String(stdout ?? '').split('\0').filter(Boolean)));

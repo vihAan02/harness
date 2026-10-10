@@ -35,6 +35,9 @@ test('a finished task is published once: fetched base, the human\'s commit, the 
     assert.match(req.command, new RegExp(`publish ${task} to vihAan02/harness as ${branch.replace(/\//g, '\\/')}`));
     assert.match(req.command, /notes\/a\.md/);
     assert.equal(s.fake.prs().length, 0, 'nothing is pushed or opened before the human approves');
+    // What the approval's hash binds is all shown: the full head, the base, and the PR's whole text (#105's review).
+    assert.match(req.command, new RegExp(` @ [0-9a-f]{40} \\(on main @ ${base}\\)`));
+    const [shownTitle, , ...shownBody] = req.command.split('--- the PR, exactly as it will be opened ---\n')[1]!.split('\n');
     new Approvals(s.a.home).approve(req.id);
     await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'pr.published');
     const prs = s.fake.prs();
@@ -42,6 +45,7 @@ test('a finished task is published once: fetched base, the human\'s commit, the 
     assert.equal(prs[0]!.head, branch);
     assert.equal(prs[0]!.title, `${task}: agent/pub work`);
     for (const h of ['## What changed, and why', '## Tests run', '## Real-model cost', '## Review']) assert.ok(prs[0]!.body!.includes(h), h);
+    assert.deepEqual([shownTitle, shownBody.join('\n')], [prs[0]!.title, prs[0]!.body], 'the human saw exactly the PR that opened');
     assert.match(prs[0]!.body!, /> Added the notes page\./);
     // GitHub attributes the commit to the accountable human; the agent is named in the trailer (D-114).
     const commit = await s.fake.git(['log', '-1', '--format=%ae|%ce|%B', `refs/heads/${branch}`]);

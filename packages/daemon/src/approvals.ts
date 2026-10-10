@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { PendingApproval, PublishApprovalDetails, ReviewApprovalDetails, SessionApprovalDetails } from '@harness/protocol';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { regularFileIn } from './repo-config.ts';
 
@@ -14,8 +15,14 @@ export type ManifestDigest = { path: string; sha256: string | null }; // null: d
 export type ApprovalKind = 'setup' | 'test' | 'publish' | 'security_review' | 'agent_session';
 export type ApprovalRequest = {
   id: string; projectId: string; taskId: string; command: string; manifests: ManifestDigest[]; hash: string; requestedAt: string;
-  kind?: ApprovalKind; // absent on requests written before 0B: setup
-};
+} & (
+  // `details`: what `command` says, structured for the UI. Absent on requests an older harnessd wrote.
+  | { kind?: 'setup' | 'test'; details?: undefined } // kind absent on requests written before 0B: setup
+  | { kind: 'publish'; details?: PublishApprovalDetails }
+  | { kind: 'agent_session'; details?: SessionApprovalDetails }
+  | { kind: 'security_review'; details?: ReviewApprovalDetails }
+);
+type NewRequest = ApprovalRequest extends infer R ? R extends unknown ? Omit<R, 'id' | 'requestedAt'> : never : never;
 type Approved = ApprovalRequest & { approvedAt: string };
 
 function digests(worktree: string, manifests: string[]): ManifestDigest[] {
@@ -38,6 +45,17 @@ export function testHash(worktree: string, command: string, manifests: string[])
   return { hash, manifests: d };
 }
 
+/** A request as `pending_approvals` returns it to the UI (protocol.md §12). */
+export function pendingApproval(r: ApprovalRequest): PendingApproval {
+  const o = { id: r.id, project_id: r.projectId, task_id: r.taskId, command: r.command, manifests: r.manifests, hash: r.hash, requested_at: r.requestedAt };
+  switch (r.kind) {
+    case 'publish': return { ...o, kind: r.kind, details: r.details ?? null };
+    case 'agent_session': return { ...o, kind: r.kind, details: r.details ?? null };
+    case 'security_review': return { ...o, kind: r.kind, details: r.details ?? null };
+    default: return { ...o, kind: r.kind ?? 'setup', details: null };
+  }
+}
+
 export class Approvals {
   home: Home;
   constructor(home: Home) {
@@ -49,10 +67,13 @@ export class Approvals {
   }
 
   /** Records a request for the human; one per (project, hash), whichever task asked first. */
-  request(r: Omit<ApprovalRequest, 'id' | 'requestedAt'>): ApprovalRequest {
+  request(r: NewRequest): ApprovalRequest {
     const req: ApprovalRequest = { ...r, id: r.hash.slice(0, 12), requestedAt: new Date().toISOString() };
     const file = path.join(this.home.pending, `${req.projectId}-${req.id}.json`);
-    if (!fs.existsSync(file)) writeJsonAtomic(file, req);
+    const had = readJson<ApprovalRequest | null>(file, null);
+    // One written by an older harnessd gains the details when asked again; it keeps when it was first asked.
+    if (!had) writeJsonAtomic(file, req);
+    else if (!had.details && req.details) writeJsonAtomic(file, { ...had, details: req.details });
     return readJson<ApprovalRequest>(file, req);
   }
 

@@ -5,11 +5,14 @@
 import type {
   AgentSnapshot, DerivedTaskState, IntegrationMode, LandSnapshot, MessageSnapshot, ProjectSnapshot, SessionSnapshot, SnapshotConnection, TaskSnapshot, WaitSnapshot,
 } from '@harness/protocol';
+import { taskSha256 } from '@harness/protocol/signing';
 import type { LandInfo, ProjectView, SessionInfo, TaskInfo, WaitInfo } from './view.ts';
 
 /** What only this harnessd knows. */
 export type SnapshotLocal = {
   deviceId: string; principal: string; integrationMode: IntegrationMode; connection: SnapshotConnection;
+  /** The project's repository and base branch from this device's config. */
+  repo?: { githubRepo: string | null; baseBranch: string };
   /** Its pending local approvals (setup, test, publish, security_review, agent_session), by task. */
   approvals: { taskId: string; kind: string }[];
   /** Tasks it has committed or is pushing, with no PR yet (the journal's committed/pushing, D-114). */
@@ -20,6 +23,7 @@ export type SnapshotLocal = {
 };
 
 const MESSAGES = 200;
+const ALERTS = 50;
 const IN_FLIGHT = ['requested', 'accepted'];
 
 const lastSession = (v: ProjectView, taskId: string): SessionInfo | undefined => [...v.sessions.values()].filter((x) => x.taskId === taskId).at(-1);
@@ -54,6 +58,11 @@ export function deriveTaskState(v: ProjectView, t: TaskInfo, local: Pick<Snapsho
     const session = lastSession(v, t.id);
     if (session && session.status !== 'ended') return { state: session.status === 'starting' ? 'starting' : 'running', detail: null };
     if (approval(['agent_session', 'setup'])) return { state: 'awaiting_approval', detail: null };
+    // Started on another human's device by someone else (D-34): it waits for that human's approval there.
+    const agent = t.assignee ? v.agents.get(t.assignee) : undefined;
+    if (!session && agent && t.dispatchedBy && t.dispatchedBy !== agent.humanId) {
+      return { state: 'awaiting_approval', detail: `${agent.humanId} approves it on ${agent.deviceId ?? 'their device'}` };
+    }
     if (session) return { state: 'stopped', detail: session.endReason ?? null };
     return { state: 'starting', detail: null };
   }
@@ -90,6 +99,7 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
     const ow = v.openWait(t.id);
     return {
       id: t.id, title: t.title, text: t.text, scope: [...t.scope], owner_human_id: t.ownerHumanId, priority: t.priority, assignee_agent_id: t.assignee,
+      task_sha256: taskSha256({ title: t.title, text: t.text, scope: t.scope, owner_human_id: t.ownerHumanId }),
       status: t.status, state, state_detail: detail, summary: t.summary ?? null, created_at: t.createdAt, assigned_at: t.assignedAt ?? null, completed_at: t.completedAt ?? null,
       session: last ? session(v, last) : null,
       pr: pr ? {
@@ -124,5 +134,11 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
     messages, waits: [...v.waits.values()].map(wait), lands: [...v.lands.values()].map(land),
     base_advances: v.baseAdvances.map((b) => ({ old_sha: b.oldSha, new_sha: b.newSha, changed_paths: [...b.changedPaths], at: b.at })),
     budget: { day, spent_usd: local.budget.spentUsd ?? spent, daily_budget_usd: local.budget.dailyBudgetUsd, session_cap_usd: local.budget.sessionCapUsd },
+    repo: { github_repo: local.repo?.githubRepo ?? null, base_branch: local.repo?.baseBranch ?? 'main' },
+    alerts: v.events.filter((e) => e.kind === 'security.alert').slice(-ALERTS).map((e) => {
+      const d = e.data as Record<string, unknown>;
+      const text = (k: string) => (typeof d[k] === 'string' ? d[k] as string : null);
+      return { seq: e.seq, at: e.at, what: text('what') ?? text('reason') ?? 'alert', task_id: text('task_id'), detail: text('detail') ?? text('reason') };
+    }),
   };
 }
