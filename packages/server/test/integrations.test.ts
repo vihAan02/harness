@@ -240,6 +240,75 @@ test('an armed GitHub land fails only on GitHub\'s evidence, can\'t be cancelled
   await rejects(run('land.cancel', { task_id: w.task }), 'conflict', /can't be cancelled/);
   await rejects(run('land.fail', { land_id: land, reason: 'error', detail: 'timeout' }, device), 'conflict', /armed/);
   await rejects(run('land.fail', { land_id: land, reason: 'pr_closed' }, device), 'conflict', /evidence/);
+  // Someone else's commit reaches the base while it's armed: parked, then applied once the land fails.
+  const move = { old_sha: tip, new_sha: SHA('f'), changed: [{ path: 'src/other.ts', new_hash: SHA('e') }] };
+  assert.equal(res(await run('base.observe', move, other)).status, 'parked');
+  assert.equal(res(await run('base.observe', move, device)).status, 'parked', 'again, while still armed: not known yet');
   const failed = await run('land.fail', { land_id: land, reason: 'pr_closed', evidence: { state: 'closed', merged: false, head_sha: SHA('2') } }, device);
   assert.deepEqual((await kinds(failed.seqs)).map((e) => e.kind), ['land.failed']);
+  const applied = await run('base.observe', move, other);
+  assert.equal(res(applied).status, 'applied');
+  assert.ok((await kinds(applied.seqs)).some((e) => e.kind === 'base.advanced' && e.data.new_sha === SHA('f')), 'readers hear of it');
+});
+
+test('land.reconcile: another member device settles a silent device\'s GitHub land from GitHub\'s evidence, once (D-115)', async () => {
+  // A finished task, published, its integration accepted and armed on dev_1, which then goes silent.
+  const armed = async (name: string, pr: number) => {
+    const w = await finished(name);
+    await w.complete();
+    await publish(w.task, pr);
+    const tip = (await db.pool.query('SELECT tip_sha FROM project_bases WHERE project_id = $1', [project])).rows[0]?.tip_sha ?? SHA('1');
+    const x = { pr_number: pr, head_sha: SHA('2'), base_sha: tip };
+    const dispatch = await dispatchFor(db.pool, parsePrivateKey(key1.privateKeyPem), {
+      kind: 'integrate', projectId: project, taskId: w.task, agentId: w.agent, targetDevice: 'dev_1', issuerHuman: 'human_test', issuerDevice: 'dev_1',
+      integrate: { ...x, paths_sha256: '0'.repeat(64) },
+    });
+    const land = res(await run('land.request', { task_id: w.task, mode: 'github', ...x, dispatch }, owner)).land_id as string;
+    assert.equal(res(await run('land', { land_id: land, base_branch: 'main', base_sha: tip, merge_base_sha: tip, head_sha: SHA('2'), changed_paths: ['src/r.ts'], lease_tokens: [] }, device)).accepted, true);
+    await run('land.arm', { land_id: land, head_sha: SHA('2'), base_sha: tip }, device);
+    return { ...w, land, tip };
+  };
+  const silent = (minutes: number) => db.pool.query(`UPDATE devices SET last_heartbeat_at = now() - make_interval(mins => $1) WHERE id = 'dev_1'`, [minutes]);
+  const reconcile = (land: string, pr: number, over: Record<string, unknown>, caller = other) =>
+    run('land.reconcile', { land_id: land, pr_number: pr, observed_head_sha: SHA('2'), observed_base_sha: SHA('1'), merged: false, state: 'open', ...over }, caller);
+
+  // Nothing merged: released, as interrupted.
+  const a = await armed('agent/rc1', 41);
+  await silent(1);
+  await rejects(reconcile(a.land, 41, {}), 'conflict', /heard from in the last 10 minutes/);
+  await silent(11);
+  await rejects(reconcile(a.land, 41, {}, device), 'forbidden', /its own device settles it/);
+  await rejects(reconcile(a.land, 42, {}), 'bad_request', /PR #41/);
+  const released = await reconcile(a.land, 41, {});
+  assert.deepEqual(res(released), { status: 'failed', reason: 'interrupted' });
+  const [failed] = await kinds(released.seqs);
+  assert.deepEqual([failed.kind, failed.data.reason, failed.data.reconciled_by], ['land.failed', 'interrupted', 'dev_2']);
+  assert.deepEqual(res(await reconcile(a.land, 41, {})), { status: 'failed', settled: true }, 'once');
+  await rejects(run('land.arm', { land_id: a.land, head_sha: SHA('2'), base_sha: a.tip }, device), 'conflict');
+
+  // Merged, but not what was approved: never landed, with an alert.
+  const b = await armed('agent/rc2', 43);
+  await silent(11);
+  // A poller saw the merge while it was armed: held until the land's outcome is known.
+  assert.equal(res(await run('base.observe', { old_sha: b.tip, new_sha: SHA('c'), changed: [{ path: 'src/r.ts', new_hash: SHA('e') }] }, other)).status, 'parked');
+  const unverified = await reconcile(b.land, 43, { merged: true, merge_sha: SHA('c'), verified: false, changed: [] });
+  assert.deepEqual((await kinds(unverified.seqs)).map((e) => [e.kind, e.data.reason ?? e.data.what]), [['land.failed', 'verification_failed'], ['security.alert', 'merge_not_approved']]);
+  assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [b.task])).rows[0].status, 'done');
+  // Nor does it land later as a merge outside the harness, once its PR shows as merged with no land in flight.
+  const outside = await run('land.external', { task_id: b.task, pr_number: 43, merge_sha: SHA('c'), old_base_sha: b.tip, changed: [] }, device);
+  assert.deepEqual([res(outside), outside.seqs], [{ status: 'not_approved' }, []]);
+  assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [b.task])).rows[0].status, 'done');
+  // The base did move: reported again, the parked move is applied as one outside the harness, and readers hear of it.
+  const moved = await run('base.observe', { old_sha: b.tip, new_sha: SHA('c'), changed: [{ path: 'src/r.ts', new_hash: SHA('e') }] }, other);
+  assert.equal(res(moved).status, 'applied');
+  assert.deepEqual((await kinds(moved.seqs)).filter((e) => e.kind === 'base.advanced').map((e) => e.data.new_sha), [SHA('c')]);
+
+  // Merged as approved: completed, as its own device would have, and the task landed.
+  const c = await armed('agent/rc3', 44);
+  await silent(11);
+  const merged = await reconcile(c.land, 44, { merged: true, merge_sha: SHA('d'), verified: true, changed: [{ path: 'src/r.ts', new_hash: SHA('e') }] });
+  const done = (await kinds(merged.seqs)).find((e) => e.kind === 'land.completed')!;
+  assert.deepEqual([done.data.new_base_sha, done.data.reconciled_by, done.data.changed_paths], [SHA('d'), 'dev_2', ['src/r.ts']]);
+  assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [c.task])).rows[0].status, 'landed');
+  assert.equal((await db.pool.query('SELECT tip_sha FROM project_bases WHERE project_id = $1', [project])).rows[0].tip_sha, SHA('d'), 'the chain moved');
 });

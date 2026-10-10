@@ -152,9 +152,9 @@ export async function observeBase(ctx: HandlerContext, args: Record<string, unkn
   const newSha = sha(args.new_sha, 'new_sha');
   if (oldSha === newSha) throw new CommandError('bad_request', 'old_sha and new_sha are the same commit');
   const changed = changedBlobs(args.changed);
-  if ((await ctx.tx.query('SELECT 1 FROM base_advances WHERE project_id = $1 AND new_sha = $2', [ctx.projectId, newSha])).rowCount) {
-    return { result: { status: 'known' }, events: [] };
-  }
+  // A move parked while a merge was armed isn't known yet: its reporter keeps reporting it until it's applied.
+  const before = (await ctx.tx.query<{ status: string }>('SELECT status FROM base_advances WHERE project_id = $1 AND new_sha = $2', [ctx.projectId, newSha])).rows[0];
+  if (before && before.status !== 'parked') return { result: { status: 'known' }, events: [] };
   const tip = (await ctx.tx.query<{ tip_sha: string }>('SELECT tip_sha FROM project_bases WHERE project_id = $1 FOR UPDATE', [ctx.projectId])).rows[0]?.tip_sha;
   if (!tip) {
     await ctx.tx.query('INSERT INTO project_bases (project_id, tip_sha) VALUES ($1, $2)', [ctx.projectId, newSha]);
@@ -166,11 +166,14 @@ export async function observeBase(ctx: HandlerContext, args: Record<string, unkn
   const blobs = JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])));
   if (armed) {
     // Possibly the armed merge itself: held, unnoticed, until its outcome is known (D-115).
-    await ctx.tx.query(
-      "INSERT INTO base_advances (project_id, new_sha, old_sha, source, status, changed_blobs, observed_by) VALUES ($1, $2, $3, 'external', 'parked', $4, $5)",
-      [ctx.projectId, newSha, oldSha, blobs, device]);
+    if (!before) {
+      await ctx.tx.query(
+        "INSERT INTO base_advances (project_id, new_sha, old_sha, source, status, changed_blobs, observed_by) VALUES ($1, $2, $3, 'external', 'parked', $4, $5)",
+        [ctx.projectId, newSha, oldSha, blobs, device]);
+    }
     return { result: { status: 'parked', land_id: armed.id }, events: [] };
   }
+  if (before) await ctx.tx.query("DELETE FROM base_advances WHERE project_id = $1 AND new_sha = $2 AND status = 'parked'", [ctx.projectId, newSha]);
   await ctx.tx.query('UPDATE project_bases SET tip_sha = $2, updated_at = now() WHERE project_id = $1', [ctx.projectId, newSha]);
   await ctx.tx.query(
     "INSERT INTO base_advances (project_id, new_sha, old_sha, source, changed_blobs, observed_by) VALUES ($1, $2, $3, 'external', $4, $5)",
@@ -200,6 +203,12 @@ export async function landExternal(ctx: HandlerContext, args: Record<string, unk
   if (!pr || pr.pr_number !== n) throw new CommandError('conflict', `${task.id}'s PR isn't #${n}`);
   const inFlight = (await ctx.tx.query<{ id: string }>("SELECT id FROM lands WHERE task_id = $1 AND status IN ('requested', 'accepted')", [task.id])).rows[0];
   if (inFlight) return { result: { status: 'reservation_active', land_id: inFlight.id }, events: [] };
+  // The harness's own merge of this PR, found not to be the approved squash (D-115): it never lands, from here either.
+  // The task stays done, with its alert; the move of the base is a pollers' base.observe, like any outside move.
+  const unapproved = (await ctx.tx.query(
+    "SELECT 1 FROM events WHERE project_id = $1 AND kind = 'security.alert' AND data->>'what' = 'merge_not_approved' AND data->>'merge_sha' = $2 LIMIT 1",
+    [ctx.projectId, mergeSha])).rows[0];
+  if (unapproved) return { result: { status: 'not_approved' }, events: [] };
   // Another daemon's poll may have seen this merge first, as a move of the base outside the harness: its readers were
   // told then, and the chain already moved. The task still lands, once, without a second notice.
   const seen = (await ctx.tx.query<{ source: string; status: string }>('SELECT source, status FROM base_advances WHERE project_id = $1 AND new_sha = $2', [ctx.projectId, mergeSha])).rows[0];

@@ -140,6 +140,8 @@ export type DaemonOptions = {
   github?: { token?: () => Promise<string>; retryMs?: number };
   /** How often GitHub-mode projects' base and PRs are polled (D-114). Default 60 s. */
   pollMs?: number;
+  /** How long another device's GitHub land waits, its device offline, before this one settles it from GitHub (D-115). Default 10 min. */
+  reconcileAfterMs?: number;
   /** The UI bridge's socket (D-117; protocol.md §12): `~/.harness/run/harnessd.sock` in production. Off when unset. */
   uiSocket?: string;
   uiPollMs?: number;
@@ -341,6 +343,7 @@ export class Daemon {
         send: async (projectId, name, args) => (await this.link!.command(projectId, name, args)).result,
         advanceBase: async (p, tip) => { await advanceBaseRef(p.repo, p.id, tip); },
         log: (m) => this.log(m), ...(this.o.pollMs ? { intervalMs: this.o.pollMs } : {}),
+        ...(this.o.reconcileAfterMs ? { reconcileAfterMs: this.o.reconcileAfterMs } : {}),
       });
       this.poller.start();
     }

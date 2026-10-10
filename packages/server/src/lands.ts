@@ -259,19 +259,40 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
   const newBase = sha(args.new_base_sha, 'new_base_sha');
   if (land.base_sha && oldBase !== land.base_sha) throw new CommandError('conflict', 'old_base_sha is not the base this land was accepted on');
   if (land.mode === 'github' && !land.merge_requested_at) throw new CommandError('conflict', `land ${land.id} was never armed`);
-  if (!Array.isArray(args.changed) || args.changed.length > MAX_PATHS) throw new CommandError('bad_request', `changed must be a list of up to ${MAX_PATHS}`);
-  const changed = (args.changed as { path?: unknown; new_hash?: unknown }[]).map((c, i) => {
+  return { result: null, events: await recordCompleted(ctx, land, oldBase, newBase, changedOf(args.changed), at) };
+}
+
+/** What a land changed: each path with its new blob, or null when deleted. */
+function changedOf(v: unknown): { path: string; newHash: string | null }[] {
+  if (!Array.isArray(v) || v.length > MAX_PATHS) throw new CommandError('bad_request', `changed must be a list of up to ${MAX_PATHS}`);
+  return (v as { path?: unknown; new_hash?: unknown }[]).map((c, i) => {
     const hash = c?.new_hash === null ? null : typeof c?.new_hash === 'string' && SHA.test(c.new_hash) ? c.new_hash : undefined;
     if (hash === undefined) throw new CommandError('bad_request', `changed[${i}].new_hash must be a Git blob id or null (deleted)`);
     return { path: normalizeFilePath(c?.path), newHash: hash };
   });
+}
+
+/**
+ * A land that moved the base, recorded whatever the task's status says now: the land completed, its task landed, its
+ * leases released, a GitHub project's base chain moved to it, and everyone who read a changed file told. Call with
+ * the invalidation and lease locks held (`at` from lockLeases).
+ */
+/**
+ * Moves of the base parked while a merge was armed (D-115) go once its land fails: the pollers report them again, and
+ * with nothing armed they're applied as moves outside the harness, so readers hear of them. Kept, a re-report would
+ * be "known", and the move never noticed.
+ */
+async function releaseParked(ctx: HandlerContext): Promise<void> {
+  await ctx.tx.query("DELETE FROM base_advances WHERE project_id = $1 AND status = 'parked'", [ctx.projectId]);
+}
+
+async function recordCompleted(ctx: HandlerContext, land: LandRow, oldBase: string, newBase: string, changed: { path: string; newHash: string | null }[], at: string, extra: Record<string, unknown> = {}): Promise<HandlerOutput['events']> {
   const task = await lockTask(ctx, land.task_id);
-  // The base has already moved on the device: record what happened, whatever the task's status says now.
   await ctx.tx.query("UPDATE lands SET status = 'completed', new_base_sha = $2, changed_blobs = $3, finished_at = now() WHERE id = $1",
     [land.id, newBase, JSON.stringify(Object.fromEntries(changed.map((c) => [c.path, c.newHash])))]);
   await ctx.tx.query("UPDATE tasks SET status = 'landed', landed_at = now() WHERE id = $1", [task.id]);
   const events: HandlerOutput['events'] = [
-    { kind: 'land.completed', data: { land_id: land.id, task_id: task.id, old_base_sha: oldBase, new_base_sha: newBase, changed_paths: changed.map((c) => c.path) } },
+    { kind: 'land.completed', data: { land_id: land.id, task_id: task.id, old_base_sha: oldBase, new_base_sha: newBase, changed_paths: changed.map((c) => c.path), ...extra } },
     ...await releaseOnLand(ctx, task.id, at),
   ];
   if (land.mode === 'github') {
@@ -288,7 +309,7 @@ export async function completeLand(ctx: HandlerContext, args: Record<string, unk
   }
   // Stale context (0B item 2): everyone who read a file this land changed, and read different content, hears it.
   events.push(...await noticeLanded(ctx, { task: task.id, agent: task.assignee_agent_id, landId: land.id, newBase }, changed));
-  return { result: null, events };
+  return events;
 }
 
 /**
@@ -309,18 +330,88 @@ export async function failLand(ctx: HandlerContext, args: Record<string, unknown
   if (typeof args.reason !== 'string' || !reasons.includes(args.reason)) throw new CommandError('bad_request', `reason must be one of ${reasons.join(', ')}`);
   if (land.merge_requested_at) {
     // Armed (D-115): only GitHub's evidence that nothing was merged releases it. Never an error, a timeout or a restart.
-    const ev = args.evidence as { state?: unknown; merged?: unknown; head_sha?: unknown } | undefined;
-    if (!ARMED_FAIL_REASONS.includes(args.reason) || !ev || ev.merged !== false || (ev.state !== 'open' && ev.state !== 'closed')) {
+    const ev = args.evidence as { state?: unknown; merged?: unknown; head_sha?: unknown; merge_sha?: unknown } | undefined;
+    // Or that what it merged isn't the approved head on the approved base (D-115's squash check): never landed.
+    const unverified = args.reason === 'verification_failed' && ev?.merged === true && typeof ev.merge_sha === 'string' && SHA.test(ev.merge_sha);
+    if (!unverified && (!ARMED_FAIL_REASONS.includes(args.reason) || !ev || ev.merged !== false || (ev.state !== 'open' && ev.state !== 'closed'))) {
       throw new CommandError('conflict', `land ${land.id} is armed: it fails only on GitHub's evidence that nothing was merged (outcome_unknown until then)`);
     }
   }
   const detail = typeof args.detail === 'string' ? args.detail.replace(CONTROL, '').slice(0, 1000) : null;
   const conflicts = args.conflict_paths === undefined ? [] : paths(args.conflict_paths, 'conflict_paths');
   await ctx.tx.query("UPDATE lands SET status = 'failed', reason = $2, detail = $3, finished_at = now() WHERE id = $1", [land.id, args.reason, detail]);
+  if (land.merge_requested_at) await releaseParked(ctx);
+  const merged = args.reason === 'verification_failed' ? (args.evidence as { merge_sha?: string } | undefined)?.merge_sha : undefined;
   return {
     result: null,
-    events: [{ kind: 'land.failed', data: { land_id: land.id, task_id: land.task_id, reason: args.reason, ...(detail ? { detail } : {}), ...(conflicts.length ? { conflict_paths: conflicts } : {}) } }],
+    events: [
+      { kind: 'land.failed', data: { land_id: land.id, task_id: land.task_id, reason: args.reason, ...(detail ? { detail } : {}), ...(conflicts.length ? { conflict_paths: conflicts } : {}) } },
+      ...(merged ? [{ kind: 'security.alert', data: { what: 'merge_not_approved', land_id: land.id, task_id: land.task_id, merge_sha: merged, device_id: ctx.caller.deviceId } }] : []),
+    ],
   };
+}
+
+/** How long a GitHub land's device must be silent before another member's harnessd may settle it (D-115). */
+let reconcileAfterMs = 10 * 60_000;
+/** The server's settings for lands (its `reconcileAfterMs` option). */
+export function configureLands(o: { reconcileAfterMs?: number }): void {
+  if (o.reconcileAfterMs !== undefined) reconcileAfterMs = o.reconcileAfterMs;
+}
+
+/**
+ * `land.reconcile { land_id, pr_number, observed_head_sha, observed_base_sha, merged, merge_sha?, changed?, state?, verified? }`
+ * (D-115). The device holding a GitHub land has been silent past the threshold, asleep or off mid-merge, so another
+ * member's harnessd settles it from what GitHub shows, read with that member's own login. The coordinator checks the
+ * silence itself, from the heartbeats.
+ * - Merged, and its squash is the approved head on the approved base: the land completes, as its own device would have
+ *   completed it, and readers are told.
+ * - Merged, but not what was approved (`verified: false`): it fails as verification_failed, never landed, with an alert.
+ *   The move of the base is still reported by the pollers (base.observe), so readers hear of it.
+ * - Not merged: it fails (`pr_closed`, `head_changed`, or `interrupted`), which releases the reservation. The sleeping
+ *   device stops when it wakes: its re-arm is refused.
+ * A land already settled is answered with its status and changed nothing.
+ */
+export async function reconcileLand(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  if (!ctx.caller.deviceId || ctx.actor.onBehalfOf) throw new CommandError('forbidden', 'only harnessd reconciles a land, from its device');
+  await lockInvalidation(ctx); // the same lock order as land.complete
+  const at = await lockLeases(ctx);
+  if (typeof args.land_id !== 'string' || !/^land_[a-f0-9]{16}$/.test(args.land_id)) throw new CommandError('bad_request', 'land_id is malformed');
+  const land = (await ctx.tx.query<LandRow>(
+    `SELECT id, task_id, device_id, status, run_tests, base_sha, changed_paths, mode, pr_number, approved_head_sha, approved_base_sha, merge_requested_at
+     FROM lands WHERE id = $1 AND project_id = $2 FOR UPDATE`, [args.land_id, ctx.projectId])).rows[0];
+  if (!land) throw new CommandError('not_found', `no land ${args.land_id} in this project`);
+  if (land.mode !== 'github') throw new CommandError('conflict', 'only a GitHub land is settled from GitHub');
+  if (land.status !== 'requested' && land.status !== 'accepted') return { result: { status: land.status, settled: true }, events: [] };
+  if (land.device_id === ctx.caller.deviceId) throw new CommandError('forbidden', 'its own device settles it, with land.complete or land.fail');
+  const quiet = (await ctx.tx.query<{ since: Date | null; silent: boolean }>(
+    `SELECT last_heartbeat_at AS since, (last_heartbeat_at IS NULL OR last_heartbeat_at < now() - make_interval(secs => $2)) AS silent FROM devices WHERE id = $1`,
+    [land.device_id, reconcileAfterMs / 1000])).rows[0];
+  if (!quiet?.silent) throw new CommandError('conflict', `${land.device_id} was heard from in the last ${Math.round(reconcileAfterMs / 60_000)} minutes: it settles its own land`);
+  if (args.pr_number !== land.pr_number) throw new CommandError('bad_request', `land ${land.id} is PR #${String(land.pr_number)}`);
+  const head = sha(args.observed_head_sha, 'observed_head_sha');
+  sha(args.observed_base_sha, 'observed_base_sha');
+  if (typeof args.merged !== 'boolean') throw new CommandError('bad_request', 'merged must be true or false');
+  const by = { reconciled_by: ctx.caller.deviceId, device_silent_since: quiet.since?.toISOString() ?? null };
+  const fail = async (reason: string, detail: string, alert?: Record<string, unknown>) => {
+    await ctx.tx.query("UPDATE lands SET status = 'failed', reason = $2, detail = $3, finished_at = now() WHERE id = $1", [land.id, reason, detail]);
+    await releaseParked(ctx);
+    return {
+      result: { status: 'failed', reason },
+      events: [
+        { kind: 'land.failed', data: { land_id: land.id, task_id: land.task_id, reason, detail, ...by } },
+        ...(alert ? [{ kind: 'security.alert', data: { what: 'merge_not_approved', land_id: land.id, task_id: land.task_id, device_id: ctx.caller.deviceId, ...alert } }] : []),
+      ],
+    };
+  };
+  if (args.merged) {
+    const merge = sha(args.merge_sha, 'merge_sha');
+    if (args.verified !== true) return fail('verification_failed', `PR #${land.pr_number} merged as ${merge.slice(0, 12)}, which isn't the approved head on the approved base`, { merge_sha: merge });
+    const events = await recordCompleted(ctx, land, land.base_sha ?? land.approved_base_sha!, merge, changedOf(args.changed), at, by);
+    return { result: { status: 'completed' }, events };
+  }
+  const state = args.state === 'closed' ? 'closed' : 'open';
+  const reason = state === 'closed' ? 'pr_closed' : head !== land.approved_head_sha ? 'head_changed' : 'interrupted';
+  return fail(reason, `${land.device_id} went silent mid-integration; GitHub shows PR #${land.pr_number} ${state}, not merged, at ${head.slice(0, 12)}: nothing was merged, and the reservation is released`);
 }
 
 /**

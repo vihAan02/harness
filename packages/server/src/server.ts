@@ -16,6 +16,7 @@ import { HELLO_DEVICE_CONTEXT, HELLO_SERVER_CONTEXT, isNonce, keyId, newNonce, p
 import { CommandError, EVENTS_CHANNEL, executeCommand } from './commands.ts';
 import { readEvents, type StoredEvent } from './events.ts';
 import { heartbeat, sweepOffline } from './presence.ts';
+import { configureLands } from './lands.ts';
 import { sweepWaits } from './waits.ts';
 
 export type ServerOptions = {
@@ -31,6 +32,8 @@ export type ServerOptions = {
   port?: number; // default 7400; 0 picks a free port
   pollIntervalMs?: number; // default 5000
   offlineAfterMs?: number; // default 30000: a device silent this long is marked offline (D-75)
+  /** Default 600000: how long a GitHub land's device must be silent before another member device may settle it (D-115). */
+  reconcileAfterMs?: number;
   waitSweepMs?: number; // default 1000: how often open waits are resolved, timed out or cancelled (D-95)
   helloTimeoutMs?: number; // default 10000
   onError?: (e: unknown) => void;
@@ -117,6 +120,7 @@ export async function startServer(o: ServerOptions): Promise<RunningServer> {
   })();
   const poll = setInterval(pumpAll, o.pollIntervalMs ?? 5000);
   const offlineAfterMs = o.offlineAfterMs ?? 30_000;
+  configureLands({ reconcileAfterMs: o.reconcileAfterMs ?? 10 * 60_000 });
   const sweep = setInterval(() => { sweepOffline(o.pool, offlineAfterMs).catch((e) => { if (!closing) onError(e); }); }, Math.max(250, Math.min(5000, offlineAfterMs / 3)));
   let sweepingWaits = false; // one wait sweep at a time
   const waitSweep = setInterval(() => {
