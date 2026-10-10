@@ -37,6 +37,12 @@ if (auth === 'device-key') {
   console.error('HARNESS_AUTH must be local-token or device-key');
   process.exit(2);
 }
+// The pilot's coordinator names its database: falling back to the local development database would serve the
+// pilot from whatever happens to be there (D-142).
+if (auth === 'device-key' && !process.env.HARNESS_DATABASE_URL) {
+  console.error('HARNESS_AUTH=device-key needs HARNESS_DATABASE_URL: the coordinator\'s own database (scripts/pilot/coordinator.sh sets it).');
+  process.exit(2);
+}
 const databaseUrl = process.env.HARNESS_DATABASE_URL ?? DEFAULT_DATABASE_URL;
 const pool = createPool(databaseUrl);
 const applied = await migrate(pool);
