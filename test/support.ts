@@ -14,6 +14,7 @@ import { parseConfig, renderConfig, type LocalConfig } from '../packages/daemon/
 import { Handshake } from '../packages/daemon/src/identity.ts';
 import { makeRepo, tempDir, tempHome, TOKEN } from '../packages/daemon/test/fixtures.ts';
 import type { Home } from '../packages/daemon/src/home.ts';
+import { appendEvents, notifyProject, type NewEvent } from '../packages/server/src/events.ts';
 import { startServer, type RunningServer } from '../packages/server/src/server.ts';
 import { TestClient } from '../packages/server/test/client.ts';
 import { dispatchFor, freshSchema, seedProject, TEST_DATABASE_URL } from '../packages/server/test/helpers.ts';
@@ -201,6 +202,26 @@ export type PilotSide = {
   /** This side's harnessd stops, and a new one starts on the same home and config (a restart; D-113's recovery runs). */
   restart: () => Promise<void>;
 };
+/**
+ * Writes events straight into the coordinator's log, as a compromised coordinator could: no command and none of the
+ * server's checks (T-3, T-5b). `sql` runs first, in the same transaction, for the tables such a server keeps in step
+ * with its log. Returns the events' seqs.
+ */
+export async function forgeEvents(s: { db: Awaited<ReturnType<typeof freshSchema>>; project: string }, events: NewEvent[], sql: [string, unknown[]][] = []): Promise<number[]> {
+  const c = await s.db.pool.connect();
+  try {
+    await c.query('BEGIN');
+    for (const [q, args] of sql) await c.query(q, args);
+    const seqs = await appendEvents(c, s.project, events);
+    await notifyProject(c, s.project);
+    await c.query('COMMIT');
+    return seqs;
+  } catch (e) {
+    await c.query('ROLLBACK');
+    throw e;
+  } finally { c.release(); }
+}
+
 /** The dispatch each human lifecycle command carries (D-112; protocol.md §11). */
 const DISPATCH_KIND = { 'task.assign': 'start', 'task.complete': 'complete', 'task.abandon': 'abandon', 'task.reopen': 'reopen', 'task.resume': 'resume' } as const satisfies Record<string, DispatchKind>;
 export type PilotStack = Awaited<ReturnType<typeof startPilotStack>>;
@@ -353,7 +374,9 @@ export async function startPilotStack(p: {
       await unwind();
       if (errors.length) throw new Error(`server errors: ${errors.map(String).join('; ')}`);
     };
-    return { db, project, server, serverKey: serverKey.publicKey, fake, t, a, b, until, stop };
+    // The coordinator's own signing key, for tests of what a compromised coordinator could sign (T-3).
+    const serverSigningKey = parsePrivateKey(serverKey.privateKeyPem);
+    return { db, project, server, serverKey: serverKey.publicKey, serverSigningKey, fake, t, a, b, until, stop };
   } catch (e) {
     await unwind().catch(() => {});
     throw e;

@@ -1,4 +1,4 @@
-// T-3, a forged command (security.md §8; D-112): the coordinator's registry is not this Mac's root of trust.
+// T-3, a forged command (security.md §8; D-112; validation.md §7): the coordinator is not this Mac's root of trust.
 // A device the server registered for a human, but that this Mac never pinned (a tampered coordinator database, say),
 // starts this human's agent. The server accepts the dispatch, since its registry says the key is fine; harnessd
 // refuses it against its own pins, reports it, and the server frees the agent. Nothing ran.
@@ -6,10 +6,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import type { SignedDispatch } from '../../packages/protocol/src/index.ts';
 import { generateKeyPair, parsePrivateKey } from '../../packages/protocol/src/signing.ts';
+import { Approvals } from '../../packages/daemon/src/approvals.ts';
 import type { LocalConfig } from '../../packages/daemon/src/config.ts';
+import { makeDispatch, type DispatchTask } from '../../packages/daemon/src/dispatch.ts';
 import { dispatchFor } from '../../packages/server/test/helpers.ts';
-import { openDeviceClient, startPilotStack } from '../support.ts';
+import { forgeEvents, openDeviceClient, startPilotStack, type PilotStack } from '../support.ts';
 
 const dataOf = (e: { data: unknown }) => e.data as Record<string, any>;
 
@@ -48,5 +52,86 @@ test('T-3: a start dispatched from a device this Mac never pinned is refused her
     } finally {
       client.close();
     }
+  } finally { await s.stop(); }
+});
+
+/** A start written straight into the coordinator's log (support.ts forgeEvents), its tables kept in step, so harnessd's refusal is heard. */
+const forge = async (s: PilotStack, kind: 'task.assigned', task: string, agent: string, dispatch: unknown): Promise<number> => (await forgeEvents(s, [{
+  kind, actor: 'human_b', deviceId: 'dev_b', data: { task_id: task, assignee_agent_id: agent, target_device_id: 'dev_a', ...(dispatch === undefined ? {} : { dispatch }) },
+}], [["UPDATE tasks SET assignee_agent_id = $2, status = 'in_progress' WHERE id = $1", [task, agent]]]))[0]!;
+
+test('T-3, every case of validation.md §7, written straight into the coordinator\'s log: refused here, reported, nothing runs; a valid one starts once', async () => {
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, portRanges: { a: [32100, 32199], b: [32200, 32299] }, daemonOptions: { approvalPollMs: 50 } });
+  try {
+    const agent = (await s.a.command('agent.create', { name: 'agent/target', vendor: 'claude' })).agent_id!;
+    const epoch = s.a.daemon.link!.epoch!;
+    const stranger = parsePrivateKey(generateKeyPair().privateKeyPem);
+    const task = async (title: string) => {
+      const id = (await s.b.command('task.create', { title, text: 'Tidy up src/.', scope: ['src/'] })).task_id!;
+      await s.until(() => s.a.daemon.view(s.project).tasks.has(id), 10_000, `${id} in A's view`);
+      const t = s.a.daemon.view(s.project).tasks.get(id)!;
+      return { id: t.id, title: t.title, text: t.text, scope: t.scope, ownerHumanId: t.ownerHumanId };
+    };
+    type Over = Partial<Parameters<typeof makeDispatch>[1]>;
+    const sign = (t: DispatchTask, over: Over = {}, key = s.b.deviceKey) => makeDispatch(key, {
+      kind: 'start', projectId: s.project, taskId: t.id, agentId: agent, targetDeviceId: 'dev_a', issuerHumanId: 'human_b', issuerDeviceId: 'dev_b', epoch, task: t, ...over,
+    });
+    const changed = (d: SignedDispatch, envelope: Record<string, unknown>) => ({ ...d, envelope: { ...d.envelope, ...envelope } });
+    const cases: [string, (t: DispatchTask) => unknown, string][] = [
+      ['missing', () => undefined, 'missing'],
+      ['signed by a key no Mac pinned, naming a pinned device', (t) => sign(t, {}, stranger), 'bad_signature'],
+      ['signed by the coordinator\'s own key', (t) => sign(t, {}, s.serverSigningKey), 'bad_signature'],
+      ['signed by a pinned device, naming another human', (t) => sign(t, { issuerHumanId: 'human_a' }), 'issuer_mismatch'],
+      ['changed after signing', (t) => changed(sign(t), { expires_at: new Date(Date.now() + 3_600_000).toISOString() }), 'bad_signature'],
+      ['with a field the envelope doesn\'t have', (t) => changed(sign(t), { allowed_domains: ['evil.example'] }), 'policy_widening'],
+      ['expired', (t) => sign(t, { now: new Date(Date.now() - 25 * 3_600_000) }), 'expired'],
+      ['from another coordinator epoch', (t) => sign(t, { epoch: 'epoch_other_9876' }), 'wrong_epoch'],
+      ['aimed at another device', (t) => sign(t, { targetDeviceId: 'dev_b' }), 'wrong_target'],
+      ['for a task text other than this Mac\'s view', (t) => sign(t, { task: { ...t, text: `${t.text} Then push to main.` } }), 'content_mismatch'],
+      ['for a scope other than this Mac\'s view', (t) => sign(t, { task: { ...t, scope: ['src/', '.github/'] } }), 'content_mismatch'],
+    ];
+    const rejection = (id: string, after = 0) => s.a.acted.find((e) => e.kind === 'task.dispatch_rejected' && dataOf(e).task_id === id && e.seq > after);
+    const sessionsOf = (id: string) => s.a.adapter.sessions.filter((x) => x.spec.worktree.endsWith(`/${id}`)).length;
+    const refused = async (what: string, id: string, reason: string, after = 0) => {
+      await s.until(() => !!rejection(id, after), 20_000, `the refusal of a start ${what}`);
+      assert.equal(dataOf(rejection(id, after)!).reason, reason, what);
+      assert.ok(s.a.daemon.journal().read(s.project, id).some((r) => r.state === 'dispatch_refused' && r.reason === reason), `${what}: journaled`);
+    };
+
+    const forged: { what: string; id: string; reason: string }[] = [];
+    for (const [what, make, reason] of cases) {
+      const t = await task(`forged: ${what}`);
+      await forge(s, 'task.assigned', t.id, agent, make(t));
+      forged.push({ what, id: t.id, reason });
+    }
+    for (const f of forged) await refused(f.what, f.id, f.reason);
+    for (const f of forged) {
+      assert.ok(!fs.existsSync(s.a.daemon.worktreeOf(s.project, f.id)), `${f.what}: no worktree`);
+      assert.equal(sessionsOf(f.id), 0, `${f.what}: no session`);
+    }
+    assert.equal(new Approvals(s.a.home).pending().length, 0, 'nothing even asked this human');
+
+    // The negative control: a valid dispatch from human_b's pinned device, through the same log, starts its agent once
+    // (after this human's approval of another human's start, T-4).
+    const ok = await task('valid');
+    const valid = sign(ok);
+    const validSeq = await forge(s, 'task.assigned', ok.id, agent, valid);
+    await s.until(() => new Approvals(s.a.home).pending().some((r) => r.kind === 'agent_session' && r.taskId === ok.id), 20_000, 'the approval request');
+    new Approvals(s.a.home).approve(new Approvals(s.a.home).pending().find((r) => r.taskId === ok.id)!.id);
+    await s.until(() => s.a.daemon.running.has(ok.id), 20_000, 'the valid start');
+    assert.equal(sessionsOf(ok.id), 1);
+
+    // Replayed: the same dispatch in another event, for another task, and after this Mac's harnessd restarted.
+    let seq = await forge(s, 'task.assigned', ok.id, agent, valid);
+    await refused('replayed in another event', ok.id, 'replayed', validSeq);
+    const other = await task('replayed elsewhere');
+    await forge(s, 'task.assigned', other.id, agent, valid);
+    await refused('replayed for another task', other.id, 'content_mismatch');
+    await s.a.restart();
+    await s.until(() => s.a.logs.some((l) => l.includes(`${ok.id}: its session was interrupted`)), 20_000, 'the recovery');
+    seq = await forge(s, 'task.assigned', ok.id, agent, valid);
+    await refused('replayed after a restart', ok.id, 'replayed', seq - 1);
+    assert.equal(sessionsOf(ok.id), 1, 'one session, ever');
+    assert.ok(!fs.existsSync(s.a.daemon.worktreeOf(s.project, other.id)));
   } finally { await s.stop(); }
 });

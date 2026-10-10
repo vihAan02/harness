@@ -8,7 +8,7 @@ import path from 'node:path';
 import { startPilotStack } from '../support.ts';
 
 test('a dropped connection: the gap is replayed once, the session carries on, and the edits are kept', async () => {
-  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, portRanges: { a: [32450, 32474], b: [32475, 32499] } });
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, portRanges: { a: [30700, 30724], b: [30725, 30749] } });
   try {
     const mine = (await s.a.command('agent.create', { name: 'agent/steady', vendor: 'claude' })).agent_id!;
     const task = await s.a.assign(mine, { title: 'steady', text: 'Keep working.' });
