@@ -20,6 +20,7 @@
     "daemon": "node packages/daemon/src/main.ts",
     "demo": "node scripts/demo-0a.ts",
     "demo:0b": "node scripts/demo-0b.ts",
+    "demo:pilot": "node scripts/demo-pilot.ts",
     "admin": "node scripts/pilot/admin.ts"
   },
   "devDependencies": {
