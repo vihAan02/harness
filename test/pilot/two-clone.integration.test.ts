@@ -38,7 +38,7 @@ async function publishThrough(s: PilotStack, side: PilotSide, task: string, file
 }
 /** The human approves the PR's exact head on `base` (`harness integrate`); resolves with the land's id. */
 const integrate = async (s: PilotStack, side: PilotSide, task: string, head: string, base: string) =>
-  (await side.command('land.request', { task_id: task, mode: 'github', pr_number: side.daemon.view(s.project).prs.get(task)!.prNumber, head_sha: head, base_sha: base })).land_id!;
+  (await side.integrate(task, { pr_number: side.daemon.view(s.project).prs.get(task)!.prNumber, head_sha: head, base_sha: base })).land_id!;
 /** Publishes and integrates; resolves with the merge. */
 async function landThrough(s: PilotStack, side: PilotSide, task: string, files: Record<string, string>) {
   const pr = await publishThrough(s, side, task, files);

@@ -9,12 +9,14 @@
 //   { stream: id, project_id, seq, snapshot_patch: { op: "replace", value } }.
 // - Approving binds the human's click to what they were shown: the exact request id and its hash. harnessd re-hashes
 //   what it's about to run before it acts on any approval, so a change after the request needs a new one anyway.
-// - Commands are an allowlist of human commands that need no dispatch. Dispatches arrive with signed dispatch (PA3).
+// - Commands are an allowlist of human commands that need no dispatch. A lifecycle command (assign, reopen, resume,
+//   abandon, complete, integrate) is a `dispatch`: harnessd builds and signs it from its own view (D-112).
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import type { ProjectSnapshot } from '@harness/protocol';
+import type { DispatchKind, ProjectSnapshot } from '@harness/protocol';
+import { DISPATCH_KINDS } from '@harness/protocol/signing';
 import { Approvals } from './approvals.ts';
 import { ensureDir } from './home.ts';
 
@@ -27,6 +29,11 @@ export type UiRpcHost = {
   command(projectId: string, name: string, args: Record<string, unknown>, commandId: string): Promise<{ seqs: number[]; result: unknown }>;
   /** Closes the provider circuit (D-116): the human fixed the account. */
   resetProvider(): void;
+  /** A human's lifecycle command, signed by harnessd (D-112). */
+  dispatch(projectId: string, kind: DispatchKind, taskId: string, o: {
+    agentId?: string; text?: string; reason?: string; summary?: string;
+    expected?: { task_sha256?: string; pr_number?: number; head_sha?: string; base_sha?: string };
+  }, commandId: string): Promise<{ seqs: number[]; result: unknown }>;
   log(m: string): void;
 };
 
@@ -140,7 +147,10 @@ export class UiRpc {
     try {
       this.send(c, { id: m.id ?? null, ok: true, result: await this.call(c, m.id, String(m.method), params) });
     } catch (e) {
-      const error = e instanceof UiRpcError ? { code: e.code, message: e.message } : { code: 'internal', message: (e as Error).message.slice(0, 500) };
+      // A refusal with its own code (harnessd's, or the coordinator's answer to a command) reaches the UI with it.
+      const code = (e as { code?: unknown }).code;
+      const known = e instanceof UiRpcError || (typeof code === 'string' && /^[a-z_]{1,40}$/.test(code));
+      const error = known ? { code: code as string, message: (e as Error).message.slice(0, 500) } : { code: 'internal', message: (e as Error).message.slice(0, 500) };
       if (!(e instanceof UiRpcError)) this.host.log(`uirpc ${String(m.method)}: ${(e as Error).message}`);
       this.send(c, { id: m.id ?? null, ok: false, error });
     }
@@ -199,8 +209,32 @@ export class UiRpc {
       case 'provider_reset':
         this.host.resetProvider();
         return { reset: true };
-      case 'dispatch':
-        throw new UiRpcError('not_available', 'signed dispatch (assign, reopen, resume, abandon, complete, integrate) arrives with PA3');
+      case 'dispatch': {
+        const project = this.project(params);
+        const kind = params.kind as DispatchKind;
+        if (!DISPATCH_KINDS.includes(kind)) throw new UiRpcError('bad_request', `kind must be one of ${DISPATCH_KINDS.join(', ')}`);
+        if (typeof params.task_id !== 'string' || !ID.test(params.task_id)) throw new UiRpcError('bad_request', 'task_id is missing or malformed');
+        if (typeof params.command_id !== 'string' || !UUID.test(params.command_id)) throw new UiRpcError('bad_request', 'command_id must be a UUID');
+        // { args: the command's own args, expected: what the human saw } (protocol.md §12; the CLI's PB2b sends the same).
+        const object = (v: unknown, what: string) => {
+          if (v === undefined) return {} as Record<string, unknown>;
+          if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new UiRpcError('bad_request', `${what} must be an object`);
+          return v as Record<string, unknown>;
+        };
+        const args = object(params.args, 'args');
+        const expected = object(params.expected, 'expected');
+        const text = (o: Record<string, unknown>, k: string) => (o[k] === undefined ? undefined : typeof o[k] === 'string' ? o[k] as string : (() => { throw new UiRpcError('bad_request', `${k} must be text`); })());
+        const r = await this.host.dispatch(project, kind, params.task_id, {
+          ...(text(args, 'assignee_agent_id') ? { agentId: text(args, 'assignee_agent_id') } : {}), ...(text(args, 'text') !== undefined ? { text: text(args, 'text') } : {}),
+          ...(text(args, 'reason') ? { reason: text(args, 'reason') } : {}), ...(text(args, 'summary') ? { summary: text(args, 'summary') } : {}),
+          expected: {
+            ...(text(expected, 'task_sha256') ? { task_sha256: text(expected, 'task_sha256') } : {}),
+            ...(expected.pr_number !== undefined ? { pr_number: expected.pr_number as number } : {}),
+            ...(text(expected, 'head_sha') ? { head_sha: text(expected, 'head_sha') } : {}), ...(text(expected, 'base_sha') ? { base_sha: text(expected, 'base_sha') } : {}),
+          },
+        }, params.command_id);
+        return { seqs: r.seqs, result: r.result };
+      }
       default:
         throw new UiRpcError('bad_request', `unknown method ${method.slice(0, 40)}`);
     }

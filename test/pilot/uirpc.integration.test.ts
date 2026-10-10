@@ -66,3 +66,44 @@ test('through the socket: a running task\'s state, its publish approved as shown
     fs.rmSync(short, { recursive: true, force: true });
   }
 });
+
+test('through the socket: a human\'s lifecycle commands, signed by harnessd: start, complete, then integrate what was shown', async () => {
+  const short = fs.mkdtempSync('/tmp/hui-');
+  const socket = path.join(short, 'run', 'harnessd.sock');
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n' }, sideOptions: { a: { uiSocket: socket, uiPollMs: 50 } } });
+  try {
+    const ui = await rpcClient(socket);
+    const dispatch = (kind: string, task: string, more: Record<string, unknown> = {}) =>
+      ui.call<{ seqs: number[]; result: unknown }>('dispatch', { project_id: s.project, kind, task_id: task, command_id: randomUUID(), ...more });
+    const agent = (await s.a.command('agent.create', { name: 'agent/ui2', vendor: 'claude' })).agent_id!;
+    const created = await ui.call<{ result: { task_id: string } }>('command', { project_id: s.project, name: 'task.create', args: { title: 'notes', text: 'Add notes.', scope: [] }, command_id: randomUUID() });
+    const task = created.result.task_id;
+    await s.until(() => s.a.daemon.view(s.project).tasks.has(task), 10_000, 'the task in A\'s view');
+    // What the human saw is checked against harnessd's own view: a different task is "changed since you looked".
+    await assert.rejects(dispatch('start', task, { args: { assignee_agent_id: agent }, expected: { task_sha256: '0'.repeat(64) } }), /conflict: T-\d+ isn't what you saw/);
+    await dispatch('start', task, { args: { assignee_agent_id: agent } });
+    await s.until(() => s.a.daemon.running.has(task), 20_000, 'the session');
+    const started = s.a.acted.find((e) => e.kind === 'task.assigned' && (e.data as { task_id: string }).task_id === task)!;
+    assert.equal((started.data as { dispatch: { envelope: { issuer_device_id: string } } }).dispatch.envelope.issuer_device_id, 'dev_a', 'signed by this device');
+    fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'notes.md'), 'notes\n');
+    await dispatch('complete', task, { args: { summary: 'Added notes.' } });
+    type Pending = { id: string; kind: string; task_id: string; hash: string };
+    let req: Pending | undefined;
+    for (const end = Date.now() + 20_000; !req; await new Promise((r) => setTimeout(r, 50))) {
+      req = (await ui.call<Pending[]>('pending_approvals')).find((r) => r.kind === 'publish' && r.task_id === task);
+      if (Date.now() > end) assert.fail('no publish request');
+    }
+    await ui.call('approve', { id: req.id, shown_hash: req.hash });
+    await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'the PR');
+    const pr = s.a.daemon.view(s.project).prs.get(task)!;
+    // What the human was shown must still be true on GitHub: a stale base is refused before anything is sent.
+    await assert.rejects(dispatch('integrate', task, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: 'b'.repeat(40) } }), /conflict: main is now [0-9a-f]{12}, not the bbbbbbbbbbbb you approved/);
+    await dispatch('integrate', task, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: pr.baseSha } });
+    await s.until(() => s.a.daemon.view(s.project).tasks.get(task)?.status === 'landed', 30_000, 'the land');
+    assert.equal(s.fake.log.filter((l) => l.method === 'PUT' && l.path.endsWith('/merge')).length, 1, 'one merge');
+    ui.close();
+  } finally {
+    await s.stop();
+    fs.rmSync(short, { recursive: true, force: true });
+  }
+});

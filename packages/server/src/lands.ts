@@ -14,6 +14,7 @@ import { CommandError, type HandlerContext, type HandlerOutput } from './handler
 import { lockInvalidation, noticeLanded } from './invalidation.ts';
 import { lockLeases } from './leases.ts';
 import { lockTask } from './tasks.ts';
+import { checkDispatch, loadAgent } from './dispatches.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const BRANCH = /^[A-Za-z0-9._/-]{1,200}$/;
@@ -108,13 +109,23 @@ async function requestGithubLand(ctx: HandlerContext, args: Record<string, unkno
   const inFlight = (await ctx.tx.query<{ id: string; task_id: string }>(
     "SELECT id, task_id FROM lands WHERE project_id = $1 AND status IN ('requested', 'accepted')", [ctx.projectId])).rows[0];
   if (inFlight) throw new CommandError('conflict', `land ${inFlight.id} (${inFlight.task_id}) is still in progress; one integration at a time (D-115)`);
+  // The integrate dispatch (D-112), signed by the approver's own device: it names this PR, this head and this base.
+  // The changed paths it covers are checked by the device that merges, which has the commits.
+  const routed = await checkDispatch(ctx, args.dispatch, { kind: 'integrate', task, agent: await loadAgent(ctx, task.assignee_agent_id!) });
+  const signed = routed.dispatch?.envelope.integrate;
+  if (routed.dispatch && (signed?.pr_number !== pr.pr_number || signed.head_sha !== head || signed.base_sha !== base)) {
+    throw new CommandError('forbidden', 'dispatch refused (content_mismatch): the integrate dispatch names another PR, head or base');
+  }
   const id = `land_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
   await ctx.tx.query(
-    `INSERT INTO lands (id, project_id, task_id, device_id, requested_by, run_tests, mode, pr_number, approved_head_sha, approved_base_sha)
-     VALUES ($1, $2, $3, $4, $5, false, 'github', $6, $7, $8)`, [id, ctx.projectId, task.id, device, ctx.actor.principal, pr.pr_number, head, base]);
+    `INSERT INTO lands (id, project_id, task_id, device_id, requested_by, run_tests, mode, pr_number, approved_head_sha, approved_base_sha, dispatch_nonce)
+     VALUES ($1, $2, $3, $4, $5, false, 'github', $6, $7, $8, $9)`, [id, ctx.projectId, task.id, device, ctx.actor.principal, pr.pr_number, head, base, routed.dispatch?.envelope.nonce ?? null]);
   return {
     result: { land_id: id, device_id: device },
-    events: [{ kind: 'land.requested', data: { land_id: id, task_id: task.id, device_id: device, requested_by: ctx.actor.principal, run_tests: false, mode: 'github', pr_number: pr.pr_number, head_sha: head, base_sha: base } }],
+    events: [{ kind: 'land.requested', data: {
+      land_id: id, task_id: task.id, device_id: device, requested_by: ctx.actor.principal, run_tests: false, mode: 'github', pr_number: pr.pr_number, head_sha: head, base_sha: base,
+      ...(routed.dispatch ? { dispatch: routed.dispatch } : {}),
+    } }],
   };
 }
 

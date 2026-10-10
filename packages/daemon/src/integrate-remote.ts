@@ -20,6 +20,9 @@ import { fetchBase, gitRemote, lsRemoteBase } from './remote.ts';
 import type { Daemon } from './daemon.ts';
 import type { ProjectConfig } from './config.ts';
 import type { LandInfo } from './view.ts';
+import { checkDispatch } from './dispatch.ts';
+import { pathsSha256 } from '@harness/protocol/signing';
+import type { DispatchEnvelope } from '@harness/protocol';
 
 const REQUIRED_CHECKS = ['guard', 'unit-linux', 'full-macos'];
 /** Reads of a PR whose mergeability GitHub hasn't computed yet: about a minute. */
@@ -36,6 +39,32 @@ export class LandFailure extends Error {
 type Ctx = { d: Daemon; project: ProjectConfig; land: LandInfo; gh: GitHubClient; head: string; base: string; pr: number; branch: string };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * D-112 for a merge: its integrate dispatch, checked against this device's own pins. Only the agent's accountable human,
+ * this device's own, may approve it, for exactly this PR, head and base. Null where dispatches aren't required.
+ */
+function acceptIntegrate(c: Ctx): DispatchEnvelope | null {
+  if (!c.project.requireDispatch) return null;
+  const view = c.d.view(c.project.id);
+  const task = view.tasks.get(c.land.taskId);
+  if (!task?.assignee) throw new LandFailure('dispatch_rejected', `${c.land.taskId} has no agent`);
+  const j = c.d.journal();
+  const records = j.read(c.project.id, c.land.taskId);
+  const seq = c.land.requestedSeq ?? 0;
+  const v = checkDispatch(c.land.dispatch, 'integrate', {
+    trusted: c.d.config.trustedDevices, deviceId: c.d.config.deviceId, epoch: c.d.link?.epoch ?? null, now: new Date(), projectId: c.project.id,
+    task: { id: task.id, title: task.title, text: task.text, scope: task.scope, ownerHumanId: task.ownerHumanId }, agentId: task.assignee,
+    usedAt: (nonce) => { const r = records.find((x) => x.state === 'dispatch' && x.nonce === nonce); return r ? Number(r.seq) : null; }, seq,
+  });
+  if (!v.ok) throw new LandFailure('dispatch_rejected', `the integrate dispatch was refused here (${v.reason}): ${v.detail}`);
+  const env = v.envelope;
+  if (env.issuer_human_id !== c.d.config.principal) throw new LandFailure('dispatch_rejected', `only ${c.d.config.principal} integrates ${c.land.taskId} on this device (D-112)`);
+  const i = env.integrate!;
+  if (i.pr_number !== c.pr || i.head_sha !== c.head || i.base_sha !== c.base) throw new LandFailure('dispatch_rejected', 'the integrate dispatch names another PR, head or base');
+  if (!records.some((r) => r.state === 'dispatch' && r.nonce === env.nonce)) j.append(c.project.id, c.land.taskId, 'dispatch', { nonce: env.nonce, kind: 'integrate', seq, land_id: c.land.id });
+  return env;
+}
+
 /** Runs (or, after a restart, resumes) a GitHub-mode land on this device. */
 export async function integrateRemote(d: Daemon, projectId: string, landId: string): Promise<void> {
   const project = d.project(projectId);
@@ -51,8 +80,13 @@ export async function integrateRemote(d: Daemon, projectId: string, landId: stri
     return fail(c, 'interrupted', 'harnessd restarted before the merge was requested; nothing was merged');
   }
   try {
+    const approved = acceptIntegrate(c);
     j.append(projectId, land.taskId, 'integrating', { land_id: landId, head: c.head, base: c.base, pr: c.pr });
     const changed = await precheck(c);
+    // The paths the human's dispatch covers are the ones this merge changes (D-112).
+    if (approved && pathsSha256(changed) !== approved.integrate!.paths_sha256) {
+      throw new LandFailure('dispatch_rejected', `the changed paths of ${c.head.slice(0, 12)} on ${c.base.slice(0, 12)} aren't the ones its human approved`);
+    }
     const r = await d.link!.command(projectId, 'land', {
       land_id: landId, base_branch: project.baseBranch, base_sha: c.base, merge_base_sha: c.base, head_sha: c.head,
       changed_paths: changed, lease_tokens: d.leases.tokens(projectId, land.taskId),
