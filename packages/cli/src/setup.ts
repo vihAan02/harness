@@ -85,7 +85,8 @@ export function writeSetup(home: Home, o: SetupOptions): string {
   let text: string;
   try { text = renderConfig(raw); } catch (e) { throw new SetupError((e as Error).message); }
   fs.mkdirSync(home.root, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(home.config, text, { mode: 0o600 });
+  // 'wx' unless --force: a config that appeared since the check above is never overwritten.
+  fs.writeFileSync(home.config, text, { mode: 0o600, flag: o.force ? 'w' : 'wx' });
   fs.chmodSync(home.config, 0o600);
   return home.config;
 }

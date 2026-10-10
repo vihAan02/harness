@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, untrustedText, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
+import type { ProjectSnapshot } from '@harness/protocol';
 import { PROTOCOL_VERSION, type DispatchKind, type EventMessage } from '@harness/protocol';
 import { taskSha256 } from '@harness/protocol/signing';
 import pkg from '../package.json' with { type: 'json' };
 import { CliClient, CliError } from './client.ts';
 import { doctor, renderChecks } from './doctor.ts';
-import { dispatchVia } from './harnessd.ts';
+import { dispatchVia, harnessd } from './harnessd.ts';
 import { keygen, writeSetup } from './setup.ts';
 
 const USAGE = `usage: harness <command> [--project <id>]
@@ -31,6 +32,9 @@ const USAGE = `usage: harness <command> [--project <id>]
   land <task> [--no-tests] [--no-wait]        land a finished task: its device merges it, runs the approved test command,
                                               and moves the base branch only if green (D-51)
   land --cancel <task>                        give up on a land that hasn't started
+  integrate <task> [--yes]                    GitHub mode: merge the task's approved PR through GitHub, as you see it now
+                                              (its head and the base are signed, D-115); you must be its agent's human
+  provider reset                              after you've fixed the provider account (key, credit): let agents start again (D-116)
   claim <task> <paths…> [--ttl <s>] [--force] a hard claim (lease) for a task: folders and files (spaces or commas);
                                               --force takes over another task's (D-89). Its harnessd renews it
   release <task> [<lease_id>…]                end a task's hard claims (all of them, or the ones named)
@@ -129,6 +133,12 @@ async function main(argv: string[]): Promise<void> {
     console.log(renderChecks(checks));
     if (checks.some((c) => c.ok === false)) process.exitCode = 1;
     return;
+  }
+
+  if (command === 'integrate') return integrate(a, sub);
+  if (command === 'provider' && sub === 'reset') {
+    await harnessd(harnessHome(), 'provider_reset', {});
+    return void console.log('The provider circuit is reset: agents on this Mac may start again (D-116). If the account still fails, it opens again.');
   }
 
   if (command === 'agent' && sub === 'add') {
@@ -337,6 +347,40 @@ async function land(c: CliClient, task: string, o: { tests: boolean; wait: boole
   process.exitCode = code;
 }
 
+/**
+ * `harness integrate <task>` (PB2b; D-115): the task's PR, as this Mac's harnessd sees it now, merged through GitHub.
+ * The human approves what's shown: the PR, its head and the base. harnessd re-reads both from GitHub and refuses with
+ * `conflict` if either moved, then signs the dispatch; the coordinator reserves the land and this harnessd merges it.
+ */
+async function integrate(a: Args, taskId: string | undefined) {
+  if (!taskId) fail('usage: harness integrate <task> [--yes]');
+  const home = harnessHome();
+  const config = loadConfig(home);
+  if (config.auth !== 'device-key') fail('harness integrate is for GitHub-mode projects with device keys; a local project lands with: harness land <task>');
+  const project = projectOf(config, a);
+  const [snap] = (await harnessd(home, 'snapshot', { project_id: project })) as ProjectSnapshot[];
+  const t = snap?.tasks.find((x) => x.id === taskId) ?? fail(`no task ${taskId} in ${project}`);
+  const pr = t.pr ?? fail(`${taskId} has no PR yet (${t.state}): it opens one when its work is published`);
+  if (pr.state !== 'open' || pr.merged) fail(`PR #${pr.number} is ${pr.merged ? 'already merged' : 'closed'}`);
+  const checks = Object.entries(pr.checks).map(([k, v]) => `${untrustedText(k, 40)} ${untrustedText(v, 20)}`).join(', ') || 'none reported yet';
+  const reviews = pr.reviews.filter((r) => r.commit_id === pr.head_sha).map((r) => `${untrustedText(r.login, 40)} ${untrustedText(r.state, 20)}`).join(', ') || 'none on this head';
+  console.log(`${taskId} "${untrustedText(t.title, 120)}": PR #${pr.number} ${untrustedText(pr.url, 200)}`);
+  console.log(`  head ${pr.head_sha}\n  base ${pr.base_sha}\n  checks: ${checks}\n  reviews on this head: ${reviews}`);
+  console.log('  GitHub merges exactly this head as one squash commit onto exactly this base, or nothing (D-115).');
+  if (a.flags.yes !== true) {
+    if (!process.stdin.isTTY) fail('not a terminal: pass --yes to integrate what\'s shown above');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question('Integrate it? [y/N] ');
+    rl.close();
+    if (!/^y(es)?$/i.test(answer.trim())) return void console.log('Not integrated.');
+  }
+  await dispatchVia(home, {
+    project_id: project, kind: 'integrate', task_id: taskId, args: {},
+    expected: { pr_number: pr.number, head_sha: pr.head_sha, base_sha: pr.base_sha }, command_id: randomUUID(),
+  });
+  console.log(`Integrating ${taskId}: harnessd merges PR #${pr.number} through GitHub, then the other Macs fetch it. Follow it with: harness status`);
+}
+
 /** `harness setup keygen` and `harness setup …` (PB1; D-111): one Mac joins the pilot. */
 function setup(a: Args, argv: string[]) {
   const home = harnessHome();
@@ -361,7 +405,7 @@ async function approve(args: string[]) {
   const id = args.find((a) => !a.startsWith('-'));
   const pending = approvals.pending();
   if (!id) {
-    if (pending.length === 0) return console.log('No setup or test commands are waiting for approval.');
+    if (pending.length === 0) return console.log('Nothing is waiting for your approval.');
     for (const r of pending) describe(r);
     return console.log('Approve one with: harness approve <id>');
   }
@@ -387,10 +431,23 @@ async function approve(args: string[]) {
   approvals.approve(req.id);
   console.log(req.kind === 'test'
     ? `Approved ${req.id}. harnessd will run it in the sandbox when landing: writes only in the integration worktree, no secrets, no network but local ports.`
-    : `Approved ${req.id}. harnessd will run it in the sandbox: writes only in the worktree, no secrets, network limited to your allowlist.`);
+    : req.kind === 'publish' ? `Approved ${req.id}. harnessd pushes the task's branch and opens its PR.`
+      : req.kind === 'agent_session' ? `Approved ${req.id}. harnessd starts your agent on that task.`
+        : req.kind === 'security_review' ? `Approved ${req.id}. The message goes to your agent.`
+          : `Approved ${req.id}. harnessd will run it in the sandbox: writes only in the worktree, no secrets, network limited to your allowlist.`);
 }
 
 function describe(r: ApprovalRequest) {
+  // Publishing, another human's start and a held message say what they bind in their own text (D-112, D-114, D-118).
+  const other: Record<string, string> = {
+    publish: 'PUBLISH this task\'s commits: push its branch and open a PR', agent_session: 'START your agent for another human\'s task',
+    security_review: 'a MESSAGE held for review before your agent sees it',
+  };
+  if (r.kind && other[r.kind]) {
+    console.log(`\n${r.id}  ${other[r.kind]}; project ${r.projectId}, task ${r.taskId}`);
+    console.log(r.command.split('\n').map((l) => `  ${untrustedText(l, 400)}`).join('\n'));
+    return void console.log('  Approving covers exactly what\'s shown here, once.\n');
+  }
   console.log(`\n${r.id}  ${r.kind === 'test' ? 'TEST command (runs when a task lands)' : 'setup command'}; project ${r.projectId}, first requested for task ${r.taskId}`);
   console.log(`  command:   ${r.command}`);
   for (const m of r.manifests) console.log(`  manifest:  ${m.path}  ${m.sha256 ? m.sha256.slice(0, 12) : '(absent)'}`);

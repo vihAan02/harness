@@ -15,7 +15,7 @@ import { harnessHome } from '../../packages/daemon/src/home.ts';
 import { makeRepo, tempDir } from '../../packages/daemon/test/fixtures.ts';
 import { doctor } from '../../packages/cli/src/doctor.ts';
 import { applyPilot, ensureServerKey, parsePilot } from '../../packages/server/src/admin.ts';
-import { parsePrivateKey, taskSha256 } from '../../packages/protocol/src/signing.ts';
+import { generateKeyPair, parsePrivateKey, taskSha256 } from '../../packages/protocol/src/signing.ts';
 import { startServer } from '../../packages/server/src/server.ts';
 import { freshSchema, TEST_DATABASE_URL } from '../../packages/server/test/helpers.ts';
 
@@ -85,12 +85,14 @@ test('two Macs join one project with no SQL: apply twice, setup on each, two ide
     assert.deepEqual((await applyPilot(db.pool, spec)).changes, []);
     server = await startServer({ pool: db.pool, databaseUrl: TEST_DATABASE_URL, schema: db.schema, serverKey: parsePrivateKey(fs.readFileSync(serverKeyFile, 'utf8')), port });
 
-    // Each human writes their config with the real CLI, pinning the coordinator and the other Mac, as read aloud.
+    // Each human writes their config with the real CLI, pinning the coordinator and the other Mac, as read aloud, and
+    // puts their own provider key in secrets.toml (D-116): here a dummy, since nothing calls the model.
     for (const m of macs) {
       const other = macs.find((o) => o !== m)!;
       const out = await harness(m.home, 'setup', '--device', m.device, '--principal', m.human, '--server-url', `ws://127.0.0.1:${port}`,
         '--server-key', coordinator.publicKey, '--trust-device', `${other.device}=${other.human}:${keys[other.device]}`,
-        '--project', 'prj_pilot', '--repo', m.repo, '--integration', 'local');
+        '--project', 'prj_pilot', '--repo', m.repo, '--integration', 'local', '--provider', 'openrouter-haiku55');
+      fs.writeFileSync(path.join(m.home, 'secrets.toml'), 'OPENROUTER_API_KEY = "dummy-not-a-key"\n', { mode: 0o600 });
       assert.match(out, /wrote .*config\.toml/);
       const config = loadConfig(harnessHome(m.home));
       assert.deepEqual([config.auth, config.limits.maxConcurrentAgents, config.agents.maxBudgetUsd, config.agents.dailyBudgetUsd, config.ui.port], ['device-key', 1, 0.1, 0.25, 7480]);
@@ -109,21 +111,30 @@ test('two Macs join one project with no SQL: apply twice, setup on each, two ide
     }
     await until(async () => (await db.pool.query("SELECT count(*)::int AS n FROM devices WHERE id IN ('dev_a', 'dev_b') AND last_heartbeat_at IS NOT NULL")).rows[0].n === 2, 'both devices\' heartbeats');
 
-    // doctor on a good config: the identity, the coordinator, the membership and the clock check out.
-    const ok = Object.fromEntries((await doctor(harnessHome(macs[0]!.home))).map((c) => [c.name, c]));
-    for (const name of ['config', 'device key', 'coordinator', 'clock', 'project prj_pilot', 'budgets', 'repo prj_pilot']) assert.equal(ok[name]?.ok, true, `${name}: ${ok[name]?.detail}`);
+    // doctor on a good config: every check is ok, except the ones that read this machine rather than the config
+    // (its Postgres servers, the human's shell profiles, the UI port, the sandbox).
+    const all = await doctor(harnessHome(macs[0]!.home));
+    const machine = new Set(['postgres', 'no keys in profiles', 'ui port', 'sandbox']);
+    for (const c of all) if (!machine.has(c.name)) assert.equal(c.ok, true, `${c.name}: ${c.detail}`);
+    const ok = Object.fromEntries(all.map((c) => [c.name, c]));
+    for (const name of ['config', 'device key', 'coordinator', 'clock', 'project prj_pilot', 'budgets', 'repo prj_pilot', 'provider key', 'claude code', 'node']) {
+      assert.equal(ok[name]?.ok, true, `${name} wasn't checked: ${ok[name]?.detail}`);
+    }
     // A broken one: the coordinator's pin is wrong. doctor names the mismatch and never trusts the answer.
     const broken = harnessHome(macs[1]!.home);
-    const text = fs.readFileSync(broken.config, 'utf8').replace(coordinator.publicKey, keys.dev_a!);
+    const good = fs.readFileSync(broken.config, 'utf8');
+    const text = good.replace(coordinator.publicKey, generateKeyPair().publicKey); // a key nobody's coordinator holds
     fs.writeFileSync(broken.config, text, { mode: 0o600 });
     const bad = Object.fromEntries((await doctor(broken)).map((c) => [c.name, c]));
     assert.equal(bad.coordinator?.ok, false);
     assert.match(bad.coordinator!.detail, /server_identity_mismatch/);
-    // And a device key that isn't the one pinned for this device.
-    fs.writeFileSync(broken.config, text.replace(keys.dev_b!, keys.dev_a!), { mode: 0o600 });
+    // And a device key that isn't the one pinned for this device (config.toml itself refuses two devices with one key,
+    // so the pin is a key nobody holds).
+    fs.writeFileSync(broken.config, good.replace(keys.dev_b!, generateKeyPair().publicKey), { mode: 0o600 });
     const pin = Object.fromEntries((await doctor(broken, { offline: true })).map((c) => [c.name, c]));
-    // Refused by config.toml's own checks (two devices with one key), or caught by doctor's comparison.
-    assert.match(pin['device key']?.ok === false ? pin['device key'].detail : pin.config!.detail, /same key|isn't the key pinned/);
+    assert.equal(pin['device key']?.ok, false);
+    assert.match(pin['device key']!.detail, /isn't the key pinned for dev_b/);
+    assert.equal(pin.coordinator?.ok, 'skip', 'the coordinator line says why it was skipped');
   } finally {
     for (const d of daemons) await d.stop();
     await server?.close();
@@ -172,6 +183,23 @@ test('with device keys the CLI never signs itself: harnessd is asked to sign eac
     replies.push({ ok: false, error: { code: 'conflict', message: `${id} changed` } });
     await assert.rejects(harness(home, 'task', 'abandon', id, '--reason', 'not now'), /it changed since you looked/);
     assert.deepEqual(fake.seen.slice(1).map((x) => [x.params.kind, x.params.args]), [['resume', { text: 'carry on' }], ['abandon', { reason: 'not now' }]]);
+
+    // integrate: what the human approves is the PR as harnessd's snapshot shows it, and exactly that is signed.
+    const pr = { number: 12, url: 'https://github.com/o/r/pull/12', head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40), state: 'open', merged: false,
+      merge_sha: null, mergeable_state: 'clean', checks: { guard: 'success' }, reviews: [{ login: 'human_b', state: 'APPROVED', commit_id: 'a'.repeat(40) }], updated_at: '' };
+    replies.push({ ok: true, result: [{ project_id: 'prj_pilot', tasks: [{ id, title: 'Login API', state: 'done', pr }] }] });
+    const shown = await harness(home, 'integrate', id, '--yes');
+    assert.match(shown, /PR #12 https:\/\/github\.com\/o\/r\/pull\/12/);
+    assert.match(shown, new RegExp(`head ${'a'.repeat(40)}`));
+    assert.match(shown, /reviews on this head: human_b APPROVED/);
+    const [snap, sign] = fake.seen.slice(-2);
+    assert.deepEqual([snap!.method, snap!.params], ['snapshot', { project_id: 'prj_pilot' }]);
+    assert.deepEqual([sign!.method, sign!.params.kind, sign!.params.task_id, sign!.params.args, sign!.params.expected],
+      ['dispatch', 'integrate', id, {}, { pr_number: 12, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40) }]);
+    // No PR yet: nothing is signed.
+    replies.push({ ok: true, result: [{ project_id: 'prj_pilot', tasks: [{ id, title: 'Login API', state: 'working', pr: null }] }] });
+    await assert.rejects(harness(home, 'integrate', id, '--yes'), /has no PR yet/);
+    assert.equal(fake.seen.at(-1)!.method, 'snapshot');
   } finally {
     await fake?.close();
     await server?.close();

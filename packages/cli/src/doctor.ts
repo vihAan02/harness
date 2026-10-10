@@ -9,7 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
-  devicePublicKey, Handshake, loadConfig, loadDeviceKey, serverFrame, ServerIdentityError, untrustedText, type Home, type LocalConfig,
+  CLAUDE_PINNED, devicePublicKey, findTrustPostgres, Handshake, installedClaudeSdkVersion, loadConfig, loadDeviceKey, serverFrame, ServerIdentityError,
+  untrustedText, type Home, type LocalConfig,
 } from '@harness/daemon';
 import { fingerprint, keyId } from '@harness/protocol/signing';
 import type { Welcome } from '@harness/protocol';
@@ -62,17 +63,6 @@ export function probeServer(config: LocalConfig, home: Home, timeoutMs = 10_000)
   });
 }
 
-/** A password-less login to a loopback Postgres is a sandbox escape (D-119, TH-22). PA11's raw probe replaces this. */
-async function trustPostgres(): Promise<string[]> {
-  const psql = ['/opt/homebrew/bin/psql', '/usr/local/bin/psql'].find((p) => fs.existsSync(p)) ?? 'psql';
-  const open: string[] = [];
-  for (const port of [5432, 5433]) {
-    const r = await tool(psql, ['-h', '127.0.0.1', '-p', String(port), '-U', os.userInfo().username, '-w', '-d', 'postgres', '-Atc', 'select 1'], 10_000);
-    if (r.ok) open.push(String(port));
-  }
-  return open;
-}
-
 const portFree = (port: number) => new Promise<boolean>((resolve) => {
   const s = net.createServer();
   s.once('error', () => resolve(false));
@@ -106,7 +96,8 @@ export async function doctor(home: Home, o: { offline?: boolean } = {}): Promise
 
   // The coordinator, through the tunnel: its pinned key, the epoch, each project's mode, and our clock.
   if (o.offline) check('coordinator', 'skip', '--offline');
-  else if (pub && config.serverKey) {
+  else if (!pub || !config.serverKey) check('coordinator', 'skip', !pub ? 'not contacted: this device\'s key isn\'t usable (see above)' : 'not contacted: no server_key pinned (harness setup --server-key)');
+  else {
     try {
       const w = await probeServer(config, home);
       check('coordinator', true, `${config.serverUrl}: key ${fingerprint(config.serverKey)} (id ${keyId(config.serverKey)}), epoch ${w.epoch ?? '(none)'}`);
@@ -136,8 +127,13 @@ export async function doctor(home: Home, o: { offline?: boolean } = {}): Promise
     const origin = await tool('git', ['-C', p.repo, 'remote', 'get-url', 'origin']);
     const url = origin.out.trim();
     if (!origin.ok) { check(where, false, `no origin remote in ${p.repo}`); continue; }
-    if (/^https:\/\/[^/@]+@/.test(url)) { check(where, false, `origin's URL carries credentials; set it to the plain https URL and use gh auth setup-git`); continue; }
-    if (p.remote && url.replace(/\.git$/, '') !== p.remote.replace(/\.git$/, '')) { check(where, false, `origin is ${url}, but config.toml's remote is ${p.remote}`); continue; }
+    // Parsed, never echoed: a URL can carry a token in any scheme or case (review of #116).
+    let parsed: URL | null = null;
+    try { parsed = new URL(url); } catch { /* not a URL: scp-style or garbage */ }
+    if (!parsed || parsed.protocol !== 'https:') { check(where, false, `origin in ${p.repo} isn't an https URL; set it with git remote set-url origin ${p.remote ?? '<the https URL>'}`); continue; }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) { check(where, false, `origin's URL in ${p.repo} carries credentials or extra parts; set it to the plain https URL (git remote set-url origin ${p.remote ?? '<url>'}) and use gh auth setup-git`); continue; }
+    const same = (a: URL, b: string) => { try { const u = new URL(b); return u.host.toLowerCase() === a.host.toLowerCase() && u.pathname.replace(/\.git$/, '') === a.pathname.replace(/\.git$/, ''); } catch { return false; } };
+    if (p.remote && !same(parsed, p.remote)) { check(where, false, `origin in ${p.repo} isn't config.toml's remote (${p.remote}): git remote set-url origin ${p.remote}`); continue; }
     if (o.offline) { check(where, true, `${real} (not contacted: --offline)`); continue; }
     const ls = await tool('git', ['-C', p.repo, 'ls-remote', 'origin', 'HEAD']);
     check(where, ls.ok, ls.ok ? `${real}, origin answers` : `git ls-remote origin failed: ${untrustedText(ls.out.trim().split('\n').at(-1))}. Run gh auth setup-git`);
@@ -185,16 +181,25 @@ export async function doctor(home: Home, o: { offline?: boolean } = {}): Promise
   } catch (e) {
     check('sandbox', false, `srt not found: ${(e as Error).message}`);
   }
-  check('claude code', 'skip', 'its pinned version is checked by harnessd at every session start (D-49)');
+  let installed: string | null = null;
+  try { installed = installedClaudeSdkVersion(); } catch { /* not installed: reported below */ }
+  check('claude code', installed === CLAUDE_PINNED.sdk, installed === CLAUDE_PINNED.sdk ? `Agent SDK ${installed} (CLI ${CLAUDE_PINNED.cli}), the pinned version (D-49)`
+    : `the Agent SDK here is ${installed ?? 'missing'}, but this runtime is pinned to ${CLAUDE_PINNED.sdk}: run npm ci in the runtime (scripts/pilot/install.sh)`);
 
   // No password-less loopback Postgres beside the agents (D-119).
-  const open = await trustPostgres();
-  check('postgres', !open.length, open.length ? `a loopback Postgres on ${open.join(', ')} lets anyone log in without a password; harden it (scripts/pilot/pg-harden.sh) before running agents (D-119)` : 'no password-less loopback login on 5432 or 5433');
+  // The same raw probe harnessd runs before it starts agents (PA11): every loopback listener, as this user and postgres.
+  const notes: string[] = [];
+  const hits = await findTrustPostgres({ log: (m) => notes.push(m) });
+  const ports = [...new Set(hits.map((h) => h.port))];
+  check('postgres', !hits.length, hits.length
+    ? `a loopback Postgres on ${ports.join(', ')} accepts password-less logins, so harnessd won't start agents (D-119): harden it (scripts/pilot/pg-harden.sh) or stop it`
+    : `no loopback Postgres accepts a password-less login${notes.length ? ` (${notes.map((n) => untrustedText(n, 200)).join('; ')})` : ''}`);
 
   // The UI's port: outside the agents' range (config.ts checks) and free.
   if (config.ui.port !== null) {
     const free = await portFree(config.ui.port);
-    check('ui port', free, `127.0.0.1:${config.ui.port} ${free ? 'is free' : 'is taken; stop whatever holds it'}`);
+    // While the UI's bridge runs it holds this port, which is fine; anything else there would keep the bridge from starting.
+    check('ui port', free ? true : 'skip', `127.0.0.1:${config.ui.port} ${free ? 'is free' : 'is taken: fine if it\'s harness ui\'s bridge, otherwise stop whatever holds it'}`);
   }
   return checks;
 }
