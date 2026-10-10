@@ -16,6 +16,7 @@ export { renderMessage } from './envelope.ts';
 export { harnessTools, HARNESS_TOOL_NAMES } from './tools.ts';
 export { computeMetrics, renderMetrics, type RunMetrics } from './metrics.ts';
 export { readPolicyFor } from './readpolicy.ts';
+export { findTrustPostgres, trustRefusal, type TrustLogin } from './localsvc.ts';
 export { agentConfigDir, portEnv } from './resources.ts';
 export { checkAuthTarget, createDeviceKey, devicePublicKey, Handshake, isLoopbackUrl, loadDeviceKey, serverFrame, ServerIdentityError, untrustedText } from './identity.ts';
 export { type LinkState } from './link.ts';

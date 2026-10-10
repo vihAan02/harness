@@ -44,3 +44,26 @@ test('setup writes a pilot config from typed pins only, and refuses the wrong on
     assert.deepEqual(Object.keys(loadConfig(home).trustedDevices), ['dev_a']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('setup writes a GitHub-mode project with its remote, commit identity and provider table', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-cli-setup-gh-')));
+  try {
+    const home = harnessHome(path.join(dir, 'home'));
+    const repo = path.join(dir, 'repo');
+    fs.mkdirSync(repo);
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    keygen(home, 'dev_a');
+    writeSetup(home, {
+      device: 'dev_a', principal: 'human_a', serverUrl: 'ws://127.0.0.1:7400', serverKey: generateKeyPair().publicKey, trust: [],
+      project: 'prj_harness', repo, baseBranch: 'main', integration: 'github', remote: 'https://github.com/vihAan02/harness.git',
+      commitName: 'A', commitEmail: '12345+someone@users.noreply.github.com', provider: 'openrouter-haiku55', force: false,
+    });
+    const config = loadConfig(home);
+    const p = config.projects[0]!;
+    assert.deepEqual([p.integration, p.remote, p.githubRepo, p.commitIdentity], ['github', 'https://github.com/vihAan02/harness.git', 'vihAan02/harness', { name: 'A', email: '12345+someone@users.noreply.github.com' }]);
+    assert.equal(config.agents.provider, 'openrouter-haiku55');
+    assert.ok(config.providers['openrouter-haiku55'], 'the provider table, with its prices, is copied in');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
