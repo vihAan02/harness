@@ -382,7 +382,7 @@ export async function emptyLand(ctx: HandlerContext, args: Record<string, unknow
   return {
     result: { land_id: id },
     events: [
-      { kind: 'land.completed', data: { land_id: id, task_id: task.id, old_base_sha: base, new_base_sha: base, changed_paths: [], empty: true } },
+      { kind: 'land.completed', data: { land_id: id, task_id: task.id, old_base_sha: base, new_base_sha: base, changed_paths: [], empty: true, head_sha: head } },
       ...await releaseOnLand(ctx, task.id, at),
     ],
   };

@@ -1754,6 +1754,8 @@ export class Daemon {
       j.append(projectId, taskId, 'no_change', { head, base });
       this.log(`${taskId}: nothing to publish: its branch adds nothing to ${project.baseBranch}; it lands with no change`);
       await this.report(projectId, 'land.empty', { task_id: taskId, head_sha: head, base_sha: base });
+      // Nothing of it is anywhere but the base already: its worktree and branch go now, as after any land.
+      await this.teardownTask({ projectId, taskId }, { force: false }).catch((e: Error) => this.log(`kept ${this.worktreeOf(projectId, taskId)}: ${e.message.split('\n')[0]}`));
       return;
     }
     const gh = this.github(project);
