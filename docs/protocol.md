@@ -310,6 +310,14 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 - **Lifetimes:** 24 hours, except `integrate`, 30 minutes. Five minutes of clock skew is allowed on `issued_at`.
 - **The server** verifies the signature against the issuer device's registered key, requires the issuer device and human to be the connection's own, inserts the nonce once (`dispatches`, migration 0015), and enforces who may act: the task's owner or the agent's accountable human; `integrate` only the accountable human.
 - **The target harnessd** verifies again against its pinned `[trust.devices]`, its own nonce journal, the expiry, the task hash against its view, the epoch, and that it's the target. A remote `start`, `reopen` or `resume` waits for a single-use local approval. A refused or expired dispatch is reported with `dispatch.rejected`, and a start that ends before a session began with `task.start_failed`; both free the agent.
+  - **Built (PA3, `packages/daemon/src/dispatch.ts`):**
+    - The check runs where the project's `require_dispatch` is on, which device keys and GitHub mode force. The agent's own `report_done` carries no dispatch.
+    - **The issuer's key comes from this device's pins only.** A device the coordinator registered but this human never pinned is `unknown_issuer` (T-3).
+    - **Nonces:** each accepted dispatch is journaled with its event's `seq` before anything acts. The same event delivered again is the same nonce at the same `seq`; another `seq` is `replayed`. A recovery re-checks the journaled receipt.
+    - **The approval** (`agent_session`) is bound to the nonce, the kind and the task and message hashes. It waits until the dispatch expires; denied or expired, it's `task.start_failed { reason: approval_denied | approval_expired }` (T-4). A task the other human wrote is also screened (T-5, D-118).
+    - **After acceptance:** a start that fails before its session reports `task.start_failed` with `budget`, `capacity`, `no_adapter`, `setup_failed`, `approval_expired` or `error`.
+    - **Refused abandon or complete:** the agent still stops, and its work stays (journal `stopped { reason: dispatch_refused }`). Stopping is the safe direction.
+    - **Abandon from another human:** it stops the agent and keeps the worktree and branch (journal `abandoned { kept: true }`). A restart never removes them.
 
 **Commands added for the pilot.** Types in `@harness/protocol`.
 

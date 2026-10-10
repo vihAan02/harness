@@ -11,7 +11,8 @@ import { parseConfig } from '../../packages/daemon/src/config.ts';
 import type { ServerLink } from '../../packages/daemon/src/link.ts';
 import { findTrustPostgres, trustRefusal, type TrustLogin } from '../../packages/daemon/src/localsvc.ts';
 import { makeRepo, tempDir, tempHome, TOKEN } from '../../packages/daemon/test/fixtures.ts';
-import { generateKeyPair } from '../../packages/protocol/src/signing.ts';
+import { generateKeyPair, parsePrivateKey } from '../../packages/protocol/src/signing.ts';
+import { makeDispatch } from '../../packages/daemon/src/dispatch.ts';
 import type { EventMessage } from '../../packages/protocol/src/index.ts';
 import { FakeAdapter } from '../fake-adapter.ts';
 
@@ -24,8 +25,10 @@ const task = (id: string) => ({ id, title: id, text: `do ${id}`, scope: [], owne
 /** harnessd with no server: what it would report is recorded instead. */
 class Offline extends Daemon {
   reports: string[] = [];
-  override async report(_projectId: string, name: string): Promise<void> { this.reports.push(name); }
+  sent: { name: string; args: Record<string, unknown> }[] = [];
+  override async report(_projectId: string, name: string, args: Record<string, unknown> = {}): Promise<void> { this.reports.push(name); this.sent.push({ name, args }); }
 }
+const EPOCH = 'epoch_localhost_1';
 
 /** A device in `auth` mode; `check` stands in for the real D-119 check and counts its calls. */
 function device(auth: 'device-key' | 'local-token', check?: () => Promise<TrustLogin[]>) {
@@ -34,9 +37,10 @@ function device(auth: 'device-key' | 'local-token', check?: () => Promise<TrustL
   const home = tempHome(t.dir);
   for (const d of [home.sessions, home.logs]) fs.mkdirSync(d, { recursive: true });
   const base = { device_id: 'dev_test', principal: 'human_test', server_url: 'ws://127.0.0.1:9', limits: { port_range: [32200, 32299] }, projects: [{ id: PROJECT, repo }] };
+  const own = generateKeyPair(); // this device's key, which signs its human's dispatches (D-112)
   const config = auth === 'device-key'
     ? parseConfig({
-      ...base, auth, server_key: generateKeyPair().publicKey, trust: { devices: { dev_test: { human: 'human_test', key: generateKeyPair().publicKey } } },
+      ...base, auth, server_key: generateKeyPair().publicKey, trust: { devices: { dev_test: { human: 'human_test', key: own.publicKey } } },
       agents: { max_budget_usd: 0.1, daily_budget_usd: 0.25 },
     }, '', { env: {} })
     : parseConfig(base, TOKEN);
@@ -51,7 +55,7 @@ function device(auth: 'device-key' | 'local-token', check?: () => Promise<TrustL
   const daemon = new Offline(opts);
   const start = async (taskId: string) => daemon.startAgent(await daemon.prepareTask({ projectId: PROJECT, taskId, baseSha: sha, agentId: AGENT.id }), AGENT, task(taskId));
   const done = async () => { await daemon.stop(); t.cleanup(); };
-  return { daemon, adapter, logs, calls, sha, start, done };
+  return { daemon, adapter, logs, calls, sha, start, done, key: parsePrivateKey(own.privateKeyPem) };
 }
 
 const until = async (pred: () => boolean, what: string, ms = 5000) => {
@@ -95,12 +99,20 @@ test('device keys: task.assigned is refused before a worktree, setup or ports ex
     }) as unknown as EventMessage;
     view.apply(event('agent.created', { agent_id: AGENT.id, name: AGENT.name, vendor: 'claude', accountable_human_id: 'human_test' }));
     view.apply(event('task.created', { task_id: 't9', title: 't9', text: 'do t9', scope: [], owner_human_id: 'human_test' }));
-    const assigned = event('task.assigned', { task_id: 't9', assignee_agent_id: AGENT.id });
+    // A signed start from this human's own device (D-112), so the dispatch passes and D-119 is what refuses it.
+    d.daemon.link = { epoch: EPOCH, stop: async () => {} } as unknown as ServerLink;
+    const dispatch = makeDispatch(d.key, {
+      kind: 'start', projectId: PROJECT, taskId: 't9', agentId: AGENT.id, targetDeviceId: 'dev_test', issuerHumanId: 'human_test', issuerDeviceId: 'dev_test',
+      epoch: EPOCH, task: task('t9'),
+    });
+    const assigned = event('task.assigned', { task_id: 't9', assignee_agent_id: AGENT.id, dispatch });
     view.apply(assigned);
-    await assert.rejects(d.daemon.lifecycle(assigned), { message: REFUSAL });
+    await d.daemon.lifecycle(assigned);
+    // Reported as a failed start, which frees the agent on the server (D-113), before anything was made.
+    assert.deepEqual(d.daemon.sent.map((x) => [x.name, x.args.reason, x.args.nonce]), [['task.start_failed', 'error', dispatch.envelope.nonce]]);
+    assert.match(String(d.daemon.sent[0]!.args.detail), REFUSAL);
     assert.equal(fs.existsSync(d.daemon.worktreeOf(PROJECT, 't9')), false, 'no worktree');
     assert.deepEqual(d.daemon.ports.list(), {}, 'no ports');
-    assert.equal(d.daemon.reports.length, 0);
     assert.equal(d.adapter.sessions.length, 0);
   } finally {
     await d.done();

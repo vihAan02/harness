@@ -10,7 +10,7 @@ import type { LandInfo, ProjectView, SessionInfo, TaskInfo, WaitInfo } from './v
 /** What only this harnessd knows. */
 export type SnapshotLocal = {
   deviceId: string; principal: string; integrationMode: IntegrationMode; connection: SnapshotConnection;
-  /** Its pending local approvals (setup, test, publish, and later agent_session), by task. */
+  /** Its pending local approvals (setup, test, publish, security_review, agent_session), by task. */
   approvals: { taskId: string; kind: string }[];
   /** Tasks it has committed or is pushing, with no PR yet (the journal's committed/pushing, D-114). */
   publishing: Set<string>;
@@ -106,7 +106,7 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
   });
   const agents = [...v.agents.values()].map((a): AgentSnapshot => {
     const latest = [...v.sessions.values()].filter((x) => x.agentId === a.id).at(-1);
-    const device = latest?.deviceId ?? null;
+    const device = a.deviceId ?? latest?.deviceId ?? null;
     return {
       id: a.id, name: a.name, vendor: a.vendor, human_id: a.humanId, device_id: device, online: device ? v.devices.get(device)?.online ?? null : null,
       active_task_id: v.activeTask(a.id)?.id ?? null, live_session_id: v.liveSession(a.id)?.id ?? null,
