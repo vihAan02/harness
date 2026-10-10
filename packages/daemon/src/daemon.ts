@@ -356,7 +356,7 @@ export class Daemon {
     const j = this.journal();
     // Committed for publishing, with no PR and no "nothing to publish" yet: the push and the PR are under way (D-114).
     const publishing = new Set([...view.tasks.values()]
-      .filter((t) => t.status === 'done' && j.has(projectId, t.id, 'committed') && !j.has(projectId, t.id, 'pr') && !j.has(projectId, t.id, 'no_change'))
+      .filter((t) => t.status === 'done' && j.has(projectId, t.id, 'committed') && !j.has(projectId, t.id, 'pr') && !j.has(projectId, t.id, 'no_change') && !publishDenied(j.read(projectId, t.id)))
       .map((t) => t.id));
     return snapshotOf(view, {
       deviceId: this.config.deviceId, principal: this.config.principal, integrationMode: project.integration, connection: this.linkState,
@@ -509,7 +509,8 @@ export class Daemon {
       if (commit) await this.report(projectId, 'worktree.report', { task_id: taskId, event: 'committed', path: worktree, branch: taskBranch(taskId), commit });
       this.log(`${taskId}: recovered its completion: ${commit ? `committed ${commit.slice(0, 12)}` : 'nothing to commit'}`);
     }
-    if (task.status === 'done' && hasWorktree && this.project(projectId).integration === 'github' && !j.has(projectId, taskId, 'pr') && !j.has(projectId, taskId, 'no_change')) {
+    // Still done on the coordinator: its PR, or its empty land (no_change), may not have reached it before the crash.
+    if (task.status === 'done' && hasWorktree && this.project(projectId).integration === 'github' && !j.has(projectId, taskId, 'pr')) {
       // Committed, not yet published (or published before the crash, without the record): publish, idempotently.
       return this.publishTask(projectId, taskId);
     }
@@ -1688,10 +1689,12 @@ export class Daemon {
     const branch = this.remoteBranch(projectId, taskId);
     const head = await branchTip(project.repo, taskBranch(taskId));
     const base = await this.fetchProjectBase(project);
-    // Nothing to publish: the task's branch adds nothing to the base. Its land is a no-op (D-106 waits still end, PA6).
+    // Nothing to publish: the task's branch adds nothing to the base. It lands as it is (land.empty), so the waits on it
+    // end (D-106) and its leases go; there's no PR, which GitHub would refuse anyway.
     if (!(await git(project.repo, 'diff', '--name-only', `${base}...${head}`))) {
       j.append(projectId, taskId, 'no_change', { head, base });
-      this.log(`${taskId}: nothing to publish: its branch adds nothing to ${project.baseBranch}`);
+      this.log(`${taskId}: nothing to publish: its branch adds nothing to ${project.baseBranch}; it lands with no change`);
+      await this.report(projectId, 'land.empty', { task_id: taskId, head_sha: head, base_sha: base });
       return;
     }
     const gh = this.github(project);
@@ -1723,9 +1726,15 @@ export class Daemon {
         ...(gate.held.length ? [`dependency changes: ${gate.held.map((h) => h.path).join(', ')}`] : []),
         `PR: ${title}`, await git(project.repo, 'diff', '--stat', `${base}...${head}`),
       ].join('\n');
+      if (j.read(projectId, taskId).some((r) => r.state === 'publish_denied' && r.hash === hash)) return; // its human said no
       const req = this.approvals.request({ projectId, taskId, command: what, manifests: [], hash, kind: 'publish' });
       this.log(`${taskId} is ready to publish. Review it with: harness approve ${req.id}`);
-      await this.waitForApproval(project.id, hash);
+      // Publishing is its human's decision (D-114): no deadline. A denial ends it; a reopen and a new commit ask again.
+      if ((await this.waitForDecision(project.id, hash, req.id)) === 'denied') {
+        j.append(projectId, taskId, 'publish_denied', { head, hash });
+        this.log(`${taskId}: its human denied publishing ${head.slice(0, 12)}; reopen the task to change it, then it asks again`);
+        return;
+      }
     }
     // Push, unless the remote branch already has this head (a crash after the push).
     const remoteTip = await gitRemote(project.repo, 'ls-remote', '--', project.remote!, `refs/heads/${branch}`).then((o) => o.split('\t')[0] || null);
@@ -2101,6 +2110,16 @@ export class Daemon {
     await report('ran', { exit_code: 0 });
   }
 
+  /** A decision with no deadline (the publish approval): approved, or denied (the request withdrawn), or harnessd stopping. */
+  async waitForDecision(projectId: string, hash: string, id: string): Promise<'approved' | 'denied'> {
+    for (;;) {
+      if (this.approvals.isApproved(projectId, hash)) return 'approved';
+      if (!this.approvals.pending().some((r) => r.id === id && r.projectId === projectId)) return 'denied';
+      if (this.stopping) throw new Error('harnessd stopped while waiting for approval');
+      await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
+    }
+  }
+
   /** Waits for the human to approve a command (D-52). Gives up after `approvalTimeoutMs`, so nothing waits forever. */
   async waitForApproval(projectId: string, hash: string): Promise<void> {
     const ms = this.o.approvalTimeoutMs ?? 30 * 60_000;
@@ -2111,6 +2130,12 @@ export class Daemon {
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
   }
+}
+
+/** Its human denied publishing the task's latest commit (a reopen and a new commit ask again). */
+function publishDenied(records: { state: string; [k: string]: unknown }[]): boolean {
+  const last = records.filter((r) => r.state === 'committed' && r.sha).at(-1);
+  return !!last && records.some((r) => r.state === 'publish_denied' && r.head === last.sha);
 }
 
 /** Why a dispatched start failed, for `task.start_failed` (D-113). */

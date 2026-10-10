@@ -312,3 +312,26 @@ test('land.reconcile: another member device settles a silent device\'s GitHub la
   assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [c.task])).rows[0].status, 'landed');
   assert.equal((await db.pool.query('SELECT tip_sha FROM project_bases WHERE project_id = $1', [project])).rows[0].tip_sha, SHA('d'), 'the chain moved');
 });
+
+test('land.empty: a finished GitHub-mode task that changed nothing lands as it is, from the device that ran it (D-106, D-114)', async () => {
+  const empty = (task: string, caller = device, p = project) => run('land.empty', { task_id: task, head_sha: SHA('5'), base_sha: SHA('1') }, caller, p);
+  const w = await finished('agent/e1');
+  await rejects(empty(w.task), 'conflict', /only a finished task/);
+  await w.complete();
+  await rejects(empty(w.task, other), 'forbidden', /only that device/);
+  const r = await empty(w.task);
+  const events = await kinds(r.seqs);
+  assert.deepEqual(events.map((e) => e.kind), ['land.completed']);
+  assert.deepEqual([events[0].data.empty, events[0].data.changed_paths, events[0].data.new_base_sha], [true, [], SHA('1')]);
+  assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id = $1', [w.task])).rows[0].status, 'landed');
+  assert.equal((await db.pool.query("SELECT count(*)::int AS n FROM lands WHERE task_id = $1 AND status = 'completed'", [w.task])).rows[0].n, 1);
+  await rejects(empty(w.task), 'conflict', /is landed/);
+  // One with a PR lands through it; a local project lands through land.request.
+  const p = await finished('agent/e2');
+  await p.complete();
+  await publish(p.task, 51);
+  await rejects(empty(p.task), 'conflict', /has PR #51/);
+  const l = await finished('agent/e3', local);
+  await l.complete();
+  await rejects(empty(l.task, device, local), 'conflict', /local project/);
+});
