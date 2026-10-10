@@ -3,9 +3,10 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createWorktree, gitCommonDir } from '../src/git.ts';
-import { runSetup, type SetupRun } from '../src/setup.ts';
+import { runSetup, sandboxSettings, type SetupRun } from '../src/setup.ts';
 import { makeRepo, tempDir, tempHome, TOKEN } from './fixtures.ts';
 
 let t: ReturnType<typeof tempDir>;
@@ -120,4 +121,10 @@ test('a land\'s test command may serve and reach 127.0.0.1 with allowLocalBindin
   const raw = await run(`echo STARTED && curl ${direct}`, { allowLocalBinding: true });
   assert.match(raw.out, /STARTED/, raw.out);
   if (online) assert.notEqual(raw.exitCode, 0, `reached 1.1.1.1 from inside the sandbox: ${raw.out}`);
+});
+
+test('setup and land commands can\'t read Postgres passwords or a coordinator on this Mac (D-142)', () => {
+  const home = fs.realpathSync.native(os.homedir());
+  const deny = sandboxSettings({ home: tempHome(t.dir), worktree: wt, gitCommonDir: path.join(repo, '.git'), scratch: t.dir, command: 'true', allowedDomains: [], timeoutMs: 1, logFile: path.join(t.dir, 'x.log') }).filesystem.denyRead;
+  for (const p of ['.pgpass', '.pg_service.conf', '.harness-coordinator', 'Library/LaunchAgents']) assert.ok(deny.includes(path.join(home, p)), `${p} is readable`);
 });
