@@ -11,6 +11,7 @@
 //            --model <id>        with --real and no provider, the model for both agents
 //            --providers <file>  where --provider looks (default docs/examples/providers.toml)
 //            --keep              keep the temp dir (repo, worktrees, ~/.harness) for inspection
+//            --budget-usd <d>    with --real, each agent session's budget (default 2)
 //
 // Needs Postgres (see README "Running locally"). It uses a throwaway schema in HARNESS_DATABASE_URL
 // (default harness_dev) and drops it at the end.
@@ -39,6 +40,8 @@ const KEEP = argv.includes('--keep');
 const BENCH = opt('bench') ?? 'https://github.com/vihAan02/harness-bench.git';
 const MODEL = opt('model');
 const PROVIDER = opt('provider');
+const BUDGET = Number(opt('budget-usd') ?? '2');
+if (!(BUDGET > 0)) throw new Error('--budget-usd must be a positive number of dollars');
 const PROVIDERS_FILE = opt('providers') ?? path.resolve(import.meta.dirname, '../docs/examples/providers.toml');
 if (PROVIDER && !REAL) {
   console.error('--provider needs --real: the scripted model never calls a provider.');
@@ -51,13 +54,13 @@ if (PROVIDER && MODEL) {
 /** The [agents] and [providers] part of the demo's config.toml (D-87). */
 const agentsConfig: Record<string, unknown> = !REAL ? {}
   : PROVIDER ? {
-    agents: { provider: PROVIDER, max_budget_usd: 2 },
+    agents: { provider: PROVIDER, max_budget_usd: BUDGET },
     providers: { [PROVIDER]: ((parseToml(fs.readFileSync(PROVIDERS_FILE, 'utf8')) as { providers?: Record<string, unknown> }).providers ?? {})[PROVIDER] ?? (() => {
       console.error(`no [providers.${PROVIDER}] in ${PROVIDERS_FILE}`);
       process.exit(2);
     })() },
   }
-  : { agents: { ...(MODEL ? { model: MODEL } : {}), max_budget_usd: 2 } };
+  : { agents: { ...(MODEL ? { model: MODEL } : {}), max_budget_usd: BUDGET } };
 
 const t0 = Date.now();
 const say = (msg: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s] ${msg}`);

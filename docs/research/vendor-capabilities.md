@@ -762,5 +762,28 @@ Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider ope
 <!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
-*(none yet)*
+**F-120 ✔✔ OpenRouter: `anthropic/claude-haiku-5.5` is live and can call tools; its `:batch` variant is the asynchronous Batch API only; a key's credit limit can reset daily** (checked 2026-10-07 from OpenRouter's live API and docs, then with the project's key; pinned CLI 2.1.287).
+- **The model:** `anthropic/claude-haiku-5.5` (served as `claude-haiku-5.5-20261007`).
+  - 1,000,000 tokens of context, 128,000 of output.
+  - Supported parameters include `tools` and `tool_choice`.
+  - Endpoints: Anthropic (100% uptime over the 30 minutes before the check), Amazon Bedrock, Google Vertex, Azure and Claude Platform on AWS.
+- **Its prices, per million tokens:**
+  - input $0.10, output $0.50, cache read $0.01, cache write $0.125 (five minutes) or $0.20 (one hour);
+  - a prompt over 100,000 tokens is billed at five times those rates.
+  - That's cheaper than D-104's DeepSeek on Parasail ($0.30 in, $1.20 out).
+- **`:batch` can't serve an agent.** `anthropic/claude-haiku-5.5:batch` has one endpoint (Anthropic), at half price. OpenRouter's `:batch` variants serve its Batch API:
+  - requests are submitted together, and results come back asynchronously within a 24-hour window;
+  - a request with `stream: true` is rejected.
+
+  Claude Code needs streamed Messages responses, so a `:batch` model can't drive a session.
+- **A daily cap:** a key can carry a credit `limit` with `limitReset` set to `daily` (or `weekly`, `monthly`).
+- **With the project's key:** `scripts/provider-check.ts --provider openrouter-haiku55` passed all three stages.
+  - It called a tool through the Messages API.
+  - A hardened Claude Code session used Read and a harness MCP tool.
+  - It acted on a notice riding a tool result and on one at the Stop hook.
+  - Stage 2 cost $0.0034 at the table's prices (6,014 in, 208 out, 32,157 cache reads, 19,224 cache writes).
+  - The CLI logs `[claude-code:unrecognized_model]` for the id, as with DeepSeek (F-113).
+- **A real `demo:0b` on it:** Haiku 5.5 stayed inside its task's declared scope. It reported `task_blocked` to the human rather than edit a test fixture its change broke outside the scope. DeepSeek's runs had passed the same demo.
+
+Sources: [models](https://openrouter.ai/api/v1/models), [Haiku 5.5's endpoints](https://openrouter.ai/api/v1/models/anthropic/claude-haiku-5.5/endpoints) and [its `:batch` endpoints](https://openrouter.ai/api/v1/models/anthropic/claude-haiku-5.5:batch/endpoints), [Batch API quickstart](https://openrouter.ai/docs/batch-quickstart.md), [API keys](https://openrouter.ai/docs/client-sdks/typescript/sdks/apikeys/README.md); the provider check and `demo:0b --real` runs, 2026-10-07. *Impact: D-126; the `openrouter-haiku55` table; the demo's backend scope.*
 <!-- Stream B: append new F-IDs (F-120 to F-139) above this line. -->

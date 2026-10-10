@@ -99,7 +99,7 @@ test('the example providers in docs/examples/providers.toml are valid config (RE
   const fs = await import('node:fs');
   const raw = parse(fs.readFileSync(new URL('../../../docs/examples/providers.toml', import.meta.url), 'utf8')) as Record<string, unknown>;
   const c = parseConfig({ ...base, ...raw }, TOKEN);
-  assert.deepEqual(Object.keys(c.providers).sort(), ['deepseek', 'haiku', 'kimi', 'openrouter', 'openrouter-free', 'openrouter-haiku']);
+  assert.deepEqual(Object.keys(c.providers).sort(), ['deepseek', 'haiku', 'kimi', 'openrouter', 'openrouter-free', 'openrouter-haiku', 'openrouter-haiku55']);
   for (const p of Object.values(c.providers)) {
     assert.ok(p.baseUrl === null || p.baseUrl.startsWith('https://'), p.name);
     if (p.baseUrl) assert.ok(p.prices[p.model], `${p.name} prices its model, so M8 and budgets aren't the vendor's guess`);
