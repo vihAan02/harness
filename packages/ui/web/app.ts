@@ -25,6 +25,7 @@ const NO_PROJECTS = "This Mac's harnessd has no projects.";
 const NOT_BUILT = "This part of the UI isn't built yet.";
 const HEALTH_MS = 10_000;
 const APPROVALS_MS = 5_000;
+const SNAPSHOT_RETRY_MS = 2_000;
 
 /** A route name (the first hash segment) to the view module that serves it. */
 const routes: Record<string, string> = {
@@ -173,7 +174,7 @@ async function route(): Promise<void> {
 
   if (currentProject() === null) { viewEl.append(el('p', { class: 'muted' }, 'Loading…')); return; }
 
-  const spec = routes[name];
+  const spec = Object.hasOwn(routes, name) ? routes[name] : undefined;
   if (spec === undefined) { showNotBuilt(); return; }
   let view: View | undefined;
   try {
@@ -196,16 +197,26 @@ function notify(): void {
 }
 
 async function refreshSnapshot(): Promise<void> {
+  let ok = false;
   try {
     const list = await api.snapshot();
     if (Array.isArray(list)) {
       projects = new Map(list.map((p) => [p.project_id, p]));
       lastError = null;
+      ok = true;
     }
   } catch (e) {
     lastError = asApiError(e);
   }
+  if (!ok) scheduleSnapshotRetry();
   notify();
+}
+
+let snapshotRetry: ReturnType<typeof setTimeout> | null = null;
+/** The first snapshot failing keeps the banner and retries every 2 s until one answer arrives. */
+function scheduleSnapshotRetry(): void {
+  if (snapshotRetry !== null) return;
+  snapshotRetry = setTimeout(() => { snapshotRetry = null; void refreshSnapshot(); }, SNAPSHOT_RETRY_MS);
 }
 
 async function refreshHealth(): Promise<void> {
@@ -245,7 +256,8 @@ async function start(): Promise<void> {
   void refreshHealth();
   void refreshApprovals();
   await refreshSnapshot();
-  if (currentProject() === null) { showPlain(NO_PROJECTS); return; }
+  // An empty list is "no projects"; a failed snapshot keeps the banner and retries (refreshSnapshot).
+  if (projects.size === 0 && lastError === null) { showPlain(NO_PROJECTS); return; }
   api.stream({ snapshot: onSnapshot, state: onStreamState });
   setInterval(() => { void refreshHealth(); }, HEALTH_MS);
   setInterval(() => { void refreshApprovals(); }, APPROVALS_MS);

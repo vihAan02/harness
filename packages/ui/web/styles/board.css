@@ -1,0 +1,100 @@
+/* The board's stylesheet (D-117). System fonts only, no external requests. Colour is never the only signal: each
+   coloured class carries words beside it (badges, "online"/"offline", "over budget"). Reads at 360 px. */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.panel h2 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.panel h3 { margin: 0.6rem 0 0.3rem; font-size: 0.95rem; color: var(--muted); }
+
+.attention {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.35rem;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--panel);
+}
+button.attention { cursor: pointer; }
+.attention.level-act { border-left-color: var(--error); }
+.attention.level-warn { border-left-color: #b7791f; }
+.attention.level-info { border-left-color: var(--accent); }
+
+.badge {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--line);
+}
+.level-act .badge { color: var(--error); border-color: var(--error); }
+.level-warn .badge { color: #8a5a00; border-color: #b7791f; }
+.level-info .badge { color: var(--accent); border-color: var(--accent); }
+
+.attention-title { font-weight: 500; }
+.attention-detail { display: block; font-size: 0.85em; margin-top: 0.15rem; }
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.6rem;
+  align-items: start;
+}
+
+.column {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem;
+  min-width: 0;
+}
+.column h3 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+
+.card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem;
+  margin-bottom: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+.card:hover:not(:disabled) { border-color: var(--accent); }
+.card-id { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8em; color: var(--muted); }
+.card-title { display: block; font-weight: 600; }
+.card-words { display: block; font-size: 0.85em; color: var(--muted); }
+.card-detail { display: block; font-size: 0.8em; }
+.card-meta { display: block; margin-top: 0.3rem; font-size: 0.75em; color: var(--muted); }
+.card-meta > span { display: inline-block; margin-right: 0.5rem; }
+
+.presence-row { margin: 0.15rem 0; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; }
+.dot { font-size: 0.8em; }
+.dot.online { color: var(--ok); }
+.dot.offline { color: var(--muted); }
+
+.budget-line { margin: 0; }
+.budget-words.level-warn { color: #8a5a00; }
+.budget-words.level-over { color: var(--error); font-weight: 600; }
+
+.newtask { display: flex; flex-direction: column; gap: 0.2rem; }
+.newtask label { font-weight: 600; margin-top: 0.4rem; }
+.newtask .error:empty { display: none; }
+.newtask-status { margin: 0.4rem 0 0; color: var(--muted); }
+
+@media (max-width: 700px) {
+  .columns { grid-template-columns: 1fr; }
+}
