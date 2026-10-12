@@ -749,8 +749,9 @@ export class Daemon {
     this.log(`held ${what.replace(/,$/, '')}: ${hits.map((h) => `${h.rule} ("${h.excerpt}")`).join('; ')}. Review it with: harness approve ${req.id}`);
     const deadline = Date.now() + (this.o.approvalTimeoutMs ?? 30 * 60_000);
     while (!this.stopping && Date.now() < deadline) {
-      if (this.approvals.isApproved(projectId, hash)) return true;
-      if (!this.approvals.pending().some((r) => r.id === req.id && r.projectId === projectId)) {
+      const d = this.approvals.decision(projectId, hash, req.id);
+      if (d === 'approved') return true;
+      if (d === 'denied') {
         this.log(`${taskId}: not started; its human denied the review`);
         return 'denied';
       }
@@ -884,8 +885,8 @@ export class Daemon {
     this.log(`${task.id}: ${env.issuer_human_id} asks ${agent.name} to ${env.kind} it; it waits for your approval: harness approve ${req.id}`);
     const deadline = Date.parse(env.expires_at);
     while (!this.stopping && Date.now() < deadline) {
-      if (this.approvals.isApproved(projectId, hash)) return 'approved';
-      if (!this.approvals.pending().some((r) => r.id === req.id && r.projectId === projectId)) return 'denied';
+      const d = this.approvals.decision(projectId, hash, req.id);
+      if (d !== 'pending') return d;
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }
     return this.stopping ? 'stopping' : 'expired';
@@ -909,11 +910,12 @@ export class Daemon {
 
   async awaitReview(run: RunningAgent, m: MessageInfo, hash: string, id: string): Promise<void> {
     while (this.running.get(run.taskId) === run && !this.stopping) {
-      if (this.approvals.isApproved(run.projectId, hash)) {
+      const d = this.approvals.decision(run.projectId, hash, id);
+      if (d === 'approved') {
         this.log(`message ${m.id}: released by its human; delivering it to ${run.agent.name}`);
         return this.deliver(run, m);
       }
-      if (!this.approvals.pending().some((r) => r.id === id && r.projectId === run.projectId)) {
+      if (d === 'denied') {
         this.screenDenied.add(m.id);
         this.log(`message ${m.id} to ${run.agent.name}: not delivered; its human denied it`);
         return;
@@ -2186,8 +2188,8 @@ export class Daemon {
   /** A decision with no deadline (the publish approval): approved, or denied (the request withdrawn), or harnessd stopping. */
   async waitForDecision(projectId: string, hash: string, id: string): Promise<'approved' | 'denied'> {
     for (;;) {
-      if (this.approvals.isApproved(projectId, hash)) return 'approved';
-      if (!this.approvals.pending().some((r) => r.id === id && r.projectId === projectId)) return 'denied';
+      const d = this.approvals.decision(projectId, hash, id);
+      if (d !== 'pending') return d;
       if (this.stopping) throw new Error('harnessd stopped while waiting for approval');
       await new Promise((r) => setTimeout(r, this.o.approvalPollMs ?? 500));
     }

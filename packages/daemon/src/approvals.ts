@@ -66,6 +66,17 @@ export class Approvals {
     return Boolean(readJson<Record<string, Approved>>(this.home.approvals, {})[`${projectId}:${hash}`]);
   }
 
+  /**
+   * Where a request stands, for the loops that wait on one. approve() writes the grant before it removes the request, so
+   * a request found gone is read against the grants once more: the human may have approved it between the two reads,
+   * and that's an approval, never a denial.
+   */
+  decision(projectId: string, hash: string, id: string): 'approved' | 'denied' | 'pending' {
+    if (this.isApproved(projectId, hash)) return 'approved';
+    if (this.pending().some((r) => r.id === id && r.projectId === projectId)) return 'pending';
+    return this.isApproved(projectId, hash) ? 'approved' : 'denied';
+  }
+
   /** Records a request for the human; one per (project, hash), whichever task asked first. */
   request(r: NewRequest): ApprovalRequest {
     const req: ApprovalRequest = { ...r, id: r.hash.slice(0, 12), requestedAt: new Date().toISOString() };
