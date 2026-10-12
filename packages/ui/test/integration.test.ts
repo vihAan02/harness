@@ -211,7 +211,7 @@ test('budget: a session may not fit when the room left is under the cap', () => 
 test('budget: a running session with no cost reads "not reported yet", never $0', () => {
   const running = { id: 's1', agent_id: 'a1', device_id: 'dev-1', status: 'running', started_at: 'x', ended_at: null, end_reason: null, model: 'claude', cost_usd: 0, input_tokens: 0, output_tokens: 0 };
   const ended = { ...running, id: 's2', status: 'ended', ended_at: 'y', cost_usd: 1.5 };
-  const model = budgetModel(snapshot({ tasks: [task({ id: 'T-1', session: running }), task({ id: 'T-2', session: ended })] }));
+  const model = budgetModel(snapshot({ tasks: [task({ id: 'T-1', session: running, cost_usd: 0 }), task({ id: 'T-2', session: ended, cost_usd: 1.5 })] }));
   const byId = new Map(model.tasks.map((t) => [t.task, t]));
   assert.equal(byId.get('T-1')?.reported, false, 'a running session with no cost is not reported');
   assert.equal(byId.get('T-2')?.reported, true);
@@ -219,8 +219,26 @@ test('budget: a running session with no cost reads "not reported yet", never $0'
   // Most expensive first.
   assert.deepEqual(model.tasks.map((t) => t.task), ['T-2', 'T-1']);
   // A session that ended at $0 is a real $0, and is reported.
-  const zero = budgetModel(snapshot({ tasks: [task({ id: 'T-3', session: { ...running, id: 's3', ended_at: 'z', cost_usd: 0 } })] }));
+  const zero = budgetModel(snapshot({ tasks: [task({ id: 'T-3', session: { ...running, id: 's3', ended_at: 'z', cost_usd: 0 }, cost_usd: 0 })] }));
   assert.equal(zero.tasks[0]?.reported, true);
+});
+
+test('budget: a task shows its own cost (all its sessions), not just its live session', () => {
+  const live = { id: 's2', agent_id: 'a1', device_id: 'dev-1', status: 'running', started_at: 'y', ended_at: null, end_reason: null, model: 'claude', cost_usd: 0, input_tokens: 0, output_tokens: 0 };
+  // T-1's live session has reported nothing, but an earlier session cost $0.02: the task total is real money.
+  const model = budgetModel(snapshot({ tasks: [task({ id: 'T-1', session: live, cost_usd: 0.02 })] }));
+  assert.equal(model.tasks[0]?.costUsd, 0.02, "the task's own cost, not its last session's");
+  assert.equal(model.tasks[0]?.reported, true);
+  // A task with no cost at all and a live session still reports nothing.
+  const fresh = budgetModel(snapshot({ tasks: [task({ id: 'T-2', session: live, cost_usd: 0 })] }));
+  assert.equal(fresh.tasks[0]?.costUsd, 0);
+  assert.equal(fresh.tasks[0]?.reported, false);
+});
+
+test('integrate: a task with no agent says so, not the same unknown twice', () => {
+  const model = integrationModel(ready({}, { assignee_agent_id: null }), false);
+  assert.equal(model.rows[0]?.integrate.allowed, false);
+  assert.equal(model.rows[0]?.integrate.why, 'it has no agent');
 });
 
 test('budget: an open circuit is resettable unless it is a budget circuit', () => {

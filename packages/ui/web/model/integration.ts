@@ -92,7 +92,10 @@ function inFlightLand(snap: ProjectSnapshot): NonNullable<TaskSnapshot['land']> 
 
 /** The first integrate precondition that fails, or null when every one holds. Order is the order it is shown. */
 function whyNot(snap: ProjectSnapshot, t: TaskSnapshot, offline: boolean): string | null {
-  if (snap.principal !== agentHuman(snap, t)) return `only ${agentHuman(snap, t) ?? "the agent's human"}, the agent's human, can integrate`;
+  // A task with no agent has no accountable human: say so rather than naming the same unknown twice.
+  const human = agentHuman(snap, t);
+  if (human === null) return 'it has no agent';
+  if (snap.principal !== human) return `only ${human}, the agent's human, can integrate`;
   const pr = t.pr;
   if (pr === null || pr.state !== 'open') return "the PR isn't open";
   const missing = REQUIRED.filter((name) => (pr.checks[name] ?? '') !== 'success');
@@ -200,13 +203,14 @@ export function budgetModel(snap: ProjectSnapshot): BudgetModel {
     words.push('No daily budget set');
   }
 
-  // Each task with a session, by cost, most expensive first; a still-running session with no cost reads as unreported.
+  // Each task with a session, by its own cost (all its sessions), most expensive first. A task is unreported only while
+  // its live session has reported nothing and the task total is still 0: an earlier session's cost is real money.
   const tasks = snap.tasks
     .filter((t) => t.session !== null)
     .map((t) => ({
       task: t.id,
-      costUsd: t.session?.cost_usd ?? 0,
-      reported: !(t.session !== null && t.session.ended_at === null && (t.session.cost_usd ?? 0) === 0),
+      costUsd: t.cost_usd,
+      reported: !(t.cost_usd === 0 && t.session !== null && t.session.ended_at === null),
     }))
     .sort((a, b) => (a.costUsd === b.costUsd ? (a.task < b.task ? -1 : a.task > b.task ? 1 : 0) : b.costUsd - a.costUsd));
 

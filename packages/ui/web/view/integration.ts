@@ -17,6 +17,7 @@ import type { IntegrationModel, IntegrationRow } from '../model/integration.ts';
 
 const NONE = 'None';
 const CONFLICT = "The PR's head or base changed since you looked; review the new head.";
+const PANEL_CONFLICT = 'The PR\'s head or base changed since you opened this; cancel and look again.';
 
 /** The in-flight land, or nothing. It comes first: one integration at a time. */
 function inFlightSection(model: IntegrationModel): HTMLElement {
@@ -91,7 +92,15 @@ function integrateControl(task: string, ctx: ViewContext): Control {
   };
   listen(cancelButton, 'click', close);
 
-  /** Re-render the panel from `row`: the exact head and base and every check, and the Action's state. */
+  /** Whether the row's current expected still matches the one captured when the panel opened. */
+  const expectedChanged = (row: IntegrationRow): boolean => {
+    const e = state.expected;
+    const now = row.expected;
+    if (e === null || now === null) return true;
+    return e.pr_number !== now.pr_number || e.head_sha !== now.head_sha || e.base_sha !== now.base_sha;
+  };
+
+  /** Re-render the panel from `row`: the captured head and base, every current check, and the change notice. */
   const renderPanel = (row: IntegrationRow): void => {
     if (state.expected === null) return;
     clear(body);
@@ -103,6 +112,7 @@ function integrateControl(task: string, ctx: ViewContext): Control {
       el('h4', {}, 'Checks'),
       checksCell(row),
     );
+    if (expectedChanged(row)) body.append(el('p', { class: 'integrate-changed' }, PANEL_CONFLICT));
   };
 
   let lastRow: IntegrationRow | null = null;
@@ -119,7 +129,7 @@ function integrateControl(task: string, ctx: ViewContext): Control {
     if (state.action !== null && state.action.status !== 'idle') status.append(state.action.label());
     else if (why !== null) status.append(why);
     if (state.action !== null && state.action.status === 'conflict') { clear(status); status.append(CONFLICT); }
-    sendButton.disabled = offline || (state.action !== null && state.action.busy());
+    sendButton.disabled = offline || expectedChanged(row) || (state.action !== null && state.action.busy());
     cancelButton.disabled = state.action !== null && state.action.busy();
     if (panel.hidden === false) renderPanel(row);
   };
@@ -275,6 +285,7 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
   });
 
   let lastKey: string | null = null;
+  let lastSpendKey: string | null = null;
 
   function controlFor(task: string): Control {
     let c = controls.get(task);
@@ -317,9 +328,14 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
         alertsSection(model),
       );
     }
-    // Rebuild the spend panel every render: it has no persistent controls of its own beyond the reset Action.
-    clear(spentWrap);
-    spentWrap.append(spendSection(snap, resetControl));
+    // Rebuild the spend panel only when its own model changed: a rebuild would move the Reset button out of the page
+    // and drop its focus, so the panel (and with it the button's place) is kept across renders while it is unchanged.
+    const spendKey = JSON.stringify(budgetModel(snap));
+    if (spendKey !== lastSpendKey) {
+      lastSpendKey = spendKey;
+      clear(spentWrap);
+      spentWrap.append(spendSection(snap, resetControl));
+    }
     if (root.firstChild !== data) {
       clear(root);
       root.append(data, spentWrap);
