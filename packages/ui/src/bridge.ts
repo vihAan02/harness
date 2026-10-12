@@ -292,7 +292,13 @@ export function startBridge(o: BridgeOptions): Promise<{ url: string; close(): P
         res.writeHead(out.status, out.headers);
         if ('stream' in out) {
           const off = out.stream((line) => { if (!res.writableEnded) res.write(`${line}\n`); });
-          const stop = () => { off(); open.delete(stop); };
+          // Ending the response here too: close() runs this for every open stream, and server.close() waits for the
+          // response to end, so without it close() would hang while a page is subscribed.
+          const stop = () => {
+            off();
+            if (!res.writableEnded && !res.destroyed) res.end();
+            open.delete(stop);
+          };
           open.add(stop);
           res.on('close', stop);
           return;
