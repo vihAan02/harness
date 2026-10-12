@@ -164,7 +164,6 @@ function sameParams(a: string[], b: string[]): boolean {
 }
 
 async function route(): Promise<void> {
-  const gen = ++routeGeneration;
   if (!api.hasSession()) { showPlain(SESSION_MESSAGE); return; }
   const parts = location.hash.replace(/^#/, '').split('/').filter((s) => s !== '');
   const name = parts[0] ?? '';
@@ -172,6 +171,9 @@ async function route(): Promise<void> {
   if (mountedName === name && sameParams(mountedParams, params)) return;
   // A second call for a route whose import is already in flight is a no-op: it would mount the same view again.
   if (pendingRoute !== null && pendingRoute.name === name && sameParams(pendingRoute.params, params)) return;
+  // Only a call that goes on to change the view takes a generation; the early returns above must not bump it,
+  // or a repeat call for the route in flight would stale the first call and leave the view blank.
+  const gen = ++routeGeneration;
 
   // Unmount the previous view before mounting the next.
   if (unmountView) { unmountView(); unmountView = null; }
