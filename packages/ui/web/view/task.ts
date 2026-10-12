@@ -18,6 +18,23 @@ function dollars(n: number): string {
   return `$${n.toFixed(3)}`;
 }
 
+/** A live session's cost is 0 until harnessd reports it: say so, so "0.000" never reads as free. */
+function sessionCost(session: { status: string; costUsd: number }): string {
+  if (session.status !== 'ended' && session.costUsd === 0) return 'cost not reported yet';
+  return dollars(session.costUsd);
+}
+
+/** The session line: "live · model · cost · tokens", or "ended: <reason>" instead of the status once it has ended. */
+function sessionWords(session: { status: string; model: string | null; endReason: string | null; costUsd: number; input: number; output: number }): (string | null)[] {
+  const ended = session.status === 'ended';
+  const state = ended ? (session.endReason !== null ? `ended: ${session.endReason}` : 'ended') : session.status;
+  return [
+    state,
+    session.model !== null ? ` · ${session.model}` : null,
+    ` · ${sessionCost(session)} · ${session.input} in, ${session.output} out`,
+  ];
+}
+
 /** A list of strings, or one line saying there is nothing yet. */
 function list(items: string[], empty: string): HTMLElement {
   if (items.length === 0) return el('p', { class: 'muted' }, empty);
@@ -84,7 +101,7 @@ function dataContainer(model: TaskModel, ctx: ViewContext): HTMLElement {
       el('p', {}, `${dollars(model.costUsd)} in total`),
       model.session === null
         ? el('p', { class: 'muted' }, 'No session yet')
-        : el('p', {}, `${model.session.status}${model.session.model !== null ? ` · ${model.session.model}` : ''}${model.session.endReason !== null ? ` · ended: ${model.session.endReason}` : ''} · ${dollars(model.session.costUsd)} · ${model.session.input} in, ${model.session.output} out`),
+        : el('p', {}, ...sessionWords(model.session)),
     ),
     el('section', { class: 'panel' },
       el('h2', {}, 'Task text'),

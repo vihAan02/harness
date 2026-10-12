@@ -52,6 +52,16 @@ function approvalTitle(a: PendingApproval, taskTitle: (id: string) => string): s
 }
 
 /**
+ * The board's one-line detail for an approval: its command's first line, cut to 160 characters. A publish command is
+ * the whole PR body, and an agent_session or security_review approval's own page shows everything — those give null.
+ */
+function approvalDetail(a: PendingApproval): string | null {
+  if (a.kind === 'publish' || a.kind === 'agent_session' || a.kind === 'security_review') return null;
+  const firstLine = a.command.split('\n')[0] ?? a.command;
+  return firstLine.length > 160 ? `${firstLine.slice(0, 160)}…` : firstLine;
+}
+
+/**
  * The attention queue: "you" first (approvals, the circuit, the budget, my broken tasks, my questions), then "others".
  * `approvals` and `health` may be null when they haven't loaded yet.
  */
@@ -69,7 +79,7 @@ export function attention(
 
   // --- "you" -----------------------------------------------------------------------------------------------------
   for (const a of approvals ?? []) {
-    items.push({ key: `approval:${a.id}`, group: 'you', level: 'act', title: approvalTitle(a, titleOf), detail: a.command, route: `#/approval/${a.id}` });
+    items.push({ key: `approval:${a.id}`, group: 'you', level: 'act', title: approvalTitle(a, titleOf), detail: approvalDetail(a), route: `#/approval/${a.id}` });
   }
 
   const c = circuit(snap, health);
@@ -137,6 +147,11 @@ export function attention(
     if (m.to === null || !mineAgentIds.has(m.to)) continue;
     if (replied.has(m.id)) continue;
     const name = agentById.get(m.to)?.name ?? m.to;
+    if (m.held) {
+      const short = m.text.length > 120 ? m.text.slice(0, 120) : m.text;
+      items.push({ key: `question:${m.id}`, group: 'you', level: 'warn', title: `A message to ${name} is held for your review: ${short}`, detail: null, route: m.to_task !== null ? `#/task/${m.to_task}` : null });
+      continue;
+    }
     const short = m.text.length > 120 ? m.text.slice(0, 120) : m.text;
     items.push({ key: `question:${m.id}`, group: 'you', level: 'info', title: `${name} was asked: ${short}`, detail: null, route: m.to_task !== null ? `#/task/${m.to_task}` : null });
   }
