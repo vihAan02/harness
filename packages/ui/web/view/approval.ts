@@ -34,48 +34,54 @@ function body(model: ApprovalModel, controls: HTMLElement): (Node | string)[] {
 
 export function mount(root: HTMLElement, ctx: ViewContext): () => void {
   const id = ctx.params[0] ?? '';
-  const decisions: { text: string | null } = { text: null };
+  // The hash of the last body we rendered: approving binds the click to what the human was shown, not to a fresh read.
+  // `rendered` is false when nothing has been rendered yet.
+  const state: { hash: string | null; rendered: boolean; done: string | null } = { hash: null, rendered: false, done: null };
 
-  // Built once: the Action and the buttons survive every re-render, so a pending Approve is never wiped.
+  // Built once: the two Actions and the buttons survive every re-render, so a pending send is never wiped and a double
+  // click can't send twice.
   const controls = el('div', { class: 'approval-buttons' });
   const status = el('p', { class: 'approval-status', role: 'status' });
   const approveButton = el('button', { type: 'button', class: 'approve' }, 'Approve');
   const denyButton = el('button', { type: 'button', class: 'deny' }, 'Deny');
-  const approve = new Action(() => {
-    const list = ctx.approvals();
-    const a = list !== null ? list.find((x) => x.id === id) ?? null : null;
-    // The hash of what is rendered now: approving binds the click to what the human was shown.
-    const model = a !== null ? approvalModel(a, ctx.snapshot()) : null;
-    return ctx.api.approve(id, model === null ? '' : model.hash);
-  });
+
+  const approve = new Action(() => ctx.api.approve(id, state.hash ?? ''));
+  const deny = new Action(() => ctx.api.deny(id));
+  const eitherBusy = (): boolean => approve.busy() || deny.busy();
+
   const update = (): void => {
     clear(status);
-    if (decisions.text !== null) status.append(decisions.text);
+    if (state.done !== null) status.append(state.done);
     else if (approve.status === 'conflict') status.append(CONFLICT);
-    else status.append(approve.label());
-    approveButton.disabled = ctx.offline() !== null || approve.busy();
-    denyButton.disabled = ctx.offline() !== null;
+    else if (eitherBusy()) status.append(approve.busy() ? approve.label() : deny.label());
+    approveButton.disabled = ctx.offline() !== null || eitherBusy();
+    denyButton.disabled = ctx.offline() !== null || eitherBusy();
   };
   controls.append(approveButton, denyButton);
 
-  listen(approveButton, 'click', () => {
-    if (approve.busy()) return;
-    decisions.text = null;
+  // Show the outcome only once the send succeeded and the approval is gone from the list; a failed or conflicted send
+  // shows the Action's own label instead.
+  const onSend = async (action: Action, success: string): Promise<void> => {
+    await action.send();
     update();
-    void approve.send().then(() => {
-      if (approve.status === 'conflict') decisions.text = CONFLICT;
-      if (approve.status === 'confirmed') decisions.text = GONE_APPROVED;
-      update();
-      void ctx.refreshApprovals();
-    });
+    void ctx.refreshApprovals();
+    if (action.status === 'confirmed') state.done = success;
+    else if (action.status === 'conflict') state.done = null; // update() shows CONFLICT for approve
+    else state.done = null; // failed: update() shows the Action's label
+    update();
+  };
+
+  listen(approveButton, 'click', () => {
+    if (eitherBusy()) return;
+    state.done = null;
+    update();
+    void onSend(approve, GONE_APPROVED);
   });
   listen(denyButton, 'click', () => {
-    decisions.text = GONE_DENIED;
-    void ctx.api.deny(id).then(
-      () => { void ctx.refreshApprovals(); },
-      () => { decisions.text = null; update(); },
-    );
+    if (eitherBusy()) return;
+    state.done = null;
     update();
+    void onSend(deny, GONE_DENIED);
   });
 
   const off = ctx.onChange(render);
@@ -85,18 +91,24 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
     const list = ctx.approvals();
     const a = list !== null ? list.find((x) => x.id === id) ?? null : null;
     if (a === null) {
-      clear(root);
       // Gone from the list after a send: say what happened; otherwise it was handled elsewhere.
-      root.append(el('p', { class: 'plain' }, decisions.text ?? `No pending approval ${id} on this Mac (already handled?).`));
+      clear(root);
+      root.append(el('p', { class: 'plain' }, state.done ?? `No pending approval ${id} on this Mac (already handled?).`));
       lastKey = null;
+      state.rendered = false;
       return;
     }
     const model = approvalModel(a, ctx.snapshot());
     const key = JSON.stringify(model);
-    if (key !== lastKey || root.firstChild !== controls) {
+    // Rebuild the body only when its content changed; the controls live outside the rebuilt body, so focus and a pending
+    // send survive. `!root.contains(controls)` (not `firstChild`) is the real "not mounted yet" test.
+    if (key !== lastKey || !root.contains(controls)) {
       lastKey = key;
+      state.hash = model.hash;
       clear(root);
       root.append(...body(model, controls), status);
+      // A conflict is noticed only after a send; a fresh body means the human looked again, so clear it.
+      state.done = null;
     }
     update();
   }
