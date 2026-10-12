@@ -328,7 +328,7 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 | `dispatch.rejected { task_id, nonce?, kind?, reason, detail? }` | The dispatch's target harnessd | `task.dispatch_rejected`; the server frees the agent: a start's task goes back to open, a resume or reopen's to stopped or done |
 | `task.start_failed { task_id, nonce, reason, detail? }` | harnessd | `task.start_failed`; as above |
 | `pr.publish { task_id, pr_number, url, head_sha, base_sha, remote_ref }` | The task's harnessd, after the publish gate, the local publish approval and the push | `pr.published` (stored in `task_prs`, migration 0016) |
-| `pr.status { task_id, pr_number, head_sha, state, merged, merge_sha?, mergeable_state, checks, reviews }` | The task's harnessd, when something changed | `pr.updated` |
+| `pr.status { task_id, pr_number, head_sha, state, merged, merge_sha?, mergeable_state, checks, reviews }` | The task's harnessd, on each poll | `pr.updated`, only when something changed: the checks compare by name, whatever their order |
 | `publish.blocked { task_id, reasons[{commit?, path?, rule}] }` | The task's harnessd | `publish.blocked`; nothing was pushed |
 | `land.request { task_id, mode: "github", dispatch }` | The agent's accountable human (`harness integrate`) | `land.requested { …, mode, pr_number }`. In a GitHub project, a request without `mode: "github"` is refused, `--no-tests` included |
 | `land { land_id, base_sha, head_sha, changed_paths[], … }` | The approver's harnessd | `land.accepted` (the reservation is active) or `land.rejected`. Head, base and paths must equal the approved ones; then the fencing check |

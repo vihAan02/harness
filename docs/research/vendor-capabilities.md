@@ -759,7 +759,21 @@ Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider ope
 
 *Impact:* D-117. The UI bridge reaches harnessd over this socket, and an agent can't connect to it, even knowing its path and token. Re-check when the srt or CLI pin moves, or when any sandbox settings gain a socket entry.
 
-<!-- Stream A: append new F-IDs (F-98 to F-119) above this line. -->
+**F-142 ✔ Without `allowLocalBinding`, a sandboxed agent's shell, and a land's test command under srt, can't connect to any loopback port** (checked 2026-10-12: Claude Code CLI 2.1.287 and srt 0.0.78 on macOS, `test/pilot/no-loopback.integration.test.ts`, 5 runs of 5).
+- **Observed:** with `[limits] ports_per_agent = 0` (D-143), the session gets no port block and its sandbox no `allowLocalBinding`. A Node `net.connect` to a listener on 127.0.0.1 from the agent's Bash gets `EPERM`, and the same probe as harness.yaml's test command fails the land as `tests` with `EPERM`. The control: a device that hands out ports (the default) connects from both.
+- **Why:** F-58's `(allow network-outbound (remote ip "localhost:*"))` comes only with `allowLocalBinding`; without it, the profile allows outbound traffic only to its own proxy.
+- **Not covered:** Linux; a password-less Postgres listening on a non-loopback address the proxy allows (none here: `allowedDomains` is empty for agents).
+
+*Impact:* D-143. A device with `ports_per_agent = 0` keeps real agents away from a password-less loopback Postgres (TH-22) without changing the database. Re-check when the srt or CLI pin moves.
+
+**F-143 ◐ On OpenRouter's Anthropic-compatible endpoint, DeepSeek V4.1-Flash (Parasail, fp8) reasons unless the request says `thinking: {type: "disabled"}`; `output_config.effort` and OpenRouter's `reasoning.enabled` are ignored, and the CLI leaves `thinking` out when it's disabled** (checked 2026-10-12: one direct probe per setting, $0.00012 in all; the mock for the CLI's side; two real sessions).
+- **The probe** (17 × 23, `max_tokens` 300, `provider.only = ["parasail/fp8"]`): the CLI's defaults (`thinking: adaptive`, `effort: high`), `effort: low` and `reasoning: {enabled: false}` each answered with a thinking block (21 or 22 output tokens); `thinking: {type: "disabled"}` answered with text only (2 output tokens).
+- **The CLI** (pinned 2.1.287, the scripted mock): with the SDK's `effort: 'low'` every main request carries `output_config.effort: "low"`; with `thinking: {type: 'disabled'}` the field is simply absent, which a model that reasons by default reads as on.
+- **Two real UI tasks** (T-1, T-2 of the UI dogfood, 2026-10-12): at the CLI's defaults T-1 wrote 178k characters of thinking against 83k of code and text, 74.5k output tokens, $0.119 at the configured prices. T-2, with `effort = "low"`, wrote 165k characters of thinking, $0.130. So the setting saved nothing.
+
+*Impact:* D-144. `thinking = false` in a provider table sends `thinking: {type: "disabled"}` through the extra body. Its effect on a whole task, in cost and in quality, isn't measured yet: the first session with it is the measurement. ◐ until then.
+
+<!-- Stream A: append new F-IDs (F-98 to F-119, then F-140 to F-149 per D-110) above this line. -->
 
 ### Stream B (Vihaan; F-120 to F-139)
 **F-120 ✔✔ OpenRouter: `anthropic/claude-haiku-5.5` is live and can call tools; its `:batch` variant is the asynchronous Batch API only; a key's credit limit can reset daily** (checked 2026-10-07 from OpenRouter's live API and docs, then with the project's key; pinned CLI 2.1.287).

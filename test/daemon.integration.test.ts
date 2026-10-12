@@ -87,7 +87,7 @@ test('harnessd prepares, sets up, commits and tears down task workspaces, report
   // t2: same command and manifests, already approved, so no prompt.
   const ws2 = await daemon.prepareTask({ projectId: project, taskId: 't2', baseSha: sha, agentId: 'agent_two' });
   assert.deepEqual([(await nextWork()).kind, (await nextWork()).kind], ['worktree.created', 'setup.ran']);
-  assert.notEqual(ws2.ports.base, ws1.ports.base);
+  assert.notEqual(ws2.ports!.base, ws1.ports!.base);
 
   // t3: two tasks are active, which is the 0A limit (D-38). Refused before any worktree exists.
   await assert.rejects(daemon.prepareTask({ projectId: project, taskId: 't3', baseSha: sha, agentId: 'agent_three' }), /limit is 2/);

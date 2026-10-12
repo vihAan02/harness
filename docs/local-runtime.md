@@ -115,6 +115,7 @@ limits:                            # repo values can only LOWER local limits (D-
 - Each agent gets a block, for example agent 1 → 3100–3109 and agent 2 → 3110–3119.
   - Blocks stay **outside the OS ephemeral range**, because every Claude Code process binds an ephemeral loopback port for its own sandbox proxy (SP-08).
   - The session's sandbox gets `network.allowLocalBinding: true`; without it the agent can't bind its ports at all (D-68).
+  - `[limits] ports_per_agent = 0` gives agents no block, so no `allowLocalBinding` and no loopback access at all, and a land's tests run without it too (D-143, F-142). Use it on a device whose agents need no ports, such as one beside a password-less local database.
 - `harnessd` sets `PORT` to the first port of the block, plus `HARNESS_PORT_BASE` and `HARNESS_PORT_COUNT`.
 - The adapter's system prompt tells the agent to use them. Nobody should be hoping everyone uses port 3000 nicely.
 
