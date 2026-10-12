@@ -102,8 +102,9 @@ function budgetSection(snap: ProjectSnapshot): HTMLElement {
   );
 }
 
-/** A new-task form: title, description and scope, each error shown by its own field. */
-function newTaskForm(ctx: ViewContext): HTMLElement {
+/** A new-task form: title, description and scope, each error shown by its own field. Built once; its Action and typed
+ * text survive every re-render, so a pending Create is never wiped and a second click can't double-send. */
+function newTaskForm(ctx: ViewContext): { form: HTMLElement; update: () => void } {
   const titleInput = el('input', { id: 'nt-title', name: 'title', type: 'text', maxlength: '200' });
   const textArea = el('textarea', { id: 'nt-text', name: 'text', rows: '4' });
   const scopeArea = el('textarea', { id: 'nt-scope', name: 'scope', rows: '3' });
@@ -120,7 +121,12 @@ function newTaskForm(ctx: ViewContext): HTMLElement {
   textArea.setAttribute('aria-describedby', 'nt-text-error');
   scopeArea.setAttribute('aria-describedby', 'nt-scope-error');
 
-  const render = (): void => {
+  // Re-observed against the latest snapshot on every change; the inputs clear only when the action confirms.
+  const update = (): void => {
+    const snap = ctx.snapshot();
+    if (state.action !== null && snap !== null && state.action.observe(snap)) {
+      titleInput.value = ''; textArea.value = ''; scopeArea.value = '';
+    }
     clear(status);
     if (state.action !== null) status.append(state.action.label());
     create.disabled = ctx.offline() !== null || (state.action !== null && state.action.busy());
@@ -145,6 +151,8 @@ function newTaskForm(ctx: ViewContext): HTMLElement {
 
   const onSubmit = (e: Event): void => {
     e.preventDefault();
+    // A pending or confirmed action is not re-sent: a second click while busy is a no-op.
+    if (state.action !== null && state.action.status !== 'failed' && state.action.status !== 'conflict') return;
     const result = newTaskModel({ title: titleInput.value, text: textArea.value, scope: scopeArea.value });
     if (!result.ok) { showErrors(result.errors); return; }
     showErrors({});
@@ -153,51 +161,63 @@ function newTaskForm(ctx: ViewContext): HTMLElement {
     const args = result.args;
     const action = new Action((commandId) => ctx.api.command(snap.project_id, 'task.create', args, commandId));
     state.action = action;
-    render();
-    void action.send().then(() => render());
+    update();
+    void action.send().then(() => update());
   };
   listen(form, 'submit', onSubmit);
 
-  // The view re-observes the action on every change; mount calls this.
-  (form as HTMLElement & { __observe?: () => void }).__observe = () => {
-    const snap = ctx.snapshot();
-    if (state.action !== null && snap !== null && state.action.observe(snap)) {
-      titleInput.value = ''; textArea.value = ''; scopeArea.value = '';
-    }
-    render();
-  };
-  render();
-  return form;
+  update();
+  return { form, update };
+}
+
+/** The board's data: the two attention lists and the columns. It is rebuilt only when its content changed, so a
+ * re-render every few seconds doesn't steal focus from a card or an attention button. */
+function dataContainer(snap: ProjectSnapshot, items: AttentionItem[], ctx: ViewContext): HTMLElement {
+  const you = items.filter((i) => i.group === 'you');
+  const others = items.filter((i) => i.group === 'others');
+  return el('div', { class: 'board-data' },
+    attentionSection('Waiting for you', 'Nothing needs you.', you, ctx),
+    attentionSection('Waiting on others', 'Nothing waiting on others.', others, ctx),
+    columnsSection(snap, ctx),
+  );
 }
 
 export function mount(root: HTMLElement, ctx: ViewContext): () => void {
-  const render = (): void => {
+  // The form is built once, outside render, so typed text, focus and a pending Create survive every change.
+  const { form, update } = newTaskForm(ctx);
+  const data = el('div', { class: 'board-data-wrap' });
+  const off = ctx.onChange(render);
+  let lastKey: string | null = null;
+
+  function render(): void {
     const snap = ctx.snapshot();
     if (snap === null) {
       clear(root);
       root.append(el('p', { class: 'muted' }, 'Loading…'));
+      lastKey = null;
       return;
     }
     const items = attention(snap, ctx.approvals(), ctx.health(), Date.now());
-    const you = items.filter((i) => i.group === 'you');
-    const others = items.filter((i) => i.group === 'others');
+    const board = boardModel(snap);
+    // Rebuild the data only when what it shows changed; the two models are the whole of what it shows.
+    const key = JSON.stringify({ items, board });
+    if (key !== lastKey) {
+      lastKey = key;
+      clear(data);
+      data.append(
+        dataContainer(snap, items, ctx),
+        presenceSection(snap),
+        budgetSection(snap),
+      );
+    }
+    // The chrome is rebuilt once; only the data and the form's live state change thereafter.
+    if (root.firstChild !== data) {
+      clear(root);
+      root.append(data, form);
+    }
+    update();
+  }
 
-    const form = newTaskForm(ctx);
-    const observe = (form as HTMLElement & { __observe?: () => void }).__observe;
-
-    clear(root);
-    root.append(
-      attentionSection('Waiting for you', 'Nothing needs you.', you, ctx),
-      attentionSection('Waiting on others', 'Nothing waiting on others.', others, ctx),
-      presenceSection(snap),
-      budgetSection(snap),
-      form,
-      columnsSection(snap, ctx),
-    );
-    observe?.();
-  };
-
-  const off = ctx.onChange(render);
   render();
   return () => { off(); clear(root); };
 }

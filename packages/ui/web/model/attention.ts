@@ -143,6 +143,8 @@ export function attention(
 
   // --- "others" --------------------------------------------------------------------------------------------------
   for (const t of snap.tasks) {
+    const agent = t.assignee_agent_id !== null ? agentById.get(t.assignee_agent_id) ?? null : null;
+    const mine = t.owner_human_id === snap.principal || (agent?.human_id ?? null) === snap.principal;
     if (t.state === 'awaiting_approval') {
       const agent = t.assignee_agent_id !== null ? agentById.get(t.assignee_agent_id) ?? null : null;
       const human = agent?.human_id ?? null;
@@ -163,7 +165,7 @@ export function attention(
       default:
         break;
     }
-    if (t.open_wait !== null) {
+    if (t.open_wait !== null && mine) {
       items.push({
         key: `wait:${t.id}`, group: 'others', level: 'info',
         title: `${t.id}'s agent waits for ${t.open_wait.on.kind} ${t.open_wait.on.id}`,
