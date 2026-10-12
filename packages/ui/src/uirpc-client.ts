@@ -125,23 +125,32 @@ export class UirpcClient {
 
   /**
    * Opens its own connection and subscribes to `events`. onState('up') follows the {ok:true} reply; a drop is
-   * onState('down') once, then a reconnect after backoffMs[min(attempt, last)]. An 'up' resets the attempt count.
-   * The returned function stops the stream for good.
+   * onState('down') once, then a reconnect after backoffMs[min(attempt, last)]. A connection that fails or closes
+   * before any 'up' also reports 'down' once — so a stream that never reaches harnessd still says so — and 'down' is
+   * not repeated until the next 'up'. An 'up' resets the attempt count. The returned function stops the stream for good.
    */
   stream(onMessage: (m: StreamMessage) => void, onState: (s: 'up' | 'down') => void): () => void {
     let stopped = false;
     let up = false;
-    let emittedUp = false;
+    let reportedDown = false;
     let attempt = 0;
     let c: Duplex | null = null;
     let buf = '';
     let timer: NodeJS.Timeout | null = null;
 
+    /** One 'down' per drop, including a drop before any 'up'; not again until the next 'up'. */
+    const reportDown = () => {
+      if (stopped || reportedDown) return;
+      reportedDown = true;
+      up = false;
+      onState('down');
+    };
+
     const open = () => {
       if (stopped) return;
       buf = '';
       let conn: Duplex;
-      try { conn = this.connect(); } catch { return void schedule(); }
+      try { conn = this.connect(); } catch { reportDown(); return void schedule(); }
       c = conn;
       conn.setEncoding('utf8');
       conn.on('data', (chunk: string | Buffer) => {
@@ -159,7 +168,7 @@ export class UirpcClient {
         if (conn !== c) return;
         c = null;
         if (stopped) return;
-        if (up) { up = false; emittedUp = false; onState('down'); }
+        reportDown();
         schedule();
       };
       conn.on('close', down);
@@ -192,9 +201,11 @@ export class UirpcClient {
         return;
       }
       if (m.ok === true) {
+        const wasDown = !up;
         up = true;
+        reportedDown = false;
         attempt = 0;
-        if (!emittedUp) { emittedUp = true; onState('up'); }
+        if (wasDown) onState('up');
         return;
       }
       // A refusal of the subscribe itself: the connection will close, which reports the drop.

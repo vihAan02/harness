@@ -191,6 +191,24 @@ test('stream: reconnects after backoffMs and reports up again', async () => {
   client.close();
 });
 
+test('stream: a connection that closes before any up reports down once', async () => {
+  const states: string[] = [];
+  const sockets: Wire[] = [];
+  const client = new UirpcClient({
+    connect: () => { const [c, s] = pair(); sockets.push(s); serve(s, () => undefined); return c; },
+    token: () => 'tok',
+    backoffMs: [1000],
+  });
+  const stop = client.stream(() => {}, (s) => states.push(s));
+  await tick();
+  assert.deepEqual(states, [], 'no up yet, so nothing reported');
+  sockets[0]?.destroy();
+  await tick();
+  assert.deepEqual(states, ['down'], 'a connection that never came up still reports the drop');
+  stop();
+  client.close();
+});
+
 test('stream: a bad line is ignored, a reply with no ok:true is not an up', async () => {
   const states: string[] = [];
   const sockets: Wire[] = [];
