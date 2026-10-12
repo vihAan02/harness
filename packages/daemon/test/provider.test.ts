@@ -25,6 +25,11 @@ test('a provider table becomes the session model settings; third-party endpoints
     prices: { 'deepseek-flash': { input: 0.3, output: 1.2, cacheRead: 0.006 } },
   });
   assert.deepEqual(providerModel(c, 'openrouter')!.extraBody, { provider: { allow_fallbacks: false } });
+  // D-144: a provider may ask for less reasoning effort; unset, the session leaves the CLI's default.
+  assert.equal(providerModel(c, 'deepseek')!.effort, undefined);
+  assert.equal(providerModel(cfg({ providers: { deepseek: { ...deepseek, effort: 'low' }, openrouter } }), 'deepseek')!.effort, 'low');
+  assert.equal(providerModel(c, 'deepseek')!.thinking, undefined);
+  assert.equal(providerModel(cfg({ providers: { deepseek: { ...deepseek, thinking: false }, openrouter } }), 'deepseek')!.thinking, false);
   // A provider with no base_url is the vendor's own endpoint: nothing stripped, the vendor's background model.
   const anthropic = parseConfig({ ...base, providers: { haiku: { key_env: 'ANTHROPIC_API_KEY', model: 'claude-haiku-4-5' } } }, TOKEN);
   assert.deepEqual(providerModel(anthropic, 'haiku'), { id: 'claude-haiku-4-5' });
@@ -64,6 +69,9 @@ test('provider tables are validated strictly: they decide where the key is sent 
   bad({ prices: { 'deepseek-flash': { input: -1, output: 1 } } }, /prices/);
   bad({ temperature: 0 }, /unknown keys: temperature/);
   bad({ strip_experimental_betas: 'yes' }, /true or false/);
+  bad({ effort: 'max' }, /effort must be "low", "medium" or "high"/);
+  bad({ effort: 1 }, /effort must be/);
+  bad({ thinking: 'off' }, /thinking must be true or false/);
   assert.throws(() => parseConfig({ ...base, agents: { provider: 'missing' } }, TOKEN), /no \[providers.missing\]/);
   assert.throws(() => parseConfig({ ...base, agents: { provider: 'constructor' } }, TOKEN), /no \[providers.constructor\]/, 'no prototype lookups');
   assert.throws(() => resolveProvider(parseConfig(base, TOKEN), { HARNESS_PROVIDER: 'toString' }), /no \[providers.toString\]/);

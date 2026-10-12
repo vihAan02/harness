@@ -28,12 +28,20 @@ export class PortAllocator {
     return readJson<Record<string, PortBlock>>(this.file, {});
   }
 
-  /** The owner's block, allocating one if needed. `count` (the repo's ports.per_agent) can only shrink it. */
+  /**
+   * The owner's block, allocating one if needed. `count` (the repo's ports.per_agent) can only shrink it. With no ports
+   * per agent (D-143), the block is empty, `{ base: 0, count: 0 }`: it still counts toward max_concurrent_agents.
+   */
   async allocate(owner: string, count = this.blockSize): Promise<PortBlock> {
     const all = this.list();
     const existing = all[owner];
     if (existing) return existing;
     if (Object.keys(all).length >= this.maxBlocks) throw new Error(`already at max_concurrent_agents (${this.maxBlocks})`);
+    if (this.blockSize === 0 || count <= 0) {
+      const block = { base: 0, count: 0 };
+      writeJsonAtomic(this.file, { ...all, [owner]: block });
+      return block;
+    }
     const taken = new Set(Object.values(all).map((b) => b.base));
     for (let base = this.range[0]; base + this.blockSize - 1 <= this.range[1]; base += this.blockSize) {
       if (taken.has(base) || !(await allFree(base, this.blockSize))) continue;

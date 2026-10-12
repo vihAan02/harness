@@ -1272,6 +1272,16 @@ From the Phase 0A adapter spike ([research/spike-0a.md](docs/research/spike-0a.m
   - **Why:** every agent session may bind and reach loopback ports (F-58). A Homebrew Postgres with `trust` auth lets anything on loopback log in as the macOS user's superuser and run programs outside the sandbox (`COPY … TO PROGRAM`).
   - **The rule:** harnessd refuses to start agents while any loopback Postgres accepts a login without a password; it probes with a raw startup message, no new dependency. `harness doctor` runs the same check. Agents that need a database get a non-superuser role through a project secret (D-52).
   - *Source:* S17's adversarial review (TH-22). *Status:* Proposal.
+- **D-143 A device can give its agents no loopback access: `[limits] ports_per_agent = 0` (pilot; strengthens D-68 and D-119), 2026-10-12. Proposal, built.**
+  - **What it does:** the session gets no port block, so its sandbox has no `allowLocalBinding` and can't connect to any loopback port (F-142); a land's tests, agent-written code, run without it too. Port blocks still count toward `max_concurrent_agents`.
+  - **Why:** every session with ports may reach `localhost:*` (F-58). D-119 keeps device-key agents away from a password-less loopback Postgres by refusing to start them, which needs the database changed first (`pg-harden.sh`). A device whose agents don't need ports can close the hole itself instead.
+  - **What it doesn't change:** D-119's check, which still refuses device-key agents beside such a Postgres whatever the ports setting; the default (10 ports); and harness.yaml can still only narrow it.
+  - *Source:* the UI dogfood on Daniyal's Mac (2026-10-12), whose Postgres 17 and 18 accept password-less loopback logins (HANDOFF, H3). *Status:* Proposal.
+- **D-144 A provider table can set the reasoning agents ask for: `effort` and `thinking = false` (pilot; refines D-87), 2026-10-12. Proposal, built.**
+  - **What it does:** `effort = "low" | "medium" | "high"` is passed to the CLI as its effort; `thinking = false` makes the CLI ask for no reasoning and also puts `thinking: {type: "disabled"}` in every request body, because the CLI only leaves the field out (F-143). Unset, the CLI's defaults apply, as before.
+  - **Why:** on the pinned DeepSeek V4.1-Flash, reasoning was about two-thirds of a UI task's output tokens, so each task cost $0.12 to $0.13, over D-116's $0.10 session cap and half the device's day. `effort` turned out to be ignored there; only `thinking = false` reaches the model (F-143).
+  - **Open:** what `thinking = false` does to a whole task's cost and quality is measured by the next session that uses it.
+  - *Source:* the UI dogfood (T-1, T-2), 2026-10-12. *Status:* Proposal.
 <!-- Stream A: append new D-IDs (D-95 to D-119, then D-140 to D-149 per D-110) above this line. -->
 
 ### Stream B decisions (Vihaan; D-120 to D-139)

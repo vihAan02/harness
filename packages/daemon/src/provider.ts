@@ -36,6 +36,8 @@ export function providerModel(config: LocalConfig, name: string | null): ModelCo
     ...(p.stripExperimentalBetas ? { stripExperimental: true } : {}),
     ...(p.extraBody ? { extraBody: p.extraBody } : {}),
     ...(Object.keys(p.prices).length ? { prices: p.prices } : {}),
+    ...(p.effort ? { effort: p.effort } : {}),
+    ...(p.thinking ? {} : { thinking: false as const }),
   };
 }
 

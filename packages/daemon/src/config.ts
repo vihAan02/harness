@@ -7,6 +7,8 @@
 //   principal = "human_…"
 //   server_url = "ws://127.0.0.1:7400"
 //   [limits]  max_concurrent_agents = 2, ports_per_agent = 10, port_range = [3100, 3999]
+//             ports_per_agent = 0: agents get no port block, so their sandbox has no loopback access at all, and
+//             a land's tests run without it too (D-143)
 //   [setup]   allowed_domains = ["registry.npmjs.org"], timeout_seconds = 900
 //   [agents]  provider = "openrouter", max_budget_usd = 2   (both optional; see [providers.<name>] below)
 //             model = "claude-haiku-4-5"                  (only without a provider: the vendor's default endpoint)
@@ -16,6 +18,8 @@
 //             base_url = "https://…", auth = "x-api-key" | "bearer", key_env = "…_API_KEY", model = "…",
 //             background_model, max_context_tokens, auto_compact_window, max_output_tokens,
 //             strip_experimental_betas, extra_body = { … }, [providers.<name>.prices."<model>"] input/output/cache_read/cache_write (USD per 1M tokens)
+//             effort = "low" | "medium" | "high"   (the reasoning effort agents ask for; unset: the CLI's default, D-144)
+//             thinking = false                     (agents ask for no reasoning at all; unset: the CLI's default, D-144)
 //   [[projects]]  id = "prj_…", repo = "/abs/path", base_branch = "main", secrets = ["DATABASE_URL"]
 //
 // The two-Mac pilot adds (D-110 to D-117; docs/protocol.md §2, §11, §12):
@@ -67,6 +71,10 @@ export type ProviderConfig = {
   stripExperimentalBetas: boolean;
   extraBody: Record<string, unknown> | null;
   prices: Record<string, Prices>;
+  /** The reasoning effort agents ask for (D-144); null: the CLI's default. */
+  effort: 'low' | 'medium' | 'high' | null;
+  /** false: agents ask for no reasoning (D-144); true: the CLI's default. */
+  thinking: boolean;
 };
 export type LocalConfig = {
   deviceId: string; principal: string; serverUrl: string;
@@ -296,7 +304,7 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
     projects,
     limits: {
       maxConcurrentAgents: int(limits.max_concurrent_agents, 'limits.max_concurrent_agents', 2, 1, 2), // fixed at 2 in 0A (D-38)
-      portsPerAgent: int(limits.ports_per_agent, 'limits.ports_per_agent', 10, 1, 100),
+      portsPerAgent: int(limits.ports_per_agent, 'limits.ports_per_agent', 10, 0, 100),
       portRange: [start, end],
     },
     setup: {
@@ -324,7 +332,7 @@ function noAlias(id: string, name: string): string {
 export function parseProvider(name: string, t: Record<string, unknown>): ProviderConfig {
   const where = `providers.${name}`;
   if (!PROVIDER_NAME.test(name)) throw new Error(`config: provider name "${name}" is malformed`);
-  const known = ['base_url', 'auth', 'key_env', 'model', 'background_model', 'max_context_tokens', 'auto_compact_window', 'max_output_tokens', 'strip_experimental_betas', 'extra_body', 'prices'];
+  const known = ['base_url', 'auth', 'key_env', 'model', 'background_model', 'max_context_tokens', 'auto_compact_window', 'max_output_tokens', 'strip_experimental_betas', 'extra_body', 'prices', 'effort', 'thinking'];
   const unknown = Object.keys(t).filter((k) => !known.includes(k));
   if (unknown.length) throw new Error(`config: ${where} has unknown keys: ${unknown.join(', ')}`);
   const text = (k: string, re: RegExp) => {
@@ -375,6 +383,8 @@ export function parseProvider(name: string, t: Record<string, unknown>): Provide
     prices[model] = { input: price('input', true)!, output: price('output', true)!, ...(cacheRead !== undefined ? { cacheRead } : {}), ...(cacheWrite !== undefined ? { cacheWrite } : {}) };
   }
   if (t.strip_experimental_betas !== undefined && typeof t.strip_experimental_betas !== 'boolean') throw new Error(`config: ${where}.strip_experimental_betas must be true or false`);
+  if (t.effort !== undefined && t.effort !== 'low' && t.effort !== 'medium' && t.effort !== 'high') throw new Error(`config: ${where}.effort must be "low", "medium" or "high"`);
+  if (t.thinking !== undefined && typeof t.thinking !== 'boolean') throw new Error(`config: ${where}.thinking must be true or false`);
   const model = noAlias(text('model', MODEL_ID), `${where}.model`);
   const backgroundModel = t.background_model !== undefined ? noAlias(text('background_model', MODEL_ID), `${where}.background_model`) : baseUrl ? model : null;
   // With prices given, every model the sessions use needs one, or cost (M8) and budgets fall back to a guess.
@@ -394,6 +404,8 @@ export function parseProvider(name: string, t: Record<string, unknown>): Provide
     stripExperimentalBetas: t.strip_experimental_betas === undefined ? baseUrl !== null : t.strip_experimental_betas === true,
     extraBody,
     prices,
+    effort: (t.effort as ProviderConfig['effort'] | undefined) ?? null,
+    thinking: t.thinking !== false,
   };
 }
 

@@ -100,6 +100,9 @@ export class ClaudeSession implements SessionHandle {
   stopContinuations = 0;
   resultTimes: number[] = [];
   lastResult: Record<string, unknown> | null = null;
+  /** The session's tokens by model as of its last result, and each model response since, by message id (D-116). */
+  settled: Record<string, ModelTokens> = {};
+  responses = new Map<string, { input: number; output: number; cacheRead: number; cacheCreation: number }>();
   q!: Query;
   done: Promise<void> = Promise.resolve();
   endReason = 'ended';
@@ -339,6 +342,41 @@ export class ClaudeSession implements SessionHandle {
         ...(typeof input.command === 'string' ? { command: input.command.slice(0, 500) } : {}),
       });
     }
+    this.spend(m);
+  }
+
+  /**
+   * D-116: a session's cap holds inside a turn too. The CLI reports its running total only at a turn's end, and one
+   * turn can be a whole task, so each model response's own usage is added to the last total as it arrives; at the cap
+   * the session stops, as at a turn end. Only with configured prices: the CLI's own figure for a model it doesn't know
+   * is a guess (F-27), so without them its scaled cap and the turn-end check are what's left.
+   */
+  spend(m: Record<string, unknown>): void {
+    const budget = this.spec.maxBudgetUsd;
+    const model = this.spec.model;
+    const msg = m.message as { id?: unknown; usage?: Record<string, unknown> } | undefined;
+    if (!budget || !model?.prices || !priceOf(model.prices, model.id) || typeof msg?.id !== 'string' || !msg.usage || this.endReason !== 'ended') return;
+    const u = msg.usage;
+    const n = (k: string) => (typeof u[k] === 'number' && Number.isFinite(u[k]) ? u[k] as number : 0);
+    // A response comes in several messages, one per content block; its usage only grows, so the latest counts.
+    this.responses.set(msg.id, { input: n('input_tokens'), output: n('output_tokens'), cacheRead: n('cache_read_input_tokens'), cacheCreation: n('cache_creation_input_tokens') });
+    // The CLI pins every model alias to the configured model (F-25), so each response is priced as that model.
+    const byModel = Object.fromEntries(Object.entries(this.settled).map(([id, t]) => [id, { ...t }])) as Record<string, ModelTokens>;
+    const t = (byModel[model.id] ??= { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, vendorCostUsd: 0, vendorBasis: 'unknown' });
+    for (const r of this.responses.values()) {
+      t.input += r.input;
+      t.output += r.output;
+      t.cacheRead += r.cacheRead;
+      t.cacheCreation += r.cacheCreation;
+    }
+    const cost = sessionCost(byModel, model.prices);
+    if (cost.costBasis !== 'config' || cost.costUsd < budget) return;
+    const total = Object.values(byModel).reduce((a, x) => ({ input: a.input + x.input, output: a.output + x.output, cacheRead: a.cacheRead + x.cacheRead, cacheCreation: a.cacheCreation + x.cacheCreation }), { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
+    this.endReason = 'budget exceeded';
+    // The spend so far reaches harnessd's day ledger before the session ends (D-116).
+    this.emit({ kind: 'usage', ...total, ...cost, models: Object.keys(byModel).sort(), cumulative: true });
+    this.emit({ kind: 'error', error: 'budget', message: `the session has cost $${cost.costUsd.toFixed(4)} (${cost.costBasis} prices) by its latest model response, over its $${budget} budget` });
+    this.q.close();
   }
 
   /** Tool results come back in user messages: which calls finished, and whether they failed (the missed-hook monitor, H-03). */
@@ -370,12 +408,14 @@ export class ClaudeSession implements SessionHandle {
     // modelUsage is a running total across the session's turns (F-16). The vendor's own cost is a guess for
     // models it doesn't know (F-27), so configured prices win where every model has them (D-87).
     const cost = sessionCost(byModel, this.spec.model?.prices);
+    this.settled = byModel; // the responses this turn are in it now
+    this.responses.clear();
     this.emit({ kind: 'usage', ...usage, ...cost, models: Object.keys(byModel).sort(), cumulative: true });
     if (m.terminal_reason === 'budget_exhausted' || m.subtype === 'error_max_budget_usd') {
       this.emit({ kind: 'error', error: 'budget', message: `the CLI's own budget cap stopped the session at its estimate of $${Number(m.total_cost_usd ?? 0).toFixed(4)}` });
     }
     const budget = this.spec.maxBudgetUsd;
-    if (budget && cost.costUsd >= budget && this.status !== 'ended') {
+    if (budget && cost.costUsd >= budget && this.status !== 'ended' && this.endReason !== 'budget exceeded') {
       this.endReason = 'budget exceeded';
       this.emit({ kind: 'error', error: 'budget', message: `the session has cost $${cost.costUsd.toFixed(4)} (${cost.costBasis} prices), over its $${budget} budget` });
       this.q.close();
@@ -480,6 +520,8 @@ export class ClaudeAdapter implements AgentAdapter<ClaudePolicyBundle, ClaudeHoo
       ...policy,
       cwd: spec.worktree,
       ...(spec.model ? { model: spec.model.id } : {}),
+      ...(spec.model?.effort ? { effort: spec.model.effort } : {}), // D-144
+      ...(spec.model?.thinking === false ? { thinking: { type: 'disabled' as const } } : {}), // D-144
       ...(resume ? { resume } : { sessionId: spec.sessionId }),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: spec.instructions },
       mcpServers: spec.tools.length ? { [SHIM_SERVER]: shimServer(spec.tools) } : {},
@@ -629,7 +671,10 @@ export function sessionEnv(spec: Pick<SessionSpec, 'env' | 'secrets' | 'auth' | 
       ...(model.contextTokens ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(model.contextTokens) } : {}),
       ...(model.compactWindowTokens ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(model.compactWindowTokens) } : {}),
       ...(model.maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(model.maxOutputTokens) } : {}),
-      ...(model.extraBody ? { CLAUDE_CODE_EXTRA_BODY: JSON.stringify(model.extraBody) } : {}), // F-29
+      // F-29. With thinking off, the request says so: the CLI just leaves `thinking` out, and a model that reasons by
+      // default (DeepSeek V4.1-Flash) then still does (D-144, F-143).
+      ...(model.extraBody || model.thinking === false
+        ? { CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ ...model.extraBody, ...(model.thinking === false ? { thinking: { type: 'disabled' } } : {}) }) } : {}),
     });
   }
   return env;
