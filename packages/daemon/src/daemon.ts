@@ -109,6 +109,9 @@ const MAX_REPORT_PATHS = 5000;
 const UNSAFE_NAME = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>]/u;
 /** How long a clean D-119 check (no password-less loopback Postgres) holds before an agent start checks again. */
 const TRUST_PG_TTL_MS = 60_000;
+/** How long a retry of a human's dispatch, by its command_id, resends what was first signed (protocol.md §12). */
+const DISPATCH_RETRY_MS = 10 * 60_000;
+const DISPATCH_RETRY_MAX = 256;
 /** Nobody approved a setup or test command in time (D-52); a land that hits it fails as `not_approved`. */
 export class ApprovalTimeout extends Error {}
 export type DaemonOptions = {
@@ -234,6 +237,8 @@ export class Daemon {
   githubLogin: string | null = null;
   poller: Poller | null = null;
   trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
+  /** Each human dispatch signed here, by command_id: a retry of the same click resends it unchanged, so the coordinator applies it once. */
+  signedDispatches = new Map<string, { request: string; name: string; args: Record<string, unknown>; at: number }>();
 
   constructor(o: DaemonOptions) {
     this.o = o;
@@ -411,6 +416,7 @@ export class Daemon {
       approvals: this.approvals.pending().filter((r) => r.projectId === projectId).map((r) => ({ taskId: r.taskId, kind: r.kind ?? 'setup' })),
       publishing, budget: { dailyBudgetUsd: this.config.agents.dailyBudgetUsd, sessionCapUsd: this.config.agents.maxBudgetUsd, spentUsd: this.spend.spent() },
       repo: { githubRepo: project.githubRepo, baseBranch: project.baseBranch },
+      providerCircuit: this.circuit.state(),
     });
   }
 
@@ -821,6 +827,19 @@ export class Daemon {
     if (!this.link || !this.deviceKey) throw new DispatchRefused('not_available', 'signed dispatch needs device-key auth (D-111)');
     const epoch = this.link.epoch;
     if (!epoch) throw new DispatchRefused('not_available', 'not connected to the coordinator yet');
+    // A retry of the same click (its answer was lost, say) resends exactly what was signed then. A new envelope would be
+    // a different command under the same command_id, which the coordinator refuses as a conflict; this one it answers
+    // with the first outcome, or applies once if the first never arrived (protocol.md §12, "pending until confirmed").
+    const request = JSON.stringify([projectId, kind, taskId, o]);
+    if (commandId) {
+      for (const [id, d] of this.signedDispatches) if (Date.now() - d.at > DISPATCH_RETRY_MS) this.signedDispatches.delete(id);
+      const prior = this.signedDispatches.get(commandId);
+      if (prior) {
+        if (prior.request !== request) throw new DispatchRefused('conflict', `command_id ${commandId} was already used for a different dispatch`);
+        this.log(`resending the ${kind} of ${taskId} signed for command ${commandId}`);
+        return this.link.command(projectId, prior.name, prior.args, undefined, commandId);
+      }
+    }
     const project = this.project(projectId);
     const view = this.view(projectId);
     const task = view.tasks.get(taskId);
@@ -866,6 +885,10 @@ export class Daemon {
       : kind === 'complete' ? ['task.complete', { task_id: taskId, ...(o.summary ? { summary: o.summary } : {}) }]
       : ['land.request', { task_id: taskId, mode: 'github', pr_number: integrate!.pr_number, head_sha: integrate!.head_sha, base_sha: integrate!.base_sha }];
     this.log(`dispatching ${kind} of ${taskId} to ${kind === 'integrate' ? 'this device' : target}, signed by ${this.config.deviceId}`);
+    if (commandId) {
+      this.signedDispatches.set(commandId, { request, name, args: { ...args, dispatch }, at: Date.now() });
+      for (const id of this.signedDispatches.keys()) if (this.signedDispatches.size > DISPATCH_RETRY_MAX) this.signedDispatches.delete(id);
+    }
     return this.link.command(projectId, name, { ...args, dispatch }, undefined, commandId);
   }
 

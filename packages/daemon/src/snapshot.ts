@@ -19,6 +19,8 @@ export type SnapshotLocal = {
   publishing: Set<string>;
   /** `spentUsd`: this device's ledger for the day (D-116), which covers every project; else the view's sessions here. */
   budget: { dailyBudgetUsd: number | null; sessionCapUsd: number | null; spentUsd?: number };
+  /** This device's provider circuit (D-116), null when closed. */
+  providerCircuit?: { kind: 'auth' | 'billing' | 'budget'; reason: string; at: string } | null;
   now?: number;
 };
 
@@ -49,7 +51,7 @@ export function deriveTaskState(v: ProjectView, t: TaskInfo, local: Pick<Snapsho
       const failed = land?.status === 'failed' && land.finishedAt && land.finishedAt > pr.publishedAt ? `the last integration failed: ${land.reason}` : null;
       return { state: 'pr_open', detail: failed };
     }
-    return { state: 'done', detail: null };
+    return { state: 'done', detail: t.startFailed ? `the reopen didn't start: ${t.startFailed}` : null };
   }
   if (t.status === 'blocked') return { state: 'blocked', detail: null };
   if (t.status === 'in_progress') {
@@ -66,7 +68,7 @@ export function deriveTaskState(v: ProjectView, t: TaskInfo, local: Pick<Snapsho
     if (session) return { state: 'stopped', detail: session.endReason ?? null };
     return { state: 'starting', detail: null };
   }
-  return { state: 'open', detail: null };
+  return { state: 'open', detail: t.startFailed ? `the last start didn't happen: ${t.startFailed}` : null };
 }
 
 function session(v: ProjectView, x: SessionInfo): SessionSnapshot {
@@ -109,6 +111,8 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
       land: l ? land(l) : null,
       publish_blocked: v.publishBlocked.get(t.id)?.reasons.map((r) => ({ ...r })) ?? null,
       stale_reads: [...(v.reads.get(t.id)?.entries() ?? [])].filter(([, r]) => r.stale).map(([p]) => p).sort(),
+      changing: [...(v.claims.get(t.id)?.observed ?? [])].sort(),
+      overlaps: overlapsOf(v, t.id),
       leases: v.currentLeases(t.id, now).map((x) => ({ path: x.path, expires_at: x.expiresAt })),
       open_wait: ow ? wait(ow) : null,
       cost_usd: [...v.sessions.values()].filter((x) => x.taskId === t.id).reduce((sum, x) => sum + costOf(v, x.id), 0),
@@ -124,7 +128,7 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
   });
   const messages = [...v.messages.values()].sort((a, b) => a.seq - b.seq).slice(-MESSAGES).map((m): MessageSnapshot => ({
     id: m.id, kind: m.kind, from: m.from, to: m.to, from_task: m.fromTask, to_task: m.toTask, in_reply_to: m.inReplyTo ?? null,
-    text: m.text, priority: m.priority, sent_at: m.sentAt, seq: m.seq,
+    text: m.text, priority: m.priority, sent_at: m.sentAt, seq: m.seq, delivered_at: m.deliveredAt ?? null, held: m.held === true,
   }));
   const spent = [...v.sessions.values()].filter((x) => x.deviceId === local.deviceId && x.startedAt.slice(0, 10) === day).reduce((sum, x) => sum + costOf(v, x.id), 0);
   return {
@@ -140,5 +144,18 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
       const text = (k: string) => (typeof d[k] === 'string' ? d[k] as string : null);
       return { seq: e.seq, at: e.at, what: text('what') ?? text('reason') ?? 'alert', task_id: text('task_id'), detail: text('detail') ?? text('reason') };
     }),
+    provider: { circuit: local.providerCircuit ? { kind: local.providerCircuit.kind, reason: local.providerCircuit.reason, at: local.providerCircuit.at } : null },
   };
+}
+
+/** A task's overlaps with other tasks, the latest per other task and level, while both still have claims. */
+function overlapsOf(v: ProjectView, taskId: string): TaskSnapshot['overlaps'] {
+  const latest = new Map<string, TaskSnapshot['overlaps'][number]>();
+  for (const o of v.overlaps) {
+    if (!o.tasks.includes(taskId)) continue;
+    const other = o.tasks[0] === taskId ? o.tasks[1] : o.tasks[0];
+    if (!other || !v.claims.has(other) || !v.claims.has(taskId)) continue;
+    latest.set(`${other}\0${o.level}`, { task_id: other, paths: [...o.paths].sort(), level: o.level });
+  }
+  return [...latest.values()].sort((a, b) => a.task_id.localeCompare(b.task_id) || a.level.localeCompare(b.level));
 }

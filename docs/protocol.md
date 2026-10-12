@@ -346,6 +346,7 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 
 **harnessd's `uirpc`** (`packages/daemon/src/uirpc.ts`). A Unix socket at `~/.harness/run/harnessd.sock` (0600, in a 0700 directory). Every request carries the token from `~/.harness/run/uirpc.token`, which is new at each start. A wrong token gets `unauthorized` and the connection is closed. Newline-delimited JSON, one request per line: `{ id, token, method, params }` → `{ id, ok, result | error }`.
 - `snapshot()` → `ProjectSnapshot[]` (`ProjectView.snapshot()`: tasks with their derived state, agents with device and presence, sessions with usage, messages, waits, notices, lands and reservations, PRs with checks, budget totals, connection health).
+  - Per task, also the files its agent is changing (`changing`, its observed claims) and its overlaps with other tasks; per message, when it was delivered to the agent and whether the T-5 screen holds it; per device, its provider circuit (`provider.circuit`, D-116).
   - **The type** is `ProjectSnapshot` in `@harness/protocol` (v1), built by `snapshotOf()` in `packages/daemon/src/snapshot.ts` from the project's view and what only this harnessd knows: its pending approvals, the tasks it's publishing, its link state and its budget.
   - **A task's `state`, most specific first:**
     - `abandoned`, `landed`;
@@ -355,7 +356,7 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
     - in progress: `fetch_pending` (its last sync couldn't fetch the base), `starting` or `running` (a live session), `awaiting_approval` (a local setup or session approval), `stopped` (its last session ended), else `starting`;
     - `open`.
 
-    `state_detail` says why, where there's a reason. It's untrusted text, like every string in the snapshot.
+    `state_detail` says why, where there's a reason. It's untrusted text, like every string in the snapshot. An `open` or `done` task whose last start or reopen ended before a session began (`task.dispatch_rejected`, `task.start_failed`) says so, with the target's detail, until it's assigned or reopened again.
 - `events()`: subscribes the connection. It answers `{ subscribed: [project ids] }`, then sends `{ stream: <request id>, project_id, seq, snapshot_patch }` lines: the current snapshot of each project at once, then each one that changed. v1's `snapshot_patch` is always `{ op: "replace", value: ProjectSnapshot }`.
 - `health()` → `{ device_id, principal, connection, epoch, coordinator_changed, outbox: { pending, dead[] } }`, where `connection` is `connecting`, `connected`, `server_identity_mismatch`, `replaced`, `refused` or `coordinator_changed`. PA8 adds the provider circuit.
   - **`coordinator_changed`** (D-113, PA4c): the coordinator answered with an epoch this device never served, a new database. `{ served, seen }`; nothing of it is acted on, and running agents stop with their work kept. The human accepts it by restarting harnessd with `--accept-coordinator <epoch>`; the device then reads each project's log from the start, and the old coordinator's unsent reports go to the dead outbox instead.
