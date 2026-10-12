@@ -120,7 +120,18 @@ test('a peer records a merge that isn\'t the approved squash: A, waking, checks 
     s.fake.mergeFault = 'error5xx'; // A's merge request fails; A will look again after its retry wait
     const task = await mergeRequested(s, 'agent/trusting');
     await waitFor('A to be unsure', async () => (await unsure(s)) === 1);
-    a.proc.kill('SIGSTOP'); // asleep in its retry wait
+    // Asleep in its retry wait, not before it: once A has looked at the PR again after the failed merge and fetched
+    // the base (its first reconcile round). Stopped any earlier, A could wake with the answer to its outcome_unknown
+    // report ahead of the peer's land.completed in its socket, find the land unsettled, and check the merge itself
+    // through GitHub instead: as safe (nothing lands, nothing is cleaned up) but a different path from the one this
+    // test is about. #133's full-macos run hit exactly that window.
+    const prNumber = (await s.db.pool.query('SELECT pr_number FROM task_prs WHERE task_id = $1', [task])).rows[0].pr_number as number;
+    await waitFor('A\'s first reconcile round', () => {
+      const merged = s.fake.log.findLastIndex((l) => l.server === 'api' && l.method === 'PUT' && l.path.endsWith(`/pulls/${prNumber}/merge`));
+      const looked = s.fake.log.findIndex((l, i) => i > merged && l.server === 'api' && l.method === 'GET' && l.path.endsWith(`/pulls/${prNumber}`));
+      return looked > 0 && s.fake.log.some((l, i) => i > looked && l.server === 'git' && l.path.includes('git-upload-pack'));
+    });
+    a.proc.kill('SIGSTOP');
     const land = (await s.db.pool.query('SELECT id, pr_number, approved_head_sha, approved_base_sha FROM lands WHERE task_id = $1', [task])).rows[0];
     s.fake.tamperNextSquash = true;
     const merge = await s.fake.externalMerge(land.pr_number); // merged on GitHub, but not the approved head's tree
@@ -133,7 +144,8 @@ test('a peer records a merge that isn\'t the approved squash: A, waking, checks 
     });
 
     a.proc.kill('SIGCONT');
-    await waitFor('A to check the merge', () => a.logs().some((l) => l.includes(`SECURITY: ${task}'s land was recorded by another device as merged as ${merge.slice(0, 12)}`)), 20_000);
+    await waitFor('A to check the merge', () => a.logs().some((l) => l.includes(`SECURITY: ${task}'s land was recorded by another device as merged as ${merge.slice(0, 12)}`)), 20_000)
+      .catch((e: Error) => { throw new Error(`${e.message}; A's log since it woke: ${a.logs().slice(-25).join(' | ')}`); });
     const worktree = path.join(s.a.home.worktrees, s.project, task);
     assert.equal(fs.readFileSync(path.join(worktree, 'sleepy.txt'), 'utf8'), 'work\n', 'the worktree stays');
     assert.equal(execFileSync('git', ['-C', s.a.repo, 'rev-parse', `refs/heads/${taskBranch(task)}`], { encoding: 'utf8' }).trim(), land.approved_head_sha, 'and its branch');
