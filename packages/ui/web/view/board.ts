@@ -114,19 +114,28 @@ function newTaskForm(ctx: ViewContext): { form: HTMLElement; update: () => void 
   const status = el('p', { class: 'newtask-status', role: 'status' });
   const create = el('button', { type: 'submit' }, 'Create');
 
-  // A holder: TS can't see a closure reassign a plain `let`, so the action lives in an object field.
-  const state: { action: Action | null } = { action: null };
+  // A holder: TS can't see a closure reassign a plain `let`, so the action lives in an object field. `cleared` marks
+  // the one Action we've already cleared the inputs for, so confirmation doesn't clear a fresh submission's text.
+  const state: { action: Action | null; cleared: Action | null } = { action: null, cleared: null };
 
   titleInput.setAttribute('aria-describedby', 'nt-title-error');
   textArea.setAttribute('aria-describedby', 'nt-text-error');
   scopeArea.setAttribute('aria-describedby', 'nt-scope-error');
 
+  // Clear the inputs exactly once per confirmed Action, however confirmation arrived (observe(), or a reply with no
+  // seqs). The mark makes it once: a later re-render won't re-clear what the human has since typed.
+  const clearOnConfirm = (): void => {
+    if (state.action !== null && state.action.status === 'confirmed' && state.cleared !== state.action) {
+      state.cleared = state.action;
+      titleInput.value = ''; textArea.value = ''; scopeArea.value = '';
+    }
+  };
+
   // Re-observed against the latest snapshot on every change; the inputs clear only when the action confirms.
   const update = (): void => {
     const snap = ctx.snapshot();
-    if (state.action !== null && snap !== null && state.action.observe(snap)) {
-      titleInput.value = ''; textArea.value = ''; scopeArea.value = '';
-    }
+    if (state.action !== null && snap !== null) state.action.observe(snap);
+    clearOnConfirm();
     clear(status);
     if (state.action !== null) status.append(state.action.label());
     create.disabled = ctx.offline() !== null || (state.action !== null && state.action.busy());
@@ -151,8 +160,9 @@ function newTaskForm(ctx: ViewContext): { form: HTMLElement; update: () => void 
 
   const onSubmit = (e: Event): void => {
     e.preventDefault();
-    // A pending or confirmed action is not re-sent: a second click while busy is a no-op.
-    if (state.action !== null && state.action.status !== 'failed' && state.action.status !== 'conflict') return;
+    // Only a pending Action blocks a new submit; a failed, conflicted or confirmed one doesn't, so a later task can
+    // still be created with the form as-is.
+    if (state.action !== null && state.action.busy()) return;
     const result = newTaskModel({ title: titleInput.value, text: textArea.value, scope: scopeArea.value });
     if (!result.ok) { showErrors(result.errors); return; }
     showErrors({});
@@ -162,7 +172,12 @@ function newTaskForm(ctx: ViewContext): { form: HTMLElement; update: () => void 
     const action = new Action((commandId) => ctx.api.command(snap.project_id, 'task.create', args, commandId));
     state.action = action;
     update();
-    void action.send().then(() => update());
+    void action.send().then(() => {
+      // A reply with no seqs confirms immediately; observe() never sees that, so clear here too. observe()-confirmed
+      // actions clear in update(), which runs right after.
+      clearOnConfirm();
+      update();
+    });
   };
   listen(form, 'submit', onSubmit);
 
