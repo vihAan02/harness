@@ -104,8 +104,8 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
 - **Spend:** one agent per Mac, at most $0.10 a session and $0.25 a day (D-116). Record each paid run's cost.
 
 ## 5. The first two-agent test
-The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactly the same tasks. On a fresh coordinator the tasks are numbered T-1, T-2 and T-3 in the order you create them; `harness status` shows the ids. **Freeze** the repo for the duration: nobody pushes or merges anything else (GitHub's strict up-to-date rule and harnessd's one-PR-in-flight check would refuse the merges).
-1. **T-1 on Daniyal's agent:** `format.ts`, pure formatters with tests.
+The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactly the same tasks. They're real, small changes to the UI: one place for its formatters, then a change to one of them while the other agent is about to use it. On a fresh coordinator the tasks are numbered T-1, T-2 and T-3 in the order you create them; `harness status` shows the ids. **Freeze** the repo for the duration: nobody pushes or merges anything else (GitHub's strict up-to-date rule and harnessd's one-PR-in-flight check would refuse the merges).
+1. **T-1 on Daniyal's agent:** `format.ts` (`formatCost`, `shortSha`), used where the UI formats a cost or a commit id, with tests.
    ```
    harness task add "UI formatters" --scope packages/ui/ --file scripts/pilot/first-test/1-format.md --assign daniyal-ui
    ```
@@ -114,21 +114,21 @@ The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactl
    - **This proves A to B:** Vihaan's next task starts from a base his harnessd fetched and verified, with `format.ts` in it.
 2. **Create both remaining tasks first, then start them in order.** Creating fixes their ids, which the texts name.
    ```
-   harness task add "Board model" --scope packages/ui/ --file scripts/pilot/first-test/2-board.md                  # Vihaan: T-2
-   harness task add "Rename the cost formatter" --scope packages/ui/ --file scripts/pilot/first-test/3-change.md   # Daniyal, after: T-3
+   harness task add "Integration page costs" --scope packages/ui/ --file scripts/pilot/first-test/2-integration.md   # Vihaan: T-2
+   harness task add "Rename the cost formatter" --scope packages/ui/ --file scripts/pilot/first-test/3-rename.md       # Daniyal, after: T-3
    ```
    Check both ids with `harness status`. Then:
    - **Vihaan:** `harness task assign T-2 vihaan-ui`. His agent reads `format.ts` and waits for T-3 to land.
-   - **Daniyal,** once `harness status` shows that wait: `harness task assign T-3 daniyal-ui`. His agent asks Vihaan's agent how many decimals the board shows, waits for the answer, then renames `formatCost` to `formatUsd(usd, digits)`.
+   - **Daniyal,** once `harness status` shows that wait: `harness task assign T-3 daniyal-ui`. Both tasks' scope is `packages/ui/`, so each board shows the overlap. His agent asks Vihaan's agent how many decimals the integration page shows, waits for the answer, then renames `formatCost` to `formatUsd(usd, digits)` and updates its callers.
    - **Recovery drill:** while Daniyal's agent is still working on T-3, stop Daniyal's harnessd (Ctrl-C), start it again, see T-3 **stopped** in `harness status`, and run `harness task resume T-3`.
-   - **T-3 lands:** Vihaan approves the PR on GitHub, and Daniyal runs `harness integrate T-3`. Vihaan's harnessd fetches the merge and syncs T-2's branch, and his agent is told `format.ts` changed, with the diff. It then writes `board.ts` against `formatUsd`.
+   - **T-3 lands:** Vihaan approves the PR on GitHub, and Daniyal runs `harness integrate T-3`. Vihaan's harnessd fetches the merge and syncs T-2's branch, and his agent is told `format.ts` changed, with the diff. It then makes the integration page's costs call `formatUsd`.
    - Vihaan approves T-2's publish, Daniyal approves the PR on GitHub, and Vihaan runs `harness integrate T-2`.
 
 **What success looks like:**
 - `harness status` on both Macs shows both devices and both agents.
 - The question and the answer appear in both agents' turns: `harness log --kind message` on either Mac.
 - Three PRs, opened by harnessd as their humans, green, approved by the other human, and merged by `harness integrate`.
-- Vihaan's agent got the `format.ts` notice, and its `board.ts` calls `formatUsd`.
+- Vihaan's agent got the `format.ts` notice, and `view/integration.ts` calls `formatUsd`.
 - T-3's agent asked and T-2's agent answered: two waits, one on a question and one on a land, both ended by what they waited for.
 - Each Mac's `git -C ~/code/harness-pilot rev-parse refs/harness/prj_harness/base` reaches the merges (Daniyal's on its next fetch, for instance at his next task's start).
 - The resumed task kept its edits: one PR, no duplicate session running.
