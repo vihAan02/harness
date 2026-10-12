@@ -1,0 +1,36 @@
+/* The task page's stylesheet (D-117). System fonts only, no external requests. Sections have headings; paths and SHAs
+   are monospace and wrap; long texts are pre-wrapped; colour is never the only signal. Reads at 360 px. */
+
+.task-header .task-words { margin: 0; color: var(--muted); }
+
+.task-list { margin: 0 0 0.5rem; padding-left: 1.1rem; }
+.task-list li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; overflow-wrap: anywhere; }
+
+.task-sha, .task-pr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; overflow-wrap: anywhere; }
+.task-wait { color: var(--muted); }
+
+.notice {
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  margin-bottom: 0.45rem;
+  background: var(--bg);
+}
+.notice-meta { margin: 0 0 0.25rem; font-size: 0.78em; color: var(--muted); overflow-wrap: anywhere; }
+.notice-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.85em; }
+
+.task-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem; background: var(--bg); }
+
+.task-actions .action-field { margin-bottom: 0.75rem; }
+.action-field h3 { margin: 0 0 0.3rem; font-size: 0.9rem; color: var(--ink); }
+.action-body { display: flex; flex-direction: column; gap: 0.2rem; margin-bottom: 0.35rem; }
+.action-label { font-weight: 600; font-size: 0.85em; }
+.action-status { margin: 0.3rem 0 0; color: var(--muted); }
+.action-status:empty { display: none; }
+
+.to-integration { margin: 0.5rem 0; }
+
+@media (max-width: 480px) {
+  .action-body { gap: 0.15rem; }
+}

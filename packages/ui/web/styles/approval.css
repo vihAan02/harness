@@ -1,0 +1,39 @@
+/* The approval page's stylesheet (D-117). System fonts only, no external requests. A long held text is set apart by a
+   border and its own label, never by colour alone; SHAs and paths are monospace and wrap. Reads at 360 px. */
+
+.approval-header .approval-task { margin: 0.2rem 0; }
+.approval-kind { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8em; }
+
+.approval-rows { display: grid; grid-template-columns: minmax(6rem, max-content) 1fr; gap: 0.2rem 0.75rem; margin: 0; }
+.approval-rows dt { font-weight: 600; color: var(--muted); }
+.approval-rows dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+/* A held text, set apart by a border and its label. */
+.approval-long { border-left-width: 4px; border-left-style: solid; border-left-color: var(--accent); }
+.approval-long h3 { margin: 0 0 0.35rem; font-size: 0.9rem; }
+.long-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: var(--bg);
+  font-size: 0.85em;
+}
+
+.approval-actions { margin-top: 0.5rem; }
+.approval-buttons { display: flex; gap: 0.5rem; }
+.approval-buttons .approve { font-weight: 600; }
+.approval-status { margin: 0.4rem 0 0; color: var(--muted); }
+.approval-status:empty { display: none; }
+
+@media (max-width: 480px) {
+  .approval-rows { grid-template-columns: 1fr; }
+  .approval-rows dt { margin-top: 0.3rem; }
+}
