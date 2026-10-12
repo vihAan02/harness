@@ -74,3 +74,28 @@ test('setup writes a GitHub-mode project with its remote, commit identity and pr
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('harness setup refuses a flag it doesn\'t know and a flag with no value, so --ports-per-agent is never dropped (D-143)', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'harness-cli-setup-flags-')));
+  try {
+    const home = harnessHome(path.join(dir, 'home'));
+    const repo = path.join(dir, 'repo');
+    fs.mkdirSync(repo);
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    const main = path.resolve(import.meta.dirname, '../src/main.ts');
+    const cli = (...args: string[]) => {
+      try { return execFileSync(process.execPath, [main, 'setup', ...args], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, HARNESS_HOME: home.root } }); }
+      catch (e) { return `refused: ${(e as { stderr?: string }).stderr ?? ''}`; }
+    };
+    assert.match(cli('keygen', '--device', 'dev_a'), /public_key = "ed25519:/);
+    const base = ['--device', 'dev_a', '--principal', 'human_a', '--server-key', generateKeyPair().publicKey, '--project', 'prj_pilot', '--repo', repo, '--integration', 'local'];
+    assert.match(cli(...base, '--ports-per-agent=0'), /^refused: .*doesn't know --ports-per-agent=0/s);
+    assert.match(cli(...base, '--ports-per-agent', '--force'), /^refused: .*--ports-per-agent needs a value/s);
+    assert.match(cli(...base, '--port-per-agent', '0'), /^refused: .*doesn't know --port-per-agent/s);
+    assert.match(cli(...base, '--trust-device'), /^refused: .*--trust-device needs a value/s);
+    assert.ok(!fs.existsSync(home.config), 'a refused setup wrote nothing');
+    // The control: the same flags, spelled right, write it.
+    assert.match(cli(...base, '--ports-per-agent', '0'), /^wrote /);
+    assert.equal(loadConfig(home).limits.portsPerAgent, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
