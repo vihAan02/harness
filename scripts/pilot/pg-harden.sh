@@ -25,13 +25,14 @@ ME="$(id -un)"
 PGPASS="$HOME/.pgpass"
 HHOME="${HARNESS_HOME:-$HOME/.harness}"
 SECRETS="$HHOME/secrets.toml"
+CALLER_PGPASSFILE="${PGPASSFILE:-}"
 export PGPASSFILE="$PGPASS"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'pg-harden: %s\n' "$*" >&2; exit 1; }
 # As your superuser, over loopback TCP, never prompting: trust before hardening, ~/.pgpass after. SQL comes on stdin.
 su_sql() { "$PGBIN/psql" -X -q -w -h 127.0.0.1 -p "$PORT" -U "$ME" -d postgres -v ON_ERROR_STOP=1 -At -f -; }
-pgpass_password() { [ -f "$PGPASS" ] && awk -F: -v p="$PORT" -v u="$ME" '$1=="127.0.0.1" && $2==p && $4==u { print $5; exit }' "$PGPASS" || true; }
+pgpass_password() { [ -f "$PGPASS" ] && awk -F: -v p="$PORT" -v u="$ME" '$1=="127.0.0.1" && $2==p && $3=="*" && $4==u { print $5; exit }' "$PGPASS" || true; }
 
 [ -x "$PGBIN/psql" ] || die "no psql in $PGBIN; set PGBIN"
 # Which files belong to the server on this port: ask it.
@@ -56,13 +57,19 @@ if [ "${1:-}" = "--undo" ]; then
   exit 0
 fi
 
+# 0. Refuse before changing anything if step 2 can't finish: a rule that doesn't parse, a password or md5 rule (yours to
+# change), or a trust rule in a file pg_hba.conf includes (only $HBA is edited).
+PRE="$(echo "SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL OR auth_method IN ('password', 'md5') OR (auth_method = 'trust' AND file_name <> current_setting('hba_file'));" | su_sql)"
+[ "$PRE" = 0 ] || die "$PRE rule(s) in $HBA or a file it includes don't parse, use password or md5, or trust from an included file; fix them by hand first (SELECT * FROM pg_hba_file_rules). Nothing was changed"
+
 # 1. Your role's password: reuse the one ~/.pgpass already holds, so running this twice changes nothing.
 PW="$(pgpass_password)"
 [ -n "$PW" ] || PW="$(openssl rand -hex 24)"
 touch "$PGPASS" && chmod 600 "$PGPASS"
-for host in 127.0.0.1 localhost; do
-  grep -q -E "^$host:$PORT:\*:$ME:" "$PGPASS" || printf '%s:%s:*:%s:%s\n' "$host" "$PORT" "$ME" "$PW" >> "$PGPASS"
-done
+# libpq and Node's pg use the first line that matches, so these two go first and replace any older ones for this port and user.
+{ for host in 127.0.0.1 localhost; do printf '%s:%s:*:%s:%s\n' "$host" "$PORT" "$ME" "$PW"; done
+  grep -v -E "^(127\.0\.0\.1|localhost):$PORT:\*:$ME:" "$PGPASS" || true; } > "$PGPASS.tmp"
+cat "$PGPASS.tmp" > "$PGPASS" && rm -f "$PGPASS.tmp"
 printf "SET password_encryption = 'scram-sha-256'; ALTER ROLE \"%s\" PASSWORD '%s';\n" "$ME" "$PW" | su_sql \
   || die "couldn't log in as $ME to set its password; is Postgres running on $PORT?"
 say "ok   $ME has a password, kept in $PGPASS (0600)"
@@ -71,7 +78,7 @@ say "ok   $ME has a password, kept in $PGPASS (0600)"
 [ -f "$BACKUP" ] || cp -p "$HBA" "$BACKUP"
 # A trust method, with or without a trailing comment, becomes scram-sha-256. Written back in place, so the file keeps
 # its owner and mode.
-sed -E 's/^((local|host|hostssl|hostnossl)[[:space:]].*[[:space:]])trust([[:space:]]*(#.*)?)$/\1scram-sha-256\3/' "$HBA" > "$HBA.harness-tmp"
+sed -E 's/^([[:space:]]*(local|host|hostssl|hostnossl|hostgssenc|hostnogssenc)[[:space:]][^#]*[[:space:]])trust([[:space:]]*(#.*)?)$/\1scram-sha-256\3/' "$HBA" > "$HBA.harness-tmp"
 cat "$HBA.harness-tmp" > "$HBA" && rm -f "$HBA.harness-tmp"
 echo "SELECT pg_reload_conf();" | su_sql >/dev/null
 # What the server actually reads (includes, IPv6, comments): no rule may trust, use a cleartext password or md5, or fail to parse.
@@ -114,7 +121,7 @@ echo "$ERR" | grep -q -i 'permission denied\|must be superuser\|pg_execute_serve
 OK="$(PGPASSWORD="$APW" PGPASSFILE=/dev/null "$PGBIN/psql" -X -h 127.0.0.1 -p "$PORT" -U harness_agent -d harness_agent -Atc 'select 1' 2>&1 || true)"
 [ "$OK" = "1" ] || die "harness_agent can't log in to its own database: $OK"
 say "ok   harness_agent logs in, and can't run a program (COPY … TO PROGRAM is refused)"
-if [ "${PGPASSFILE:-}" != "$PGPASS" ]; then
+if [ "$CALLER_PGPASSFILE" != "$PGPASS" ]; then
   say "note Some tests point HOME elsewhere (T-1, T-1b), so name the password file absolutely. Add to ~/.zshrc:"
   say "       export PGPASSFILE=\"\$HOME/.pgpass\""
 fi
