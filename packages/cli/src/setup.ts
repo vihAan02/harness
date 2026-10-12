@@ -38,6 +38,8 @@ export type SetupOptions = {
   remote?: string; commitName?: string; commitEmail?: string;
   /** A provider table from docs/examples/providers.toml to copy in, e.g. openrouter-haiku55. */
   provider?: string;
+  /** `[limits] ports_per_agent`: 0 gives agents no loopback access at all (D-143), for a Mac with local services. */
+  portsPerAgent?: number;
   force: boolean;
 };
 
@@ -73,7 +75,7 @@ export function writeSetup(home: Home, o: SetupOptions): string {
   const raw = {
     device_id: o.device, principal: o.principal, server_url: o.serverUrl, auth: 'device-key', server_key: serverKey,
     trust: { devices },
-    limits: { max_concurrent_agents: PILOT.maxConcurrentAgents },
+    limits: { max_concurrent_agents: PILOT.maxConcurrentAgents, ...(o.portsPerAgent !== undefined ? { ports_per_agent: o.portsPerAgent } : {}) },
     agents: { max_budget_usd: PILOT.maxBudgetUsd, daily_budget_usd: PILOT.dailyBudgetUsd, ...(o.provider ? { provider: o.provider } : {}) },
     ...(providers ? { providers } : {}),
     ui: { port: PILOT.uiPort },

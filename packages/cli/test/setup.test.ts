@@ -63,6 +63,13 @@ test('setup writes a GitHub-mode project with its remote, commit identity and pr
     assert.deepEqual([p.integration, p.remote, p.githubRepo, p.commitIdentity], ['github', 'https://github.com/vihAan02/harness.git', 'vihAan02/harness', { name: 'A', email: '12345+someone@users.noreply.github.com' }]);
     assert.equal(config.agents.provider, 'openrouter-haiku55');
     assert.ok(config.providers['openrouter-haiku55'], 'the provider table, with its prices, is copied in');
+    assert.equal(config.limits.portsPerAgent, 10, 'the control: without the option, the default port block');
+    // A Mac with local services that run code gives its agents no loopback access (D-143).
+    writeSetup(home, {
+      device: 'dev_a', principal: 'human_a', serverUrl: 'ws://127.0.0.1:7400', serverKey: config.serverKey!, trust: [],
+      project: 'prj_harness', repo, baseBranch: 'main', integration: 'local', portsPerAgent: 0, force: true,
+    });
+    assert.equal(loadConfig(home).limits.portsPerAgent, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
