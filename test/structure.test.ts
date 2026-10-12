@@ -98,3 +98,30 @@ test('ui: browser modules import only relative .ts files inside web/, and @harne
     }
   }
 });
+
+// Every string the UI shows comes from agents, peers, the coordinator or GitHub (D-117; protocol.md §12): the browser
+// modules build the page from text nodes only (web/dom.ts), never from markup, and run no code from a string. This
+// holds whoever writes web/, Harness agents included. web/dom.ts names the forbidden attributes to refuse them, so
+// the scan reads code with comments and string literals blanked.
+test('ui: browser modules never turn a string into markup or code, and keep no token in localStorage (D-117)', () => {
+  const web = path.join(packagesDir, 'ui', 'web');
+  const FORBIDDEN: [RegExp, string][] = [
+    [/\.innerHTML\b/, 'innerHTML'], [/\.outerHTML\b/, 'outerHTML'], [/\binsertAdjacentHTML\b/, 'insertAdjacentHTML'],
+    [/\bdocument\.write(?:ln)?\b/, 'document.write'], [/\beval\s*\(/, 'eval('], [/\bnew\s+Function\b/, 'new Function'],
+    [/\bcreateContextualFragment\b/, 'createContextualFragment'], [/\bDOMParser\b/, 'DOMParser'], [/\bsetHTMLUnsafe\b/, 'setHTMLUnsafe'],
+    [/\blocalStorage\b/, 'localStorage'], [/\.setAttribute\s*\(\s*['"`]on/i, "setAttribute('on…')"],
+  ];
+  // Comments and the contents of string literals go; the code around them stays.
+  const code = (src: string) => src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:\\])\/\/.*$/gm, '$1')
+    .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, '""');
+  for (const file of fs.existsSync(web) ? sourceFiles(web) : []) {
+    const src = code(fs.readFileSync(file, 'utf8'));
+    for (const [re, what] of FORBIDDEN) assert.ok(!re.test(src), `${path.relative(root, file)} uses ${what}`);
+  }
+  // The control: the scan sees each use in code, and none in a comment or a string.
+  assert.ok(/\.innerHTML\b/.test(code('el.innerHTML = s; // innerHTML')));
+  assert.ok(!/\.innerHTML\b/.test(code("const m = 'never .innerHTML'; /* x.innerHTML */")));
+  assert.ok(/\blocalStorage\b/.test(code('localStorage.setItem(k, v)')));
+});
