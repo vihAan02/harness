@@ -652,7 +652,9 @@ export class FakeGitHub {
   /** Git with no user or system config (HOME is the fake's own dir), in the bare repo unless `cwd` says otherwise. */
   private run(args: string[], o: { cwd?: string; env?: Record<string, string>; input?: string; codes: number[] }): Promise<{ code: number; out: string }> {
     return new Promise((resolve, reject) => {
-      const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: this.root.dir, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C', ...o.env };
+      // A fixed identity: without one, Git guesses it from the hostname, and refuses a hostname with no domain in it.
+      const who = { GIT_AUTHOR_NAME: 'fake-github', GIT_AUTHOR_EMAIL: 'fake-github@harness.invalid', GIT_COMMITTER_NAME: 'fake-github', GIT_COMMITTER_EMAIL: 'fake-github@harness.invalid' };
+      const env = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: this.root.dir, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C', ...who, ...o.env };
       const child = spawn('git', o.cwd ? args : ['--git-dir', this.gitDir, ...args], { cwd: o.cwd ?? this.root.dir, env });
       let out = '';
       let err = '';
