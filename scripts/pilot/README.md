@@ -104,7 +104,7 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
 - **Spend:** one agent per Mac, at most $0.10 a session and $0.25 a day (D-116). Record each paid run's cost.
 
 ## 5. The first two-agent test
-The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactly the same tasks. They're real, small changes to the UI: one place for its formatters, then a change to one of them while the other agent is about to use it. On a fresh coordinator the tasks are numbered T-1, T-2 and T-3 in the order you create them; `harness status` shows the ids. **Freeze** the repo for the duration: nobody pushes or merges anything else (GitHub's strict up-to-date rule and harnessd's one-PR-in-flight check would refuse the merges).
+The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactly the same tasks. They're real, small changes to the UI: one place for its formatters, then a change to one of them while the other agent is about to use it. **Before you start,** the UI must be on `main` (#135, #136 and #137 merged), since these tasks change it, and both Macs run a candidate that includes it. Below, T-1, T-2 and T-3 stand for the ids `harness status` shows: the coordinator numbers every task it has ever had, so they may not start at T-1. The texts name each other by title, not id. **Freeze** the repo for the duration: nobody pushes or merges anything else (GitHub's strict up-to-date rule and harnessd's one-PR-in-flight check would refuse the merges).
 1. **T-1 on Daniyal's agent:** `format.ts` (`formatCost`, `shortSha`), used where the UI formats a cost or a commit id, with tests.
    ```
    harness task add "UI formatters" --scope packages/ui/ --file scripts/pilot/first-test/1-format.md --assign daniyal-ui
@@ -112,7 +112,7 @@ The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactl
    - Daniyal approves the setup command and, when it's done, the publish (`harness approve`).
    - Vihaan approves the PR on GitHub, and once CI is green Daniyal runs `harness integrate T-1`.
    - **This proves A to B:** Vihaan's next task starts from a base his harnessd fetched and verified, with `format.ts` in it.
-2. **Create both remaining tasks first, then start them in order.** Creating fixes their ids, which the texts name.
+2. **Create both remaining tasks first, then start them in order,** so each agent can find the other's task.
    ```
    harness task add "Integration page costs" --scope packages/ui/ --file scripts/pilot/first-test/2-integration.md   # Vihaan: T-2
    harness task add "Rename the cost formatter" --scope packages/ui/ --file scripts/pilot/first-test/3-rename.md       # Daniyal, after: T-3
