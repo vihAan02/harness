@@ -46,7 +46,9 @@ const USAGE = `usage: harness <command> [--project <id>]
   setup --device <id> --principal <human> --server-key ed25519:… --project <id> --repo <abs path>
         [--trust-device <id>=<human>:ed25519:…]… [--server-url ws://127.0.0.1:7400] [--base-branch main]
         [--integration github --remote <https url> --commit-name <name> --commit-email <noreply>]
-        [--provider <name>] [--force]       write config.toml for the pilot (D-111): only the keys you typed are pinned
+        [--provider <name>] [--ports-per-agent <n>] [--force]
+                                              write config.toml for the pilot (D-111): only the keys you typed are pinned;
+                                              --ports-per-agent 0 gives agents no loopback access (D-143)
   doctor [--offline]                          check this Mac is ready for the pilot; prints each fix, never a secret
   --version`;
 
@@ -389,11 +391,14 @@ function setup(a: Args, argv: string[]) {
   const need = (k: string) => flag(a, k) ?? fail(`harness setup needs --${k}`);
   const integration = flag(a, 'integration') ?? 'github';
   if (integration !== 'github' && integration !== 'local') fail('--integration must be github or local');
+  const ports = flag(a, 'ports-per-agent');
+  if (ports !== undefined && !/^\d{1,3}$/.test(ports)) fail('--ports-per-agent must be a whole number (0: no loopback access for agents)');
   const file = writeSetup(home, {
     device: need('device'), principal: need('principal'), serverUrl: flag(a, 'server-url') ?? 'ws://127.0.0.1:7400', serverKey: need('server-key'),
     trust: argv.flatMap((x, i) => (argv[i - 1] === '--trust-device' ? [x] : [])), // repeatable
     project: need('project'), repo: need('repo'), baseBranch: flag(a, 'base-branch') ?? 'main', integration,
     remote: flag(a, 'remote'), commitName: flag(a, 'commit-name'), commitEmail: flag(a, 'commit-email'), provider: flag(a, 'provider'),
+    ...(ports !== undefined ? { portsPerAgent: Number(ports) } : {}),
     force: a.flags.force === true,
   });
   console.log(`wrote ${file}. Next: harness doctor`);
