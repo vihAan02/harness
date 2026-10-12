@@ -120,6 +120,55 @@ test('a session that costs more than its budget is stopped (D-87)', async () => 
   assert.equal(c.of('ended')[0]!.reason, 'budget exceeded');
 });
 
+test('the session cap holds inside a turn: it stops at the response that crosses it, not at the turn\'s end (D-116)', async () => {
+  // Each mock response is about 100 input and 10 output tokens: $0.011 at these prices. Six tool calls in one turn.
+  const steps = Array.from({ length: 6 }, (_, i) => `Bash {"command":"echo step-${i}"}`);
+  const run = async (maxBudgetUsd: number) => {
+    const m = await provider({});
+    const spec = f.spec({ auth: { mode: 'api-key', apiKey: DUMMY_KEY, baseUrl: m.url }, model: { id: 'deepseek-flash', prices: { 'deepseek-flash': { input: 100, output: 100 } } }, maxBudgetUsd });
+    const h = await adapter.startSession(spec, human('m1', script(...steps, 'TEXT done')));
+    const c = collect(adapter.observations(h));
+    // Stopped by its cap, the session ends; under it, its turn ends and the session waits, so it's stopped here.
+    await Promise.race([c.done, c.turns(1).then(() => adapter.stopSession(h, 'kill'), () => {})]);
+    return c;
+  };
+  const capped = await run(0.025);
+  const errors = capped.of('error').filter((e) => e.error === 'budget');
+  assert.equal(errors.length, 1, JSON.stringify(capped.of('error')));
+  assert.match(errors[0]!.message, /by its latest model response, over its \$0.025 budget/);
+  assert.equal(capped.of('ended')[0]!.reason, 'budget exceeded');
+  assert.equal(capped.of('turn.ended').length, 0, 'stopped mid-turn, before the turn could end');
+  assert.ok(capped.of('tool.called').length < 6, `stopped before every call ran: ${capped.of('tool.called').length}`);
+  const spent = capped.of('usage').at(-1)!;
+  assert.ok(spent.costUsd >= 0.025 && spent.costUsd < 0.025 + 0.012, `the spend reported, within one response of the cap: ${spent.costUsd}`);
+  // The control: a cap the turn never reaches lets every call run and the turn end.
+  const free = await run(1);
+  assert.equal(free.of('error').filter((e) => e.error === 'budget').length, 0);
+  assert.equal(free.of('tool.called').length, 6);
+  assert.equal(free.of('turn.ended').length, 1);
+  assert.notEqual(free.of('ended')[0]?.reason, 'budget exceeded');
+});
+
+test('a provider\'s effort and thinking reach the model request; without them, the CLI asks for its own defaults (D-144)', async () => {
+  const efforts = async (over: Partial<NonNullable<SessionSpec['model']>>, pick: (body: any) => unknown = (b) => b.output_config?.effort) => {
+    const m = await provider({ basePath: '/anthropic', auth: 'x-api-key', models: ['deepseek-flash'] });
+    const seen: unknown[] = [];
+    m.onMain = (body) => seen.push(pick(body));
+    const h = await adapter.startSession(f.spec(deepseekLike(m, over)), human('m1', script('TEXT done')));
+    await collect(adapter.observations(h)).turns(1);
+    await adapter.stopSession(h, 'kill');
+    return seen;
+  };
+  const low = await efforts({ effort: 'low' });
+  assert.ok(low.length >= 1 && low.every((e) => e === 'low'), JSON.stringify(low));
+  const unset = await efforts({});
+  assert.ok(unset.length >= 1 && unset.every((e) => e !== 'low'), `the control: ${JSON.stringify(unset)}`);
+  const off = await efforts({ thinking: false }, (b) => b.thinking?.type);
+  assert.ok(off.length >= 1 && off.every((t) => t === 'disabled'), JSON.stringify(off));
+  const on = await efforts({}, (b) => b.thinking?.type);
+  assert.ok(on.length >= 1 && on.every((t) => t !== 'disabled'), `the control: ${JSON.stringify(on)}`);
+});
+
 test('a secret named like a CLI setting is refused; without the check, it sends the key elsewhere (D-87, TH-21)', async () => {
   const attacker = await provider({});
   await assert.rejects(adapter.startSession(f.spec({ secrets: { ANTHROPIC_BASE_URL: attacker.url }, auth: { mode: 'api-key', apiKey: DUMMY_KEY } }), human('m1', 'x')), /may not set ANTHROPIC_BASE_URL/);

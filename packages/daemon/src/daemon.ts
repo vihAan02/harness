@@ -56,7 +56,8 @@ import { Outbox } from './outbox.ts';
 
 export type TaskWorkspace = {
   projectId: string; taskId: string; worktree: string; branch: string;
-  ports: PortBlock; configDir: string;
+  /** Its port block (D-68); null when the device gives agents no ports, and so no loopback access (D-143). */
+  ports: PortBlock | null; configDir: string;
   env: Record<string, string>; // harness-set: the port block (D-68)
   secrets: Record<string, string>; // the task's allowlisted secrets (D-52)
 };
@@ -1114,7 +1115,8 @@ export class Daemon {
         const timeout = Math.min(repo.test.timeoutSeconds ?? this.config.setup.timeoutSeconds, this.config.setup.timeoutSeconds);
         const result = await runSetup({
           home: this.home, worktree: dir, gitCommonDir: await gitCommonDir(project.repo), scratch: path.join(this.home.scratch, project.id, `land-${landId}`),
-          command: repo.test.command, allowedDomains: [], allowLocalBinding: true, timeoutMs: timeout * 1000, logFile, signal: this.stopSignal.signal,
+          // A device whose agents get no loopback access runs their tests without it too (D-143): they're agent-written code.
+          command: repo.test.command, allowedDomains: [], allowLocalBinding: this.config.limits.portsPerAgent > 0, timeoutMs: timeout * 1000, logFile, signal: this.stopSignal.signal,
           onSpawn: (pgid) => this.recordProcs(`${project.id}-land-${landId}`, pgid),
         }).finally(() => this.forgetProcs(`${project.id}-land-${landId}`));
         if (result.aborted || this.stopping) throw new Error('harnessd stopped during the tests');
@@ -1538,9 +1540,11 @@ export class Daemon {
     const policy = effectivePolicy(this.config, project, repo);
     this.checkCapacity(policy.maxConcurrentAgents);
     if (repo.setup && (!t.reuse || t.forceSetup)) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
-    const ports = await this.ports.allocate(t.taskId, policy.portsPerAgent);
+    const block = await this.ports.allocate(t.taskId, policy.portsPerAgent);
+    // No ports, no allowLocalBinding: the session's sandbox then can't reach any loopback service (D-143, F-142).
+    const ports = block.count > 0 ? block : null;
     const configDir = agentConfigDir(this.home, t.agentId);
-    const env = portEnv(ports);
+    const env = ports ? portEnv(ports) : {};
     const secrets = resolveSecrets(this.home, policy.secretNames);
     return { projectId: t.projectId, taskId: t.taskId, worktree, branch, ports, configDir, env, secrets };
   }

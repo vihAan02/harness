@@ -45,6 +45,13 @@ export type ModelConfig = {
   stripExperimental?: boolean;
   extraBody?: Record<string, unknown>;
   prices?: Record<string, Prices>;
+  /**
+   * The reasoning effort the CLI asks for (D-144). Unset: the CLI's own default, `high` for a model it doesn't know
+   * (F-26's probe), which on a reasoning model can be most of a session's output tokens.
+   */
+  effort?: 'low' | 'medium' | 'high';
+  /** false: the CLI asks for no reasoning at all (`thinking: {type: 'disabled'}`, D-144). Unset: its default (adaptive). */
+  thinking?: false;
 };
 
 /**

@@ -35,6 +35,9 @@ const prNumber = (v: unknown) => {
   return v as number;
 };
 const clean = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(CONTROL, '').slice(0, max) : undefined);
+/** JSON with every object's keys sorted, for comparing: jsonb keeps keys in its own order (shorter first), GitHub in its. */
+const canonical = (v: unknown) => JSON.stringify(v, (_k, x: unknown) => (x !== null && typeof x === 'object' && !Array.isArray(x)
+  ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 
 /** Changed files with their new blobs, as land.complete carries them. */
 export function changedBlobs(v: unknown): { path: string; newHash: string | null }[] {
@@ -112,7 +115,7 @@ export async function reportPrStatus(ctx: HandlerContext, args: Record<string, u
   });
   const next = { head_sha: head, state: args.state, merged: args.merged, merge_sha: mergeSha, mergeable_state: args.mergeable_state, checks, reviews };
   const same = pr.head_sha === head && pr.state === args.state && pr.merged === args.merged && pr.merge_sha === mergeSha && pr.mergeable_state === args.mergeable_state
-    && JSON.stringify(pr.checks) === JSON.stringify(checks) && JSON.stringify(pr.reviews) === JSON.stringify(reviews);
+    && canonical(pr.checks) === canonical(checks) && canonical(pr.reviews) === canonical(reviews);
   if (same) return { result: { changed: false }, events: [] };
   await ctx.tx.query(
     `UPDATE task_prs SET head_sha = $2, state = $3, merged = $4, merge_sha = $5, mergeable_state = $6, checks = $7, reviews = $8, updated_at = now() WHERE task_id = $1`,

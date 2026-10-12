@@ -69,6 +69,13 @@ test('a task\'s PR: published by the device that ran it, once it\'s done; polled
   const same = await status(w.task, 7);
   assert.deepEqual(same.seqs, [], 'nothing changed: no event');
   assert.equal(res(same).changed, false);
+  // GitHub lists check runs in its order and Postgres keeps a jsonb object's keys in its own (shorter first): the same
+  // checks are the same whatever their key order. The control: one changed conclusion is news.
+  const three = { checks: { guard: 'success', 'unit-linux': 'pending', 'full-macos': 'pending' } };
+  assert.equal(res(await status(w.task, 7, three)).changed, true);
+  const again = await status(w.task, 7, three);
+  assert.deepEqual(again.seqs, [], 'the same checks in another key order: no event');
+  assert.equal(res(await status(w.task, 7, { checks: { ...three.checks, 'full-macos': 'success' } })).changed, true);
   const pushed = await status(w.task, 7, { head_sha: SHA('4'), mergeable_state: 'behind' });
   assert.equal((await kinds(pushed.seqs))[0].data.head_sha, SHA('4'));
   await rejects(status(w.task, 8), 'conflict', /#7/);

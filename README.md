@@ -92,6 +92,8 @@ extra_body = { provider = { only = ["parasail/fp8"], allow_fallbacks = false } }
 - **On a third-party endpoint** harnessd pins every model alias Claude Code uses (main, background, subagent) to the configured model, drops request fields only Anthropic's API accepts, and prices tokens from the table's `prices` (Claude Code's own cost figure is a guess for models it doesn't know, F-27). `harness metrics` shows the models used and where the cost figure came from.
 - **Bearer-token endpoints** (`auth = "bearer"`, OpenRouter and Kimi) get the key in both of Claude Code's auth variables, so the check that rules out subscription logins still holds (C-21).
 - **On OpenRouter, pin the provider as well as the model** (`extra_body.provider.only`): many providers serve one model id, some quantized, and default routing can switch between them per request (F-111).
+- **Reasoning costs output tokens.** On the default model it was about two-thirds of a task's output (F-143). `thinking = false` in a provider table asks for none (D-144); `effort = "low"` is passed on too, but OpenRouter's DeepSeek ignores it. A task's quality without reasoning isn't measured yet.
+- **Budgets hold inside a turn.** With configured prices, a session stops at the model response that takes it past its cap, not only when its turn ends (D-116).
 - **For an A/B run,** both arms use the same provider table and model; never a router that picks models (`openrouter/auto` and the like; D-87). Metrics warn if sessions ran on different models.
 - **Real-model checks** in the spike take the same settings: `SPIKE_BASE_URL`, `SPIKE_KEY_ENV`, `SPIKE_MODEL`, `SPIKE_AUTH_SCHEME` (see `spikes/0a-adapter/lib/session.ts`).
 

@@ -29,6 +29,8 @@ export type Stack = Awaited<ReturnType<typeof startStack>>;
 
 export async function startStack(p: {
   files: Record<string, string>; portRange?: [number, number]; daemon?: boolean; daemonOptions?: Partial<DaemonOptions>;
+  /** `[limits] ports_per_agent`; 0 gives agents no loopback access (D-143). */
+  portsPerAgent?: number;
   /**
    * T-5 (D-118): by default this stack's human releases every security review at once, so tests of what lies past the
    * screen (the envelope, the sandbox, the read rules) still see the hostile text. `true` leaves them for the test.
@@ -67,12 +69,12 @@ export async function startStack(p: {
   // The same config on disk, for the CLI (it reads HARNESS_HOME like harnessd does).
   fs.writeFileSync(home.config, [
     'device_id = "dev_test"', 'principal = "human_test"', `server_url = "${server.url}"`,
-    '[limits]', `port_range = [${range[0]}, ${range[1]}]`,
+    '[limits]', `port_range = [${range[0]}, ${range[1]}]`, ...(p.portsPerAgent !== undefined ? [`ports_per_agent = ${p.portsPerAgent}`] : []),
     '[[projects]]', `id = "${project}"`, `repo = "${repo}"`, '',
   ].join('\n'));
   const config = parseConfig({
     device_id: 'dev_test', principal: 'human_test', server_url: server.url,
-    limits: { port_range: range }, projects: [{ id: project, repo }],
+    limits: { port_range: range, ...(p.portsPerAgent !== undefined ? { ports_per_agent: p.portsPerAgent } : {}) }, projects: [{ id: project, repo }],
   }, TOKEN);
   const observed: { run: RunningAgent; o: Observation; t: number }[] = [];
   const acted: EventMessage[] = [];
