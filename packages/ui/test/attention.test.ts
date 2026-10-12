@@ -179,11 +179,21 @@ test('"others": awaiting approval by another human; mine is a control', () => {
 
 test('an open wait shows the kind, id and a UTC time', () => {
   const wait = { id: 'w1', task_id: 'T-1', session_id: 's', on: { kind: 'message', id: 'm1' }, outcome: 'waiting' as const, started_at: 'x', timeout_at: '2026-10-12T15:30:00.000Z', finished_at: null, reason: null };
-  const item = find(attention(snapshot({ tasks: [task({ id: 'T-1', open_wait: wait })] }), null, null, NOW), 'wait:T-1');
+  const item = find(attention(snapshot({ tasks: [task({ id: 'T-1', owner_human_id: 'me', open_wait: wait })] }), null, null, NOW), 'wait:T-1');
   assert.match(item?.title ?? '', /waits for message m1/);
   assert.equal(item?.detail, 'until 15:30');
-  const none = attention(snapshot({ tasks: [task({ id: 'T-1', open_wait: null })] }), null, null, NOW);
+  const none = attention(snapshot({ tasks: [task({ id: 'T-1', owner_human_id: 'me', open_wait: null })] }), null, null, NOW);
   assert.equal(none.filter((i) => i.key === 'wait:T-1').length, 0);
+});
+
+test('an open wait on a task that is not mine makes no item', () => {
+  const wait = { id: 'w1', task_id: 'T-1', session_id: 's', on: { kind: 'message', id: 'm1' }, outcome: 'waiting' as const, started_at: 'x', timeout_at: '2026-10-12T15:30:00.000Z', finished_at: null, reason: null };
+  const notMine = attention(snapshot({ tasks: [task({ id: 'T-1', owner_human_id: 'other', open_wait: wait })] }), null, null, NOW);
+  assert.equal(notMine.filter((i) => i.key === 'wait:T-1').length, 0, 'another human\'s task is a control');
+
+  const agents = [{ id: 'a1', name: 'Bot', vendor: 'claude', human_id: 'me', device_id: 'dev-1', online: true, active_task_id: 'T-1', live_session_id: null }];
+  const viaAgent = find(attention(snapshot({ agents, tasks: [task({ id: 'T-1', owner_human_id: 'other', assignee_agent_id: 'a1', open_wait: wait })] }), null, null, NOW), 'wait:T-1');
+  assert.ok(viaAgent !== undefined, 'my agent\'s task is mine');
 });
 
 test('integrating, outcome_unknown and fetch_pending are "others"', () => {
