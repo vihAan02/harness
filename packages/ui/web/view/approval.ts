@@ -38,22 +38,27 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
   // `rendered` is false when nothing has been rendered yet.
   const state: { hash: string | null; rendered: boolean; done: string | null } = { hash: null, rendered: false, done: null };
 
-  // Built once: the two Actions and the buttons survive every re-render, so a pending send is never wiped and a double
-  // click can't send twice.
+  // Built once: the buttons, the status line and the holder for the current Actions survive every re-render, so a
+  // pending send is never wiped and a double click can't send twice. The Actions themselves are created per click (see
+  // the click handlers): a conflicted or failed Action is left behind, and a fresh one lets the human try again.
   const controls = el('div', { class: 'approval-buttons' });
   const status = el('p', { class: 'approval-status', role: 'status' });
   const approveButton = el('button', { type: 'button', class: 'approve' }, 'Approve');
   const denyButton = el('button', { type: 'button', class: 'deny' }, 'Deny');
 
-  const approve = new Action(() => ctx.api.approve(id, state.hash ?? ''));
-  const deny = new Action(() => ctx.api.deny(id));
-  const eitherBusy = (): boolean => approve.busy() || deny.busy();
+  // The Action created by the last click on each button, kept so its label and busy state can be read every render.
+  const actions: { approve: Action | null; deny: Action | null } = { approve: null, deny: null };
+  const busy = (action: Action | null): boolean => action !== null && action.busy();
+  const eitherBusy = (): boolean => busy(actions.approve) || busy(actions.deny);
 
   const update = (): void => {
     clear(status);
+    // The last sent Action's words win while one is busy, so a send in flight is always visible. A confirmed send
+    // shows its outcome; a failed or conflicted one shows the Action's own label (for a conflict, CONFLICT is clearer).
     if (state.done !== null) status.append(state.done);
-    else if (approve.status === 'conflict') status.append(CONFLICT);
-    else if (eitherBusy()) status.append(approve.busy() ? approve.label() : deny.label());
+    else if (actions.approve?.status === 'conflict') status.append(CONFLICT);
+    else if (actions.approve !== null && actions.approve.status !== 'idle') status.append(actions.approve.label());
+    else if (actions.deny !== null && actions.deny.status !== 'idle') status.append(actions.deny.label());
     approveButton.disabled = ctx.offline() !== null || eitherBusy();
     denyButton.disabled = ctx.offline() !== null || eitherBusy();
   };
@@ -73,15 +78,21 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
 
   listen(approveButton, 'click', () => {
     if (eitherBusy()) return;
+    // A new Action per click: the previous one may have failed or conflicted, and Action.send() only runs from idle or
+    // failed, so reusing it after a conflict would silently do nothing.
+    const action = new Action(() => ctx.api.approve(id, state.hash ?? ''));
+    actions.approve = action;
     state.done = null;
     update();
-    void onSend(approve, GONE_APPROVED);
+    void onSend(action, GONE_APPROVED);
   });
   listen(denyButton, 'click', () => {
     if (eitherBusy()) return;
+    const action = new Action(() => ctx.api.deny(id));
+    actions.deny = action;
     state.done = null;
     update();
-    void onSend(deny, GONE_DENIED);
+    void onSend(action, GONE_DENIED);
   });
 
   const off = ctx.onChange(render);

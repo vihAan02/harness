@@ -179,7 +179,9 @@ function actionControl(a: TaskAction, id: string, ctx: ViewContext): Control {
 }
 
 /** The page's action controls: one per kind offered, reused across renders so a pending send and typed text survive.
- * Kind → its control. A control whose kind is no longer offered is dropped unless its Action is still pending. */
+ * Kind → its control. A control whose kind is no longer offered is dropped unless its Action is still pending.
+ * `offered` is always what the task allows a signed-in human (built with offline=false): while the bridge is offline
+ * each control's update() disables it instead of the control being torn down, so typed text and a pending send stay. */
 function actionsSection(id: string, ctx: ViewContext): { node: HTMLElement; sync: (offered: TaskAction[]) => void; controls: Control[] } {
   const container = el('div', { class: 'action-list' });
   const byKind = new Map<string, Control>();
@@ -211,7 +213,8 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
   // only as the offered kinds change, so a re-render every few seconds neither wipes a pending control nor steals focus.
   const data = el('div', { class: 'task-data-wrap' });
   const actions = actionsSection(id, ctx);
-  const actionsPanel = el('section', { class: 'panel task-actions' }, el('h2', {}, 'Actions'), actions.node);
+  const actionsNote = el('p', { class: 'action-note' });
+  const actionsPanel = el('section', { class: 'panel task-actions' }, el('h2', {}, 'Actions'), actionsNote, actions.node);
   let lastKey: string | null = null;
   let controlsShown = false;
 
@@ -227,7 +230,9 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
     if (snap === null) { showMessage('Loading…'); return; }
     const model = taskModel(snap, id);
     if (model === null) { showMessage(`No task ${id} in this project.`); return; }
-    const offered = actionsFor(snap, id, ctx.offline() !== null);
+    // The offered controls are always what the task allows, built without the offline flag: a bridge blip must not
+    // tear a control down and lose its typed text. update() disables each one while offline() is set.
+    const offered = actionsFor(snap, id, false);
     const key = dataKey(model);
     if (key !== lastKey) {
       lastKey = key;
@@ -235,6 +240,10 @@ export function mount(root: HTMLElement, ctx: ViewContext): () => void {
       data.append(dataContainer(model, ctx));
     }
     actions.sync(offered);
+    // One line under the heading: offline (controls wait), nothing offered, or nothing at all.
+    clear(actionsNote);
+    if (ctx.offline() !== null) actionsNote.append("Offline: actions wait until it's back.");
+    else if (offered.length === 0) actionsNote.append('No actions for you on this task.');
     if (root.firstChild !== data || !controlsShown) {
       clear(root);
       root.append(data, actionsPanel);
