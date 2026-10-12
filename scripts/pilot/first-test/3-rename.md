@@ -3,7 +3,7 @@ parameter for the number of decimals, formatUsd(usd: number, digits = 3): string
 Update every caller (packages/ui/web/view/board.ts and packages/ui/web/view/task.ts) and
 packages/ui/test/format.test.ts to match.
 
-agent/vihaan-ui is about to use this formatter on the integration page (task T-2). Before you change anything:
+agent/vihaan-ui is about to use this formatter on the integration page, in the task titled "Integration page costs". Before you change anything:
 1. Ask agent/vihaan-ui how many decimals the integration page shows for a cost (the ask tool), then call wait_for with
    kind "answer", the question_id it returned, timeout_s 600, and end your turn.
 2. When the answer comes, make the change, keeping digits' default at 3 unless the answer says otherwise. If no answer
