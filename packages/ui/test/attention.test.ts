@@ -46,6 +46,25 @@ test('each approval kind has its title and its own route', () => {
   assert.match(attention(snap, [approval({ kind: 'security_review' })], null, NOW)[0]?.title ?? '', /held message for Widget/);
 });
 
+test('an approval detail is the command\'s first line, cut to 160, and null for the kinds that show everything', () => {
+  const snap = snapshot({ tasks: [task({ id: 'T-1', title: 'Widget' })] });
+
+  const publish = find(attention(snap, [approval({ kind: 'publish', command: 'Title\n\nBody\nmore' })], null, NOW), 'approval:ap1');
+  assert.equal(publish?.detail, null, 'a publish command is the whole PR body: the board shows none of it');
+
+  const short = find(attention(snap, [approval({ kind: 'agent_session' })], null, NOW), 'approval:ap1');
+  assert.equal(short?.detail, null, 'an agent_session approval has its own page');
+
+  const review = find(attention(snap, [approval({ kind: 'security_review' })], null, NOW), 'approval:ap1');
+  assert.equal(review?.detail, null, 'a security_review approval has its own page');
+
+  const testKind = find(attention(snap, [approval({ kind: 'test', command: 'npm run check\n-- --reporter=x' })], null, NOW), 'approval:ap1');
+  assert.equal(testKind?.detail, 'npm run check', 'the first line only');
+
+  const long = find(attention(snap, [approval({ kind: 'setup', command: 'y'.repeat(200) })], null, NOW), 'approval:ap1');
+  assert.equal(long?.detail, `${'y'.repeat(160)}…`);
+});
+
 test('an agent_session approval names the issuer and agent, and falls back when details are null', () => {
   const snap = snapshot({ tasks: [task({ id: 'T-2', title: 'Widget' })] });
   const details = { kind: 'start' as const, issuer_human_id: 'alice', issuer_device_id: 'd', nonce: 'n', expires_at: 'x', agent_name: 'Bot', task_id: 'T-2', task_title: 'Widget', task_text: 't', task_scope: [], task_owner_human_id: 'o', task_sha256: 's', message: null };
@@ -164,6 +183,19 @@ test('a long question is trimmed to 120 characters', () => {
   const asked = { id: 'm1', kind: 'question', from: 'peer', to: 'a1', from_task: null, to_task: null, in_reply_to: null, text: 'x'.repeat(300), priority: 'normal', sent_at: 'x', seq: 1, delivered_at: null, held: false };
   const item = find(attention(snapshot({ agents, messages: [asked] }), null, null, NOW), 'question:m1');
   assert.equal((item?.title ?? '').endsWith('x'.repeat(120)), true);
+});
+
+test('a held message to my agent warns; an ordinary one is info', () => {
+  const agents = [{ id: 'a1', name: 'Bot', vendor: 'claude', human_id: 'me', device_id: 'dev-1', online: true, active_task_id: 'T-1', live_session_id: null }];
+  const asked = { id: 'm1', kind: 'question', from: 'peer', to: 'a1', from_task: null, to_task: 'T-1', in_reply_to: null, text: 'why?', priority: 'normal', sent_at: 'x', seq: 1, delivered_at: null, held: false };
+
+  const held = find(attention(snapshot({ agents, messages: [{ ...asked, held: true }] }), null, null, NOW), 'question:m1');
+  assert.equal(held?.level, 'warn');
+  assert.equal(held?.title, 'A message to Bot is held for your review: why?');
+
+  const notHeld = find(attention(snapshot({ agents, messages: [asked] }), null, null, NOW), 'question:m1');
+  assert.equal(notHeld?.level, 'info');
+  assert.equal(notHeld?.title, 'Bot was asked: why?');
 });
 
 test('"others": awaiting approval by another human; mine is a control', () => {

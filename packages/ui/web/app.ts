@@ -56,6 +56,11 @@ let mountedName: string | null = null;
 let mountedParams: string[] = [];
 const listeners = new Set<() => void>();
 
+/** Bumped by every route() call: an import that resolves after a later call must not mount (its generation is stale). */
+let routeGeneration = 0;
+/** The name and params of the route whose view import is in flight, so a repeat call for it is a no-op. */
+let pendingRoute: { name: string; params: string[] } | null = null;
+
 function asApiError(e: unknown): ApiError {
   return e instanceof ApiError ? e : new ApiError(0, 'bridge_unreachable', e instanceof Error ? e.message : String(e));
 }
@@ -159,11 +164,14 @@ function sameParams(a: string[], b: string[]): boolean {
 }
 
 async function route(): Promise<void> {
+  const gen = ++routeGeneration;
   if (!api.hasSession()) { showPlain(SESSION_MESSAGE); return; }
   const parts = location.hash.replace(/^#/, '').split('/').filter((s) => s !== '');
   const name = parts[0] ?? '';
   const params = parts.slice(1);
   if (mountedName === name && sameParams(mountedParams, params)) return;
+  // A second call for a route whose import is already in flight is a no-op: it would mount the same view again.
+  if (pendingRoute !== null && pendingRoute.name === name && sameParams(pendingRoute.params, params)) return;
 
   // Unmount the previous view before mounting the next.
   if (unmountView) { unmountView(); unmountView = null; }
@@ -176,6 +184,7 @@ async function route(): Promise<void> {
 
   const spec = Object.hasOwn(routes, name) ? routes[name] : undefined;
   if (spec === undefined) { showNotBuilt(); return; }
+  pendingRoute = { name, params };
   let view: View | undefined;
   try {
     const mod = (await import(spec)) as { default?: View };
@@ -183,6 +192,9 @@ async function route(): Promise<void> {
   } catch {
     view = undefined;
   }
+  pendingRoute = null;
+  // A later route() superseded this one while its import was in flight: don't mount over the newer call's view.
+  if (gen !== routeGeneration) return;
   if (view === undefined || typeof view.mount !== 'function') { showNotBuilt(); return; }
   unmountView = view.mount(viewEl, context(params));
   mountedName = name;
