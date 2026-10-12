@@ -1,4 +1,51 @@
-# Handoff: harness, Phase 0B (state as of 2026-10-06; the pilot sprint from 2026-10-08)
+# Handoff: harness, Phase 0B (state as of 2026-10-06; the pilot sprint from 2026-10-08; latest update 2026-10-12)
+
+## Update (2026-10-12, S19): everything for the first two-Mac test is in PRs, and Daniyal's Mac runs the real pilot coordinator. Read this first
+- **Who and when:** Daniyal's Claude (stream A), 2026-10-12, about 19:30 to 21:45 UTC, under S19: commit the work for review, device keys everywhere, prepare the real two-Mac test, and **don't bypass review**. Merges are review-gated: a PR that touches stream B's files or a contract waits for Vihaan. The two-Mac test runs from a pushed candidate commit, so his reviews don't block preparing it, only `main`.
+- **Where 2026-10-10 (S18) stopped:** #124 to #131 merged, then the session hit its limit while #133 (PA4c) was in CI. Its re-cuts of Vihaan's PRs, the coordinator script, `demo:pilot`, the smoke and P0 were built but never pushed. Today they're rebased, verified and in PRs, and the UI dogfood's work (the night of 2026-10-11 and today) joined them.
+- **Merged today**, each pinned to a head that passed `npm run check` locally and the three required checks:
+  - #133 PA4c as `9c75b2f`;
+  - #135 (D-143 agents with no loopback, D-144 `thinking = false`, the session cap inside a turn, `pr.status` only on a change) as `fe1ce2d`;
+  - #143 (an approval racing harnessd's poll was read as a denial, in four waits including D-34's remote start; the fake GitHub's Git has an identity) as `34f3dfb`;
+  - #139 (#85 unchanged, Haiku 5.5) as `c0c2c64`.
+- **Open, each head verified locally with 0 failures (numbers in each PR):**
+
+  | PR | What | Merges |
+  |---|---|---|
+  | #134 | An empty land's worktree is removed at once | Vihaan (additive event field) |
+  | #136, on #135 | What the UI reads from harnessd | Vihaan (additive contract) |
+  | #137, on #136 | **The thin UI**: six Harness task sessions' commits, the bridge contract, `ui-stack.ts` | Vihaan (`packages/ui/**`) |
+  | #138 | D-142: the coordinator on Daniyal's Mac (`coordinator.sh`) | Vihaan (`scripts/pilot/**`) |
+  | #141, on #138 | PB5 re-cut of #117: install, tunnel, `pg-harden` (two more bugs fixed today), the runbook, the first test | Vihaan |
+  | #140 | PB1b + PB2b re-cut of #116 and #120: setup, doctor, signed CLI commands, `harness integrate` | Vihaan |
+  | #142, on #140 | `npm run demo:pilot`, the real-GitHub smoke, P0 | Vihaan |
+
+  Not yet in a PR, only on the candidate: `harness setup --ports-per-agent` (it needs #135 under #140; open it once #140 is rebased).
+- **The candidate** is `daniyal/pilot-candidate`: every PR above stacked on `main`. At `2acc22b`: `npm run check` gives 697 tests, 695 pass, 0 fail, 2 skipped, and `demo:pilot` passes. At `ad18775` (the same, before #143's two commits): 696 tests, 695 pass, 0 fail, and `demo`, `demo:0b` and `demo:pilot` passed. Both runs used Postgres 18 hardened.
+- **Postgres on Daniyal's Mac (S19's answer):**
+  - 18 on 5433 (Harness's databases only) is hardened with the fixed `pg-harden.sh`: scram, and the password in `~/.pgpass`, which agents can't read. `PGPASSFILE` is exported in `~/.zshrc`, and the tests log in through it. `--undo` restores it.
+  - 17 on 5432 holds another project's databases and still trusts loopback. It's **stopped** while real agents run (`brew services stop postgresql@17`). Start it again with `brew services start postgresql@17` when harnessd isn't running agents. While it's up, harnessd refuses to start agents (D-119).
+- **The real pilot stack on Daniyal's Mac** (D-142), set up today exactly as `scripts/pilot/README.md` §1 and §2 say:
+  - the runtime `~/harness-runtime/current` (`2acc22b`), from `install.sh`;
+  - the coordinator: `~/.harness-coordinator`, a socket-only Postgres 18 cluster and the server in device-key mode on 127.0.0.1:7400, under launchd (`coordinator.sh status`), epoch `706e12ac39b448b3`, key fingerprint `SHA256:9a1f b908 1d32 3710 fb74 e85f 717b 6164`;
+  - provisioned with pass 1, both humans and Daniyal's device (`SHA256:fca8 1ff8 8937 e50d c6e8 b801 fdcc e476`) and agent;
+  - `~/.harness` from `harness setup … --provider openrouter-haiku55 --ports-per-agent 0`;
+  - harnessd and the UI bridge started from a shell with the OpenRouter key in the environment (`~/.harness/logs/{harnessd,bridge}.out`, with PIDs);
+  - `harness doctor`: everything ok except `git credentials` (`gh auth setup-git`, Daniyal's to run; pushes work through the keychain meanwhile).
+- **A rehearsal through the real UI** (T-1, "Rehearsal: UI formatters"):
+  - created on the board, then assigned (a signed dispatch);
+  - its setup approved on the approval page;
+  - Haiku 5.5 did it in one session, $0.0077;
+  - harnessd stopped and restarted, and it re-asked the same publish approval.
+
+  It now waits for **Daniyal's own publish approval**. The auto-mode classifier stopped his Claude from approving its own agent's publish, which is D-115's human step, as it should be. Approving it (board → Waiting for you) opens a real PR as `DaniyalMughal1`, and the Integration page then shows its checks, and that Integrate needs Vihaan's review. Close that PR unmerged and abandon T-1 afterwards. Denying it ends the rehearsal too.
+- **What only the humans can do** (the test can't start without these):
+  1. **Vihaan:** review #136, #137, #138, #140 and #141 (and #134, #142). The first test changes the UI, so #137 must be on `main`.
+  2. **Daniyal:** Tailscale, shared to Vihaan's Mac; Remote Login on, limited to the tunnel account; the `sudo` commands `coordinator.sh tunnel-account` prints once Vihaan's tunnel key arrives; `gh auth setup-git`.
+  3. **Vihaan, on his Mac:** the README's §1 and §3: Node 24, `gh auth setup-git`, a clone at `~/code/harness-pilot`, `install.sh install <candidate>`, `harness setup keygen --device dev_vihaan_mbp` (post the key, read the fingerprint aloud), `tunnel.sh keygen` (send the key), his OpenRouter key capped at $0.25 a day in `~/.harness/secrets.toml`, Tailscale.
+  4. **Then Daniyal:** apply pass 2 (Vihaan's device and `agent/vihaan-ui`), and `harness setup … --trust-device dev_vihaan_mbp=… --ports-per-agent 0 --force`.
+- **Spend today:** the UI dogfood $0.597 (its own ledger, 12 sessions); the real pilot $0.0077 (1 session). The OpenRouter key's limit is $4. The dogfood device's day cap is back to $0.25, and the pilot's is $0.25 (D-116).
+- **Stopped:** the UI dogfood stack (local-token) and the exercise stack (`test/pilot/ui-stack.ts`), to free 7480. Restart the exercise stack with `node test/pilot/ui-stack.ts` from a checkout of #137.
 
 ## Update (2026-10-09, T+24): the pilot's core is on `main`, but gate H24 hasn't run. Read this first
 - **Who and when:** written by Daniyal's Claude (stream A) at about 15:45 UTC on 2026-10-09. T+0 was PC0's merge (#87, 2026-10-08 14:35 UTC).
