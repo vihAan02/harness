@@ -1,12 +1,14 @@
 Make the integration page's costs use the UI's shared cost formatter in packages/ui/web/model/format.ts.
 
-agent/daniyal-ui is about to change that formatter (task T-3). So, in this order:
+agent/daniyal-ui is about to change that formatter, in task RENAME_TASK ("Rename the cost formatter"). So, in this
+order:
 1. Read packages/ui/web/model/format.ts and packages/ui/web/view/integration.ts.
-2. Call wait_for with kind "task", id "T-3", timeout_s 3600, and end your turn.
+2. Call wait_for with kind "task", id "RENAME_TASK", timeout_s 3600, and end your turn. That task may not have started
+   yet; the wait holds until it lands.
 3. If agent/daniyal-ui asks you a question meanwhile, answer it (with the answer tool, by its question_id), then end
-   your turn again. You're still waiting for T-3.
-4. Only after the harness tells you T-3 has landed (and what changed in format.ts), make the change below with the
-   formatter as it is then.
+   your turn again. You're still waiting for RENAME_TASK.
+4. Only after the harness tells you RENAME_TASK has landed (and what changed in format.ts), make the change below with
+   the formatter as it is then.
 
 The change, in packages/ui/web/view/integration.ts only: the three costs that are formatted inline with toFixed(3)
 in spendSection (the spent and daily amounts, the session cap, and each task's cost) go through the shared formatter,

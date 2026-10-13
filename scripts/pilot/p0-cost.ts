@@ -83,19 +83,14 @@ async function main() {
   const sessions = [...view.sessions.values()].filter((s) => s.taskId === 'T-1');
   const usage = sessions.map((s) => view.usage.get(s.id)).filter((u) => u !== undefined);
   const cost = usage.reduce((a, u) => a + u.costUsd, 0);
-  const wt = daemon.worktreeOf('prj_p0', 'T-1');
   const diff = execFileSync('git', ['-C', repo, 'diff', '--stat', `HEAD...harness/task/T-1`], { encoding: 'utf8' }).trim();
   console.log(`\n=== P0 ===`);
   console.log(`task status: ${task.status}${task.summary ? ` ("${task.summary}")` : ''}; sessions: ${sessions.map((s) => `${s.status}${s.endReason ? ` (${s.endReason})` : ''}`).join(', ')}`);
   console.log(`cost: $${cost.toFixed(4)} of the $${BUDGET} cap; ${JSON.stringify(usage.map((u) => ({ in: u.input, out: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheCreation, models: u.models })))}`);
   console.log(`time: ${((Date.now() - t0) / 1000).toFixed(0)} s in all`);
   console.log(`branch harness/task/T-1 vs base:\n${diff || '(no change)'}`);
-  if (fs.existsSync(wt)) {
-    try {
-      execFileSync('node', ['--test', 'packages/ui/test/format.test.ts'], { cwd: wt, stdio: 'pipe' });
-      console.log('its test passes here too: node --test packages/ui/test/format.test.ts');
-    } catch (e) { console.log(`its test fails here: ${String((e as { stdout?: Buffer }).stdout ?? '').split('\n').filter((l) => /^ℹ|not ok/.test(l)).join(' | ')}`); }
-  }
+  // The agent's test file isn't run here: this process holds the provider key and has no sandbox (D-45, D-64). The
+  // agent ran it inside its own sandbox before report_done, and a land runs it in the land step's.
   return task.status === 'done' && cost <= BUDGET;
 }
 

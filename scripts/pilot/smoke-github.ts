@@ -3,6 +3,8 @@
 // own `gh` login, harnessd publishes a scripted task from a fresh clone of the real repository: the publish gate, the
 // local approval, a push of harness/<project>/<epoch>/<task>, one PR with the template filled, polling its checks and
 // reviews. Then `harness integrate` must refuse (no other code owner has approved it): GitHub's live rules were read.
+// The file it writes is at the repository's root, which CODEOWNERS gives to both humans, so whoever runs this, the
+// other one's review is required. (Under docs/, Daniyal's alone, his own run would need nobody and could merge.)
 // The PR is closed unmerged and its branch deleted.
 //
 //   node scripts/pilot/smoke-github.ts [--repo owner/name] [--keep-pr]
@@ -89,11 +91,11 @@ async function main() {
   const cli = async (...args: string[]) => (await run(process.execPath, [path.resolve(import.meta.dirname, '../../packages/cli/src/main.ts'), ...args], { env: { ...process.env, HARNESS_HOME: home.root } })).stdout.trim();
   await cli('agent', 'add', 'smoke');
   const wt = path.join(fs.realpathSync(home.root), 'worktrees', project, 'T-1');
-  const file = 'docs/pilot-smoke.md';
+  const file = 'PILOT-SMOKE.md';
   const script = [`Write the smoke file. (Scripted.) ${new Date().toISOString()}`,
     `#STEP Write ${JSON.stringify({ file_path: `${wt}/${file}`, content: `# Pilot smoke\n\nharnessd's publish path against the real GitHub (D-114). This PR is closed unmerged.\n` })}`,
     `#STEP mcp__harness__report_done ${JSON.stringify({ summary: 'smoke file written' })}`, '#STEP TEXT Done.'].join('\n');
-  console.log(await cli('task', 'add', 'Pilot smoke: publish to the real GitHub', '--scope', 'docs/', '--assign', 'smoke', '--text', script));
+  console.log(await cli('task', 'add', 'Pilot smoke: publish to the real GitHub', '--scope', file, '--assign', 'smoke', '--text', script));
   await until('the publish request', async () => new Approvals(home).pending().some((r) => r.kind === 'publish'), 180_000);
   console.log(await cli('approve', new Approvals(home).pending().find((r) => r.kind === 'publish')!.id, '--yes'));
 

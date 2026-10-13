@@ -170,6 +170,12 @@ export async function doctor(home: Home, o: { offline?: boolean } = {}): Promise
   const within = config.limits.maxConcurrentAgents <= PILOT.maxConcurrentAgents && maxBudgetUsd !== null && maxBudgetUsd <= PILOT.maxBudgetUsd && dailyBudgetUsd !== null && dailyBudgetUsd <= PILOT.dailyBudgetUsd;
   check('budgets', within, `${config.limits.maxConcurrentAgents} agent(s), $${maxBudgetUsd ?? '?'} a session, $${dailyBudgetUsd ?? '?'} a day${within ? '' : `: the pilot allows ${PILOT.maxConcurrentAgents}, $${PILOT.maxBudgetUsd} and $${PILOT.dailyBudgetUsd}; raising them is the owners' call`}`);
 
+  // What this Mac's agents can reach on loopback (D-143), said outright: a config written without --ports-per-agent 0
+  // gives every agent a port block, and with it every loopback listener here.
+  const agentPorts = config.limits.portsPerAgent;
+  check('agent loopback', true, agentPorts === 0 ? 'none: ports_per_agent = 0 (D-143)'
+    : `${agentPorts} ports per agent, so agents can reach every loopback listener on this Mac; harness setup … --ports-per-agent 0 --force closes it`);
+
   // The runtime: Node 24, and the sandbox actually runs a command.
   const major = Number(process.versions.node.split('.')[0]);
   check('node', major === 24, major === 24 ? `v${process.versions.node}` : `v${process.versions.node}; the pilot runs on Node 24`);

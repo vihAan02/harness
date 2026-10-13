@@ -46,7 +46,9 @@ const USAGE = `usage: harness <command> [--project <id>]
   setup --device <id> --principal <human> --server-key ed25519:… --project <id> --repo <abs path>
         [--trust-device <id>=<human>:ed25519:…]… [--server-url ws://127.0.0.1:7400] [--base-branch main]
         [--integration github --remote <https url> --commit-name <name> --commit-email <noreply>]
-        [--provider <name>] [--force]       write config.toml for the pilot (D-111): only the keys you typed are pinned
+        [--provider <name>] [--ports-per-agent <n>] [--force]
+                                              write config.toml for the pilot (D-111): only the keys you typed are pinned;
+                                              --ports-per-agent 0 gives agents no loopback access (D-143)
   doctor [--offline]                          check this Mac is ready for the pilot; prints each fix, never a secret
   --version`;
 
@@ -381,19 +383,33 @@ async function integrate(a: Args, taskId: string | undefined) {
   console.log(`Integrating ${taskId}: harnessd merges PR #${pr.number} through GitHub, then the other Macs fetch it. Follow it with: harness status`);
 }
 
+/** The flags `harness setup` takes, each with a value (`--force` is the one without). */
+const SETUP_FLAGS = ['device', 'principal', 'server-url', 'server-key', 'trust-device', 'project', 'repo', 'base-branch', 'integration', 'remote',
+  'commit-name', 'commit-email', 'provider', 'ports-per-agent'];
+
 /** `harness setup keygen` and `harness setup …` (PB1; D-111): one Mac joins the pilot. */
 function setup(a: Args, argv: string[]) {
   const home = harnessHome();
+  // Every flag is one setup knows, with its value: a typo, `--flag=value` or a missing value is refused, never dropped.
+  // A dropped `--ports-per-agent 0` would leave this Mac's agents their loopback access without a word (D-143).
+  for (const [k, v] of Object.entries(a.flags)) {
+    if (k === 'force') continue;
+    if (!SETUP_FLAGS.includes(k)) fail(`harness setup doesn't know --${k} (see harness --help; a value follows its flag after a space)`);
+    if (v === true) fail(`--${k} needs a value`);
+  }
   if (a.positional[1] === 'keygen') return void console.log(keygen(home, flag(a, 'device')));
   if (a.positional.length > 1) fail('usage: harness setup keygen, or harness setup --device … (see harness --help)');
   const need = (k: string) => flag(a, k) ?? fail(`harness setup needs --${k}`);
   const integration = flag(a, 'integration') ?? 'github';
   if (integration !== 'github' && integration !== 'local') fail('--integration must be github or local');
+  const ports = flag(a, 'ports-per-agent');
+  if (ports !== undefined && !/^\d{1,3}$/.test(ports)) fail('--ports-per-agent must be a whole number (0: no loopback access for agents)');
   const file = writeSetup(home, {
     device: need('device'), principal: need('principal'), serverUrl: flag(a, 'server-url') ?? 'ws://127.0.0.1:7400', serverKey: need('server-key'),
     trust: argv.flatMap((x, i) => (argv[i - 1] === '--trust-device' ? [x] : [])), // repeatable
     project: need('project'), repo: need('repo'), baseBranch: flag(a, 'base-branch') ?? 'main', integration,
     remote: flag(a, 'remote'), commitName: flag(a, 'commit-name'), commitEmail: flag(a, 'commit-email'), provider: flag(a, 'provider'),
+    ...(ports !== undefined ? { portsPerAgent: Number(ports) } : {}),
     force: a.flags.force === true,
   });
   console.log(`wrote ${file}. Next: harness doctor`);
@@ -437,6 +453,14 @@ async function approve(args: string[]) {
           : `Approved ${req.id}. harnessd will run it in the sandbox: writes only in the worktree, no secrets, network limited to your allowlist.`);
 }
 
+/**
+ * One line of what a human approves, whole (review of #140): the approval binds every character, so none is cut.
+ * Control, zero-width and direction-changing characters are shown as escapes, never obeyed: they could hide or
+ * reorder what follows them.
+ */
+const shownWhole = (line: string) =>
+  line.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+
 function describe(r: ApprovalRequest) {
   // Publishing, another human's start and a held message say what they bind in their own text (D-112, D-114, D-118).
   const other: Record<string, string> = {
@@ -445,7 +469,7 @@ function describe(r: ApprovalRequest) {
   };
   if (r.kind && other[r.kind]) {
     console.log(`\n${r.id}  ${other[r.kind]}; project ${r.projectId}, task ${r.taskId}`);
-    console.log(r.command.split('\n').map((l) => `  ${untrustedText(l, 400)}`).join('\n'));
+    console.log(r.command.split('\n').map((l) => `  ${shownWhole(l)}`).join('\n'));
     return void console.log('  Approving covers exactly what\'s shown here, once.\n');
   }
   console.log(`\n${r.id}  ${r.kind === 'test' ? 'TEST command (runs when a task lands)' : 'setup command'}; project ${r.projectId}, first requested for task ${r.taskId}`);
