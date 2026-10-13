@@ -14,7 +14,7 @@
 | [Q-06](#q-06) | How good read-set coverage has to be, and shell-read handling | 0B | **Resolved → D-88** (the proposal, as written) |
 | [Q-07](#q-07) | Policy when two hard claims race | 0B | **Resolved → D-89** (first come, first served, plus a human override) |
 | [Q-08](#q-08) | Where tests run before landing or opening a PR | 1 | 0B answered by D-51; Phase 1 open |
-| [Q-09](#q-09) | Where the coordination server is hosted in Phase 1 | 1 | Open; for the pilot, an always-on host the owners run, behind SSH tunnels (D-110, D-111) |
+| [Q-09](#q-09) | Where the coordination server is hosted in Phase 1 | 1 | Open; for the pilot, Daniyal's Mac behind an SSH tunnel over Tailscale (D-142) |
 | [Q-10](#q-10) | Identity, sign-in and signing keys | 1 | Open; for the pilot, preprovisioned humans with a key per device and a pinned server key (D-111, D-112) |
 | [Q-11](#q-11) | GitHub plan limits and GitHub-only | 1 | Open |
 | [Q-12](#q-12) | The original proposal text is missing | Nothing (context only) | Open |
@@ -127,6 +127,7 @@
 **Where the coordination server is hosted in Phase 1.** A managed Postgres plus a small WebSocket service, or self-hosted.
 - **Things to weigh:** latency for both people, cost (S1: the real infra cost is always-on WebSocket and Postgres, not storage), and data residency.
 - **For the two-Mac pilot (D-110, D-111):** an always-on host the owners already run, with the server on loopback, reached through tunnel-only SSH accounts. No agents run there. The Phase 1 answer stays open.
+  - **Superseded for this pilot by D-142 (2026-10-10):** the coordinator runs on Daniyal's Mac, which also runs his agent, with a socket-only database; Vihaan tunnels in over Tailscale.
 
 ### Q-10
 **Identity, sign-in and signing keys.**

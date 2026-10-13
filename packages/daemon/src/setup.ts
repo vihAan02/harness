@@ -22,7 +22,9 @@ export const CREDENTIAL_PATHS = ['.ssh', '.aws', '.gnupg', '.config/gh', '.confi
   '.claude', '.claude.json', '.codex', 'Library/Keychains',
   '.git-credentials', '.config/git/credentials', '.config/hub', '.cargo/credentials', '.cargo/credentials.toml', '.gem/credentials',
   '.local/share/keyrings', '.local/share/uv/credentials', '.azure', '.terraform.d/credentials.tfrc.json', '.vault-token',
-  '.password-store', '.config/op', '.bunfig.toml', '.yarnrc.yml'];
+  '.password-store', '.config/op', '.bunfig.toml', '.yarnrc.yml',
+  // Postgres passwords, and a coordinator on this Mac (D-142): its key, its database and the launchd jobs that start it.
+  '.pgpass', '.pg_service.conf', '.harness-coordinator', 'Library/LaunchAgents'];
 
 export type SetupRun = {
   home: Home; worktree: string; gitCommonDir: string; scratch: string; command: string;
