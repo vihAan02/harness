@@ -165,6 +165,11 @@ export type ProjectSnapshot = {
   repo: { github_repo: string | null; base_branch: string };
   /** The latest security alerts (forged or replayed dispatches, unapproved merges), oldest first. Untrusted text. */
   alerts: { seq: number; at: string; what: string; task_id: string | null; detail: string | null }[];
+  /**
+   * This device's provider circuit (D-116): open after an auth, billing or budget error, and then no agent starts here
+   * until the human fixes the account and resets it (a budget circuit closes by itself on the next UTC day). Null: closed.
+   */
+  provider: { circuit: { kind: 'auth' | 'billing' | 'budget'; reason: string; at: string } | null };
 };
 export type SnapshotConnection = 'connecting' | 'connected' | 'server_identity_mismatch' | 'replaced' | 'refused' | 'coordinator_changed';
 export type TaskSnapshot = {
@@ -181,6 +186,10 @@ export type TaskSnapshot = {
   publish_blocked: { rule: string; path?: string; commit?: string }[] | null;
   /** Files its agent read that have changed since (D-91). */
   stale_reads: string[];
+  /** Files its agent is changing, as its device last reported them (observed claims, D-79), sorted. */
+  changing: string[];
+  /** Overlaps with other tasks' claims (D-79): the other task, the paths, and whether it's declared scope or actual edits. */
+  overlaps: { task_id: string; paths: string[]; level: 'prospective' | 'observed' }[];
   leases: { path: string; expires_at: string }[];
   open_wait: WaitSnapshot | null;
   /** All its sessions, in USD at the configured prices. */
@@ -208,6 +217,10 @@ export type AgentSnapshot = {
 export type MessageSnapshot = {
   id: string; kind: string; from: string; to: string | null; from_task: string | null; to_task: string | null; in_reply_to: string | null;
   text: string; priority: string; sent_at: string; seq: number;
+  /** When its recipient's harnessd put it in front of the agent; null: not yet. Delivered isn't understood (D-26). */
+  delivered_at: string | null;
+  /** Withheld by the coordinator: over a task's message budget (D-24), so it's never delivered. Not the T-5 screen's hold (D-118), which is a local approval. */
+  held: boolean;
 };
 export type WaitSnapshot = {
   id: string; task_id: string; session_id: string; on: { kind: string; id: string };

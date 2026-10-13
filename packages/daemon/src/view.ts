@@ -14,6 +14,8 @@ export type TaskInfo = {
   createdAt: string; assignedAt?: string; completedAt?: string;
   /** Who issued its latest signed start, reopen or resume (D-112), where one was signed. */
   dispatchedBy?: string;
+  /** Why its latest start or reopen ended before a session began (D-113), until the next assignment or reopen. */
+  startFailed?: string;
 };
 export type SessionInfo = {
   id: string; agentId: string; taskId: string; deviceId: string; worktree: string; status: string; startedAt: string; endedAt?: string; endReason?: string;
@@ -122,14 +124,14 @@ export class ProjectView {
         this.claimsOf(s('task_id'));
         break;
       case 'task.assigned':
-        this.patchTask(s('task_id'), { assignee: s('assignee_agent_id'), status: 'in_progress', assignedAt: e.at, ...issuer(d) });
+        this.patchTask(s('task_id'), { assignee: s('assignee_agent_id'), status: 'in_progress', assignedAt: e.at, startFailed: undefined, ...issuer(d) });
         break;
       case 'task.completed':
         this.patchTask(s('task_id'), { status: 'done', completedAt: e.at, ...(d.summary ? { summary: s('summary') } : {}) });
         this.claims.delete(s('task_id'));
         break;
       case 'task.reopened': // back to its agent after it was done, with its human's message (D-107)
-        this.patchTask(s('task_id'), { status: 'in_progress', completedAt: undefined, ...issuer(d) });
+        this.patchTask(s('task_id'), { status: 'in_progress', completedAt: undefined, startFailed: undefined, ...issuer(d) });
         break;
       case 'task.abandoned':
         this.patchTask(s('task_id'), { status: 'abandoned', completedAt: e.at });
@@ -139,8 +141,9 @@ export class ProjectView {
       case 'task.start_failed': {
         const status = s('status');
         // A refused start frees the agent: the task is open and unassigned again; a reopen's goes back to done.
-        if (status === 'open') this.patchTask(s('task_id'), { status, assignee: null, assignedAt: undefined });
-        else if (status === 'done') this.patchTask(s('task_id'), { status, completedAt: e.at });
+        const why = typeof d.detail === 'string' && d.detail ? d.detail : String(d.reason ?? 'refused');
+        if (status === 'open') this.patchTask(s('task_id'), { status, assignee: null, assignedAt: undefined, startFailed: why });
+        else if (status === 'done') this.patchTask(s('task_id'), { status, completedAt: e.at, startFailed: why });
         break;
       }
       case 'device.online':
