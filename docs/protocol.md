@@ -346,7 +346,7 @@ On one machine (0B), the local land step checks fencing tokens (D-51). With GitH
 
 **harnessd's `uirpc`** (`packages/daemon/src/uirpc.ts`). A Unix socket at `~/.harness/run/harnessd.sock` (0600, in a 0700 directory). Every request carries the token from `~/.harness/run/uirpc.token`, which is new at each start. A wrong token gets `unauthorized` and the connection is closed. Newline-delimited JSON, one request per line: `{ id, token, method, params }` → `{ id, ok, result | error }`.
 - `snapshot()` → `ProjectSnapshot[]` (`ProjectView.snapshot()`: tasks with their derived state, agents with device and presence, sessions with usage, messages, waits, notices, lands and reservations, PRs with checks, budget totals, connection health).
-  - Per task, also the files its agent is changing (`changing`, its observed claims) and its overlaps with other tasks; per message, when it was delivered to the agent and whether the T-5 screen holds it; per device, its provider circuit (`provider.circuit`, D-116).
+  - Per task, also the files its agent is changing (`changing`, its observed claims) and its overlaps with other tasks; per message, when it was delivered to the agent and whether the coordinator withheld it (`held`: over a task's message budget, so never delivered; the T-5 screen's hold is a local approval instead); per device, its provider circuit (`provider.circuit`, D-116).
   - **The type** is `ProjectSnapshot` in `@harness/protocol` (v1), built by `snapshotOf()` in `packages/daemon/src/snapshot.ts` from the project's view and what only this harnessd knows: its pending approvals, the tasks it's publishing, its link state and its budget.
   - **A task's `state`, most specific first:**
     - `abandoned`, `landed`;

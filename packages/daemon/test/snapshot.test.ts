@@ -137,7 +137,7 @@ test('what the UI needs to act: each task\'s hash for a dispatch, the configured
   assert.equal(t2().state_detail, null);
 });
 
-test('what a task is changing and who it overlaps, each message\'s delivery, and the provider circuit (D-79, D-116, D-117)', () => {
+test('what a task is changing and who it overlaps, each message\'s delivery or budget hold, and the provider circuit (D-24, D-79, D-116, D-117)', () => {
   seq = 0;
   const v = new ProjectView('prj');
   for (const id of ['T-1', 'T-2', 'T-3']) v.apply(ev('task.created', { task_id: id, title: id, text: 'x', scope: ['src/'], priority: 0, owner_human_id: 'human_a' }));
@@ -145,15 +145,17 @@ test('what a task is changing and who it overlaps, each message\'s delivery, and
   v.apply(ev('claim.observed', { task_id: 'T-2', paths: ['src/a.ts'] }));
   v.apply(ev('overlap.detected', { overlap_id: 'o1', level: 'prospective', paths: ['src/'], tasks: ['T-1', 'T-2'] }));
   v.apply(ev('overlap.detected', { overlap_id: 'o2', level: 'observed', paths: ['src/a.ts'], tasks: ['T-2', 'T-1'] }));
+  v.apply(ev('claim.observed', { task_id: 'T-2', paths: ['src/b.ts'] }));
+  v.apply(ev('overlap.detected', { overlap_id: 'o4', level: 'observed', paths: ['src/b.ts'], tasks: ['T-1', 'T-2'] })); // each path is reported once, so the pair's second event names only the new one
   v.apply(ev('overlap.detected', { overlap_id: 'o3', level: 'observed', paths: ['src/c.ts'], tasks: ['T-1', 'T-3'] }));
   v.apply(ev('task.abandoned', { task_id: 'T-3', reason: 'x' })); // its claims are gone, so the overlap with it is too
   v.apply(ev('message.sent', { message_id: 'm1', kind: 'dependency_changed', from: 'harness', to: 'agent_x', to_task_id: 'T-1', text: 'src/a.ts changed', priority: 'high' }));
-  v.apply(ev('message.sent', { message_id: 'm2', kind: 'question', from: 'agent_y', to: 'agent_x', text: 'skip the tests?', priority: 'normal', held: true }));
+  v.apply(ev('message.sent', { message_id: 'm2', kind: 'question', from: 'agent_y', to: 'agent_x', text: 'skip the tests?', priority: 'normal', held: true })); // over its task's message budget: the coordinator withholds it
   v.apply(ev('message.delivered', { message_id: 'm1', delivered_at: '2026-10-08T10:00:05.000Z', delivery: 'hook' }));
   const snap = snapshotOf(v, local({ providerCircuit: { kind: 'billing', reason: 'HTTP 402 <b>pay</b>', at: '2026-10-08T09:00:00.000Z', day: '2026-10-08' } as never }));
   const t1 = snap.tasks.find((t) => t.id === 'T-1')!;
   assert.deepEqual(t1.changing, ['src/a.ts', 'src/b.ts']);
-  assert.deepEqual(t1.overlaps, [{ task_id: 'T-2', paths: ['src/a.ts'], level: 'observed' }, { task_id: 'T-2', paths: ['src/'], level: 'prospective' }]);
+  assert.deepEqual(t1.overlaps, [{ task_id: 'T-2', paths: ['src/a.ts', 'src/b.ts'], level: 'observed' }, { task_id: 'T-2', paths: ['src/'], level: 'prospective' }]);
   assert.deepEqual(snap.tasks.find((t) => t.id === 'T-3')!.changing, []);
   assert.deepEqual(snap.messages.map((m) => [m.id, m.delivered_at, m.held]), [['m1', '2026-10-08T10:00:05.000Z', false], ['m2', null, true]]);
   assert.deepEqual(snap.provider, { circuit: { kind: 'billing', reason: 'HTTP 402 <b>pay</b>', at: '2026-10-08T09:00:00.000Z' } }, 'the day is internal; the reason stays text');

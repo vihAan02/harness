@@ -219,7 +219,7 @@ export type MessageSnapshot = {
   text: string; priority: string; sent_at: string; seq: number;
   /** When its recipient's harnessd put it in front of the agent; null: not yet. Delivered isn't understood (D-26). */
   delivered_at: string | null;
-  /** Held for a local security review before the agent may see it (T-5, D-118). */
+  /** Withheld by the coordinator: over a task's message budget (D-24), so it's never delivered. Not the T-5 screen's hold (D-118), which is a local approval. */
   held: boolean;
 };
 export type WaitSnapshot = {

@@ -148,14 +148,21 @@ export function snapshotOf(v: ProjectView, local: SnapshotLocal): ProjectSnapsho
   };
 }
 
-/** A task's overlaps with other tasks, the latest per other task and level, while both still have claims. */
+/**
+ * A task's overlaps with other tasks, per other task and level, while both still have claims. The server reports each
+ * overlapping path once (claims.ts), so one pair's events carry different paths: the overlap is their union.
+ */
 function overlapsOf(v: ProjectView, taskId: string): TaskSnapshot['overlaps'] {
-  const latest = new Map<string, TaskSnapshot['overlaps'][number]>();
+  const pairs = new Map<string, { task_id: string; paths: Set<string>; level: string }>();
   for (const o of v.overlaps) {
     if (!o.tasks.includes(taskId)) continue;
     const other = o.tasks[0] === taskId ? o.tasks[1] : o.tasks[0];
     if (!other || !v.claims.has(other) || !v.claims.has(taskId)) continue;
-    latest.set(`${other}\0${o.level}`, { task_id: other, paths: [...o.paths].sort(), level: o.level });
+    const key = `${other}\0${o.level}`;
+    const pair = pairs.get(key) ?? { task_id: other, paths: new Set<string>(), level: o.level };
+    for (const path of o.paths) pair.paths.add(path);
+    pairs.set(key, pair);
   }
-  return [...latest.values()].sort((a, b) => a.task_id.localeCompare(b.task_id) || a.level.localeCompare(b.level));
+  return [...pairs.values()].map((o) => ({ task_id: o.task_id, paths: [...o.paths].sort(), level: o.level }) as TaskSnapshot['overlaps'][number])
+    .sort((a, b) => a.task_id.localeCompare(b.task_id) || a.level.localeCompare(b.level));
 }
