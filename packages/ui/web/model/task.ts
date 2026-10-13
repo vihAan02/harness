@@ -2,6 +2,7 @@
 // Every string from the snapshot or a message is untrusted; this module only builds plain words and route strings.
 import type { DerivedTaskState, ProjectSnapshot, TaskSnapshot } from '@harness/protocol';
 import { stateWords } from './board.ts';
+import { shortSha } from './format.ts';
 
 const NONE = 'None yet';
 
@@ -70,7 +71,7 @@ function landLine(t: TaskSnapshot): string | null {
   if (l === null) return null;
   switch (l.status) {
     case 'completed':
-      return l.new_base_sha !== null ? `landed as ${l.new_base_sha.slice(0, 12)}` : 'landed';
+      return l.new_base_sha !== null ? `landed as ${shortSha(l.new_base_sha)}` : 'landed';
     case 'failed':
       return `the land failed (${l.reason ?? 'error'}): ${l.detail ?? 'no detail'}`;
     case 'requested':

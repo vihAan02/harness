@@ -4,6 +4,7 @@
 // strings, and the one link it builds is checked before it is offered.
 import type { ProjectSnapshot, TaskSnapshot } from '@harness/protocol';
 import { stateWords } from './board.ts';
+import { shortSha } from './format.ts';
 
 /** The checks that must all pass before a GitHub integration may be offered (D-115). */
 export const REQUIRED = ['guard', 'unit-linux', 'full-macos'];
@@ -21,11 +22,6 @@ export function prUrl(repo: string | null, n: number): string | null {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return null;
   if (!Number.isSafeInteger(n) || n < 1) return null;
   return `https://github.com/${repo}/pull/${n}`;
-}
-
-/** The first 12 characters of a SHA, for a short label. */
-function short(sha: string): string {
-  return sha.slice(0, 12);
 }
 
 /** One PR check's words: a tick, a cross, an ellipsis while it runs, else the raw conclusion as text. */
@@ -65,7 +61,7 @@ function landLine(l: TaskSnapshot['land']): string | null {
   if (l.step !== null) bits.push(l.step);
   if (l.reason !== null) bits.push(l.reason);
   if (l.detail !== null) bits.push(l.detail);
-  if (l.new_base_sha !== null) bits.push(`base ${short(l.new_base_sha)}`);
+  if (l.new_base_sha !== null) bits.push(`base ${shortSha(l.new_base_sha)}`);
   return bits.join(' · ');
 }
 
@@ -162,7 +158,7 @@ export function integrationModel(snap: ProjectSnapshot, offline: boolean): Integ
 
   const outside = [...snap.base_advances]
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
-    .map((b) => ({ at: b.at, range: `${short(b.old_sha)} → ${short(b.new_sha)}`, paths: [...b.changed_paths] }));
+    .map((b) => ({ at: b.at, range: `${shortSha(b.old_sha)} → ${shortSha(b.new_sha)}`, paths: [...b.changed_paths] }));
 
   const alerts = [...snap.alerts]
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
