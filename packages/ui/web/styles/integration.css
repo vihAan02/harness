@@ -1,0 +1,78 @@
+/* The integration page's stylesheet (D-114, D-115, D-116). System fonts only, no external requests. The table scrolls
+   sideways on narrow screens rather than squashing; SHAs are monospace and wrap; colour is never the only signal (each
+   check, review and circuit carries words). Reads at 360 px. */
+
+.integration-data { display: flex; flex-direction: column; gap: 0.75rem; }
+
+/* The in-flight land comes first and stands out by its border, not colour alone. */
+.in-flight { border-left-width: 4px; }
+.in-flight-words { margin: 0 0 0.2rem; }
+.in-flight-since { margin: 0; font-size: 0.8em; }
+
+/* A readable table that scrolls sideways instead of overflowing a narrow screen. */
+.rows-panel { overflow-x: auto; }
+.integration-table { border-collapse: collapse; width: 100%; min-width: 40rem; }
+.integration-table th, .integration-table td { text-align: left; vertical-align: top; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
+.integration-table th { font-size: 0.8em; color: var(--muted); }
+.integration-table td { font-size: 0.88em; }
+
+.task-link { font: inherit; padding: 0; border: 0; background: none; color: var(--ink); text-decoration: underline; cursor: pointer; }
+.task-title { display: block; font-size: 0.85em; color: var(--muted); overflow-wrap: anywhere; }
+
+.pr-cell { display: flex; flex-direction: column; gap: 0.1rem; }
+.pr-link, .pr-number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.pr-state { font-size: 0.8em; color: var(--muted); overflow-wrap: anywhere; }
+
+/* Checks and reviews: a name and its words, the required ones first by the order the model gives. */
+.checks, .reviews { list-style: none; margin: 0; padding: 0; }
+.check, .review { display: flex; gap: 0.4rem; font-size: 0.85em; overflow-wrap: anywhere; }
+.check-name, .review-login { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.check-words, .review-state { color: var(--muted); }
+.check-pass .check-words { color: var(--ok, inherit); }
+.check-fail .check-words { color: var(--bad, inherit); font-weight: 600; }
+
+.cell-land { max-width: 14rem; overflow-wrap: anywhere; }
+
+/* The Integrate control: the button, its reason, and the confirm panel that names the exact head and base. */
+.integrate-control { display: flex; flex-direction: column; gap: 0.25rem; }
+.integrate-panel { border: 1px solid var(--line); border-radius: 6px; padding: 0.4rem 0.5rem; background: var(--bg); }
+.integrate-exact { margin: 0 0 0.2rem; font-weight: 600; }
+.integrate-sha { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82em; overflow-wrap: anywhere; }
+.integrate-body h4 { margin: 0.4rem 0 0.2rem; }
+.integrate-send, .integrate-cancel { margin-top: 0.35rem; margin-right: 0.4rem; }
+
+.action-status { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.85em; overflow-wrap: anywhere; }
+.action-status:empty { display: none; }
+
+.local-note { margin: 0.5rem 0 0; }
+
+/* Merges made outside the harness and the security alerts: each its own bordered block. */
+.outside-item, .alert { border: 1px solid var(--line); border-radius: 6px; padding: 0.35rem 0.5rem; margin-bottom: 0.4rem; background: var(--bg); }
+.outside-range { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+.outside-at, .alert-at { margin: 0; font-size: 0.78em; }
+.outside-paths { margin: 0.15rem 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82em; overflow-wrap: anywhere; }
+.alert-what { margin: 0; }
+.alert-detail { margin: 0.2rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.85em; }
+
+/* Spend and provider. The progress bar is joined by the same numbers as text, so colour is never the only signal. */
+.spend-progress { display: flex; align-items: center; gap: 0.5rem; margin: 0.3rem 0; }
+.spend-progress progress { width: 12rem; max-width: 60%; }
+.spend-progress-text { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+.spend-words { margin: 0.15rem 0; }
+.spend-cap { margin: 0.2rem 0; color: var(--muted); }
+
+.cost-list { list-style: none; margin: 0; padding: 0; }
+.cost-item { display: flex; gap: 0.5rem; }
+.cost-task { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.cost-amount { color: var(--muted); }
+
+.circuit { border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px; padding: 0.4rem 0.5rem; margin-top: 0.5rem; background: var(--bg); }
+.circuit-words { margin: 0; }
+.circuit-at { margin: 0.15rem 0; font-size: 0.78em; }
+.circuit-reset { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.circuit-reset p { margin: 0; }
+
+@media (max-width: 480px) {
+  .spend-progress { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+  .spend-progress progress { width: 100%; }
+}

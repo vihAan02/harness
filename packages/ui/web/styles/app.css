@@ -1,0 +1,96 @@
+/* The UI's stylesheet (D-117). System fonts only, no external requests; it reads at 360 px wide. */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --ink: #1c2024;
+  --muted: #5b6470;
+  --line: #d3d8de;
+  --accent: #2f6fed;
+  --error: #b3261e;
+  --ok: #1f7a3d;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+header#top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+header#top .brand { font-weight: 600; }
+header#top .project { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+header#top .who { color: var(--muted); font-size: 0.85em; }
+
+header#top nav { margin-left: auto; display: flex; gap: 0.75rem; }
+header#top nav a { color: var(--accent); text-decoration: none; }
+header#top nav a:hover { text-decoration: underline; }
+
+#banner {
+  padding: 0.6rem 0.9rem;
+  background: #fff4e5;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+#banner:empty { display: none; }
+#banner[hidden] { display: none; }
+
+main#view { padding: 0.9rem; }
+
+a { color: var(--accent); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.55; cursor: default; }
+
+input, select, textarea {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  max-width: 100%;
+}
+
+.pending { color: var(--muted); }
+.error { color: var(--error); }
+.ok { color: var(--ok); }
+.muted { color: var(--muted); }
+.plain { max-width: 40rem; margin: 2rem auto; text-align: center; color: var(--muted); }
+
+@media (max-width: 480px) {
+  header#top nav { margin-left: 0; }
+}
