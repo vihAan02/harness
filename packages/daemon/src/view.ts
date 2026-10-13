@@ -252,10 +252,12 @@ export class ProjectView {
       }
       case 'land.completed': {
         // A PR merged outside the harness completes with no request before it (D-115's honest limit).
+        // So does an empty land (land.empty): a GitHub land of the head it had, with nothing to merge.
         if (!this.lands.has(s('land_id'))) {
           this.lands.set(s('land_id'), {
             id: s('land_id'), taskId: s('task_id'), deviceId: e.actor.device_id ?? '', status: 'requested', runTests: false, requestedAt: e.at,
-            mode: d.external === true ? 'external' : 'local', ...(typeof d.pr_number === 'number' ? { prNumber: d.pr_number } : {}),
+            mode: d.external === true ? 'external' : d.empty === true ? 'github' : 'local', ...(typeof d.pr_number === 'number' ? { prNumber: d.pr_number } : {}),
+            ...(d.empty === true && typeof d.head_sha === 'string' ? { approvedHead: d.head_sha } : {}),
           });
         }
         Object.assign(this.lands.get(s('land_id'))!, { status: 'completed', finishedAt: e.at, newBaseSha: s('new_base_sha'), changedPaths: asStrings(d.changed_paths) });
