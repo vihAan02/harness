@@ -9,7 +9,7 @@ import type { ProjectSnapshot } from '@harness/protocol';
 import { Action } from '../action.ts';
 import type { ViewContext, View } from '../app.ts';
 import { clear, el, listen } from '../dom.ts';
-import { formatCost } from '../model/format.ts';
+import { formatUsd } from '../model/format.ts';
 import { actionsFor, taskModel } from '../model/task.ts';
 import type { TaskAction, TaskModel } from '../model/task.ts';
 
@@ -18,7 +18,7 @@ const EMPTY = 'None yet';
 /** A live session's cost is 0 until harnessd reports it: say so, so "0.000" never reads as free. */
 function sessionCost(session: { status: string; costUsd: number }): string {
   if (session.status !== 'ended' && session.costUsd === 0) return 'cost not reported yet';
-  return formatCost(session.costUsd);
+  return formatUsd(session.costUsd);
 }
 
 /** The session line: "live · model · cost · tokens", or "ended: <reason>" instead of the status once it has ended. */
@@ -95,7 +95,7 @@ function dataContainer(model: TaskModel, ctx: ViewContext): HTMLElement {
     prSection(model, ctx),
     el('section', { class: 'panel' },
       el('h2', {}, 'Session and cost'),
-      el('p', {}, `${formatCost(model.costUsd)} in total`),
+      el('p', {}, `${formatUsd(model.costUsd)} in total`),
       model.session === null
         ? el('p', { class: 'muted' }, 'No session yet')
         : el('p', {}, ...sessionWords(model.session)),
