@@ -10,7 +10,7 @@ import { attention } from '../model/attention.ts';
 import type { AttentionItem } from '../model/attention.ts';
 import { COLUMNS, boardModel, newTaskModel } from '../model/board.ts';
 import type { Card } from '../model/board.ts';
-import { formatCost } from '../model/format.ts';
+import { formatUsd } from '../model/format.ts';
 
 const LEVEL_WORDS: Record<AttentionItem['level'], string> = { act: 'Act', warn: 'Warning', info: 'FYI' };
 
@@ -46,7 +46,7 @@ function cardButton(card: Card, ctx: ViewContext): HTMLElement {
     el('span', { class: 'card-owner' }, `owner ${card.owner}`),
     card.agent !== null ? el('span', { class: 'card-agent' }, `agent ${card.agent}${card.agentHuman !== null ? ` (${card.agentHuman})` : ''}`) : null,
     card.device !== null ? el('span', { class: 'card-device' }, `${card.device} ${card.deviceOnline === true ? 'online' : 'offline'}`) : null,
-    el('span', { class: 'card-cost' }, formatCost(card.costUsd)),
+    el('span', { class: 'card-cost' }, formatUsd(card.costUsd)),
   ));
   const button = el('button', { class: 'card', type: 'button' }, ...row);
   listen(button, 'click', () => ctx.navigate(`#/task/${card.id}`));
