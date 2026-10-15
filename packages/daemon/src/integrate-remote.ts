@@ -24,7 +24,7 @@ import { checkDispatch } from './dispatch.ts';
 import { pathsSha256 } from '@harness/protocol/signing';
 import type { DispatchEnvelope } from '@harness/protocol';
 
-const REQUIRED_CHECKS = ['guard', 'unit-linux', 'full-macos'];
+export const REQUIRED_CHECKS = ['guard', 'unit-linux', 'full-macos'];
 /** Reads of a PR whose mergeability GitHub hasn't computed yet: about a minute. */
 const MERGEABLE_TRIES = 6;
 

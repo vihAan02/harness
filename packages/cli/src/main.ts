@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, untrustedText, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
+import { ALWAYS_PROTECTED, Approvals, computeMetrics, Delegation, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, untrustedText, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
 import type { ProjectSnapshot } from '@harness/protocol';
 import { PROTOCOL_VERSION, type DispatchKind, type EventMessage } from '@harness/protocol';
 import { taskSha256 } from '@harness/protocol/signing';
@@ -52,6 +52,8 @@ const USAGE = `usage: harness <command> [--project <id>]
                                               write config.toml for the pilot (D-111): only the keys you typed are pinned;
                                               --ports-per-agent 0 gives agents no loopback access (D-143)
   doctor [--offline]                          check this Mac is ready for the pilot; prints each fix, never a secret
+  delegation [status|off|on]                  what harnessd decides for you without a click (D-145), and its audit;
+                                              off revokes it at once (harnessd needn't restart), on lifts that
   ui [--print]                                open the local UI: proves the running bridge is this Mac's, then opens a
                                               one-time launch address (--print: show it instead) (D-117)
   --version`;
@@ -133,6 +135,7 @@ async function main(argv: string[]): Promise<void> {
   if (a.flags.version || command === '-v') return void console.log(`harness ${pkg.version} (protocol v${PROTOCOL_VERSION})`);
 
   if (command === 'approve') return approve(argv.slice(1));
+  if (command === 'delegation') return delegation(sub ?? 'status');
   if (command === 'ui') {
     // The UI's own launcher (packages/ui/src/main.ts open), run on this Node: it checks the bridge's proof of the
     // shared secret before it opens anything, so a squatter on the UI port never gets a launch token (D-117, TH-23).
@@ -359,6 +362,36 @@ async function land(c: CliClient, task: string, o: { tests: boolean; wait: boole
   const code = await Promise.race([finished, c.closed.then(() => { console.error('Lost the connection to the server.'); return 1; })]);
   clearTimeout(timer);
   process.exitCode = code;
+}
+
+/** `harness delegation [status|off|on]` (D-145). The policy itself is [delegation] in config.toml, written by its human. */
+function delegation(sub: string) {
+  const home = harnessHome();
+  const config = loadConfig(home);
+  const d = new Delegation(home, config.deviceId, config.delegation);
+  if (sub === 'off') {
+    fs.writeFileSync(d.revokedFile, `${new Date().toISOString()}\n`, { mode: 0o600 });
+    return void console.log('Delegation off: harnessd asks you again for every publish and integration, from its next decision on. Undo: harness delegation on');
+  }
+  if (sub === 'on') {
+    fs.rmSync(d.revokedFile, { force: true });
+    if (!d.policy) return void console.log('No [delegation] in config.toml, so there is nothing to turn on.');
+  } else if (sub !== 'status') fail('usage: harness delegation [status|off|on]');
+  const p = d.policy;
+  if (!p) return void console.log('No delegation: harnessd asks you for every publish and integration. To delegate, add [delegation] to config.toml (scripts/pilot/README.md §4).');
+  console.log(`Delegated: ${p.actions.join(' and ')} of your own agents' tasks, on ${p.projects.join(', ')}, from ${p.devices.join(', ')}, until ${p.until}`);
+  console.log(`  only changes inside a task's scope, at most ${p.maxFiles} files, none protected (${[...ALWAYS_PROTECTED, ...p.protectedPaths].join(' ')})`);
+  console.log(`  policy ${p.sha256.slice(0, 16)}`);
+  for (const action of p.actions) {
+    const why = p.projects.map((proj) => d.refusal(action, proj)).find((r) => r !== null);
+    console.log(why ? `  ${action}: NOT active: ${why}` : `  ${action}: active`);
+  }
+  const lines = fs.existsSync(d.auditFile) ? fs.readFileSync(d.auditFile, 'utf8').trim().split('\n').filter(Boolean).slice(-10) : [];
+  console.log(lines.length ? `Last decisions (${d.auditFile}):` : 'No delegated decisions yet.');
+  for (const l of lines) {
+    const r = JSON.parse(l) as Record<string, unknown>;
+    console.log(`  ${String(r.at).slice(0, 19)} ${String(r.action).padEnd(9)} ${String(r.task_id)} ${String(r.head_sha).slice(0, 12)}${r.pr_number ? ` PR #${String(r.pr_number)}` : ''}${r.land_id ? ` ${String(r.land_id)}` : ''}`);
+  }
 }
 
 /**

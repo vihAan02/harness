@@ -24,7 +24,8 @@ import { ghToken, GitHubClient } from './github.ts';
 import { publishHash, scanPublish } from './publish.ts';
 import { prBody, prTitle } from './prbody.ts';
 import { Poller } from './prpoll.ts';
-import { integrateRemote } from './integrate-remote.ts';
+import { integrateRemote, REQUIRED_CHECKS } from './integrate-remote.ts';
+import { Delegation, type DelegationRecord } from './delegation.ts';
 import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -145,6 +146,8 @@ export type DaemonOptions = {
   github?: { token?: () => Promise<string>; retryMs?: number };
   /** How often GitHub-mode projects' base and PRs are polled (D-114). Default 60 s. */
   pollMs?: number;
+  /** How often this human's delegated integrations are looked for (D-145). Default 30 s. */
+  delegationMs?: number;
   /** How long another device's GitHub land waits, its device offline, before this one settles it from GitHub (D-115). Default 10 min. */
   reconcileAfterMs?: number;
   /** The UI bridge's socket (D-117; protocol.md §12): `~/.harness/run/harnessd.sock` in production. Off when unset. */
@@ -236,6 +239,11 @@ export class Daemon {
   githubToken: (() => Promise<string>) | null = null;
   githubLogin: string | null = null;
   poller: Poller | null = null;
+  /** What this human delegated (D-145), and the integrations already tried: once per PR head and base, retried after a pause. */
+  delegation: Delegation;
+  delegationTimer: NodeJS.Timeout | null = null;
+  delegating = false;
+  delegationTried = new Map<string, number>();
   trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
   /** Each human dispatch signed here, by command_id: a retry of the same click resends it unchanged, so the coordinator applies it once. */
   signedDispatches = new Map<string, { request: string; name: string; args: Record<string, unknown>; at: number }>();
@@ -246,6 +254,7 @@ export class Daemon {
     this.config = o.config ?? loadConfig(o.home);
     this.log = o.log ?? (() => {});
     this.approvals = new Approvals(this.home);
+    this.delegation = new Delegation(this.home, this.config.deviceId, this.config.delegation);
     this.spend = new SpendLedger(this.home);
     this.circuit = new ProviderCircuit(this.home);
     this.sessions = new Sessions(this.home);
@@ -399,6 +408,14 @@ export class Daemon {
         ...(this.o.reconcileAfterMs ? { reconcileAfterMs: this.o.reconcileAfterMs } : {}),
       });
       this.poller.start();
+    }
+    if (this.config.delegation && !this.delegationTimer) {
+      this.log(`delegation (D-145): ${this.config.delegation.actions.join(' and ')} for ${this.config.delegation.projects.join(', ')} until ${this.config.delegation.until}${this.delegation.refusal(this.config.delegation.actions[0]!, this.config.delegation.projects[0]!) ? `, but not now: ${this.delegation.refusal(this.config.delegation.actions[0]!, this.config.delegation.projects[0]!)}` : ''}`);
+      const tick = () => {
+        this.delegationTimer = setTimeout(() => { void this.delegateIntegrations().catch((e: Error) => this.log(`delegation: ${e.message}`)).finally(() => { if (!this.stopping) tick(); }); }, this.o.delegationMs ?? 30_000);
+        this.delegationTimer.unref?.();
+      };
+      tick();
     }
   }
 
@@ -1524,6 +1541,7 @@ export class Daemon {
     this.stopping = true;
     this.stopSignal.abort(); // setup commands and land tests end now, and their lands are interrupted (#74)
     await this.ui?.stop();
+    if (this.delegationTimer) clearTimeout(this.delegationTimer);
     await this.poller?.stop();
     this.leases.stop();
     // The land in flight finishes before the link closes: it reports through it, and once the server hears it
@@ -1773,6 +1791,67 @@ export class Daemon {
     return [auth?.apiKey, this.config.token, ...Object.values(resolveSecrets(this.home, project.secrets))].filter((v): v is string => typeof v === 'string' && v.length >= 8);
   }
 
+  /** Records one delegated decision: in the local audit log, and on the coordinator, where both humans see it (D-145). */
+  async delegated(projectId: string, r: DelegationRecord): Promise<void> {
+    this.delegation.audit(r);
+    const { project_id: _p, approval_id: _a, files: _f, ...args } = r;
+    await this.report(projectId, 'delegation.report', { ...args, policy_sha256: this.delegation.policy!.sha256 })
+      .catch((e: Error) => this.log(`delegation.report for ${r.task_id}: ${e.message} (it's in ${this.delegation.auditFile})`));
+  }
+
+  /**
+   * D-145: this human's routine integrations, each decided as their click would be. A PR of this device's task, by this
+   * human's agent, is integrated once GitHub shows it clean with its required checks green and an approving review of its
+   * exact head; one that's behind its base but otherwise ready is brought up to date instead (only then, to spare CI).
+   * The dispatch is the one `harness integrate` signs, so harnessd re-reads the PR and base and the land checks
+   * everything a click's does. Each head and base is tried once, and again only after ten minutes.
+   */
+  async delegateIntegrations(): Promise<void> {
+    if (this.delegating || this.stopping || !this.link?.epoch || !this.deviceKey) return;
+    this.delegating = true;
+    try {
+      for (const project of this.config.projects) {
+        if (project.integration !== 'github' || this.delegation.refusal('integrate', project.id) !== null) continue;
+        const view = this.view(project.id);
+        for (const pr of [...view.prs.values()]) {
+          const task = view.tasks.get(pr.taskId);
+          const agent = task?.assignee ? view.agents.get(task.assignee) : undefined;
+          if (!task || task.status !== 'done' || !agent || agent.humanId !== this.config.principal) continue;
+          if (pr.deviceId !== this.config.deviceId || pr.state !== 'open' || pr.merged) continue;
+          if ([...view.lands.values()].some((l) => l.taskId === task.id && (l.status === 'requested' || l.status === 'accepted'))) continue;
+          const green = REQUIRED_CHECKS.every((c) => pr.checks[c] === 'success');
+          const reviewed = pr.reviews.some((r) => r.state === 'APPROVED' && r.commit_id === pr.headSha);
+          if (!green || !reviewed || (pr.mergeableState !== 'clean' && pr.mergeableState !== 'behind')) continue;
+          const key = `${project.id}:${task.id}:${pr.headSha}:${pr.baseSha}`;
+          if (Date.now() - (this.delegationTried.get(key) ?? 0) < 10 * 60_000) continue;
+          this.delegationTried.set(key, Date.now());
+          const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', `${pr.baseSha}...${pr.headSha}`).catch(() => '')).split('\0').filter(Boolean);
+          const why = this.delegation.changeRefusal(changed, task.scope);
+          if (why) {
+            this.log(`${task.id}: PR #${pr.prNumber} is ready, but its integration isn't delegated (${why}): harness integrate ${task.id}`);
+            continue;
+          }
+          const base = { project_id: project.id, task_id: task.id, pr_number: pr.prNumber, base_sha: pr.baseSha };
+          try {
+            const r = await this.dispatchCommand(project.id, 'integrate', task.id, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: pr.baseSha } });
+            const landId = (r.result as { land_id?: unknown } | null)?.land_id;
+            await this.delegated(project.id, { ...base, action: 'integrate', head_sha: pr.headSha, ...(typeof landId === 'string' ? { land_id: landId } : {}) });
+            this.log(`${task.id}: integrating PR #${pr.prNumber} at ${pr.headSha.slice(0, 12)} under the delegation (D-145)`);
+          } catch (e) {
+            const m = /is updated to ([0-9a-f]{12})/.exec((e as Error).message);
+            if (e instanceof DispatchRefused && m) {
+              const head = await branchTip(project.repo, taskBranch(task.id)).catch(() => m[1]!);
+              await this.delegated(project.id, { ...base, action: 'refresh', head_sha: head });
+            }
+            this.log(`${task.id}: delegated integration: ${(e as Error).message}`);
+          }
+        }
+      }
+    } finally {
+      this.delegating = false;
+    }
+  }
+
   /**
    * Publishes a finished task of a GitHub project (D-114): the gate scans every commit the push would send and the PR
    * text; its human approves the exact head and text locally; harnessd pushes with an explicit lease and finds or
@@ -1837,7 +1916,14 @@ export class Daemon {
           held: gate.held.map((h) => ({ rule: h.rule, path: h.path ?? null })), diffstat,
         },
       });
-      this.log(`${taskId} is ready to publish. Review it with: harness approve ${req.id}`);
+      // D-145: a routine publish its human delegated is approved here, for this exact head and text, and audited.
+      const why = this.delegation.refusal('publish', projectId) ?? (agent.humanId !== this.config.principal ? 'its agent is another human\'s' : null)
+        ?? (gate.held.length ? 'the publish gate held part of it for a click' : null) ?? this.delegation.changeRefusal(changed, task.scope);
+      if (why === null) {
+        this.approvals.approve(req.id);
+        await this.delegated(projectId, { action: 'publish', project_id: projectId, task_id: taskId, head_sha: head, base_sha: base, approval_id: req.id, files: changed.length });
+        this.log(`${taskId}: publishing ${head.slice(0, 12)} under the delegation (D-145): ${changed.length} file(s), all in its scope`);
+      } else this.log(`${taskId} is ready to publish${this.config.delegation ? ` (not delegated: ${why})` : ''}. Review it with: harness approve ${req.id}`);
       // Publishing is its human's decision (D-114): no deadline. A denial ends it; a reopen and a new commit ask again.
       if ((await this.waitForDecision(project.id, hash, req.id)) === 'denied') {
         j.append(projectId, taskId, 'publish_denied', { head, hash });

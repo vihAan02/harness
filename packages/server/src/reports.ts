@@ -57,6 +57,36 @@ export async function reportSetup(ctx: HandlerContext, args: Record<string, unkn
   };
 }
 
+const SHA = /^[0-9a-f]{40}$/;
+const DELEGATED = ['publish', 'integrate', 'refresh'];
+
+/**
+ * `delegation.report { task_id, action, head_sha, base_sha, pr_number?, land_id?, policy_sha256 }` → `delegation.acted`
+ * (D-145). harnessd made a routine decision for its human without a click: approved a publish, signed an integrate, or
+ * brought a PR up to date. Only for a task whose agent is the reporting human's own, so the log says whose policy acted.
+ */
+export async function reportDelegation(ctx: HandlerContext, args: Record<string, unknown>): Promise<HandlerOutput> {
+  const deviceId = requireDevice(ctx);
+  const taskId = await requireTask(ctx, args.task_id);
+  const { action, head_sha: head, base_sha: base, pr_number: pr, land_id: land, policy_sha256: policy } = args;
+  if (typeof action !== 'string' || !DELEGATED.includes(action)) throw new CommandError('bad_request', `action must be one of ${DELEGATED.join(', ')}`);
+  if (typeof head !== 'string' || !SHA.test(head) || typeof base !== 'string' || !SHA.test(base)) throw new CommandError('bad_request', 'head_sha and base_sha must be full commit ids');
+  if (pr !== undefined && (!Number.isSafeInteger(pr) || (pr as number) < 1)) throw new CommandError('bad_request', 'pr_number must be a PR number');
+  if (land !== undefined && (typeof land !== 'string' || !/^land_[A-Za-z0-9]{1,40}$/.test(land))) throw new CommandError('bad_request', 'land_id is malformed');
+  if (typeof policy !== 'string' || !/^[0-9a-f]{64}$/.test(policy)) throw new CommandError('bad_request', 'policy_sha256 must be a sha256 hex digest');
+  const human = (await ctx.tx.query<{ h: string }>(
+    'SELECT a.accountable_human_id AS h FROM tasks t JOIN agent_principals a ON a.id = t.assignee_agent_id WHERE t.id = $1 AND t.project_id = $2',
+    [taskId, ctx.projectId])).rows[0]?.h;
+  if (human !== ctx.caller.principal) throw new CommandError('forbidden', `${taskId}'s agent isn't yours: only its own human's policy acts for it`);
+  return {
+    result: null,
+    events: [{ kind: 'delegation.acted', data: {
+      task_id: taskId, device_id: deviceId, action, head_sha: head, base_sha: base, policy_sha256: policy,
+      ...(pr !== undefined ? { pr_number: pr } : {}), ...(land !== undefined ? { land_id: land } : {}),
+    } }],
+  };
+}
+
 /**
  * `stop_gate.report { session_id, pending }` → `stop_gate.capped` (D-100). The agent's Stop gate kept it going
  * as many times in a row as its vendor allows, with `pending` notices still waiting; they open its next turn.

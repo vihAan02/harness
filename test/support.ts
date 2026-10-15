@@ -244,6 +244,8 @@ export async function startPilotStack(p: {
   server?: { offlineAfterMs?: number; reconcileAfterMs?: number };
   /** Each harnessd's [limits], as a pilot Mac sets them: one agent, no ports (D-38, D-143). */
   limits?: { max_concurrent_agents?: number; ports_per_agent?: number };
+  /** Sides whose human delegates publish and integrate on this project for a week (D-145). */
+  delegate?: ('a' | 'b')[];
 } = {}) {
   const cleanup: (() => Promise<void> | void)[] = [];
   const errors: unknown[] = [];
@@ -288,6 +290,9 @@ export async function startPilotStack(p: {
           id: project, repo: pair[s].repo, integration: 'github', remote: fake.gitUrl, github_api: fake.apiUrl,
           commit_name: `Human ${s.toUpperCase()}`, commit_email: `${human}@users.noreply.github.com`,
         }],
+        ...(p.delegate?.includes(s) ? { delegation: {
+          devices: [device], projects: [project], actions: ['publish', 'integrate'], until: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10),
+        } } : {}),
       };
       const env = { env: { HARNESS_TEST: '1' } };
       fs.writeFileSync(home.config, renderConfig(raw, env));

@@ -7,6 +7,7 @@ export { harnessHome, type Home } from './home.ts';
 export { loadConfig, parseConfig, parseProvider, renderConfig, type AuthScheme, type LocalConfig, type ParseOptions, type ProjectConfig, type ProviderConfig, type TrustedDeviceConfig } from './config.ts';
 export { providerModel, providerName, resolveProvider, type ResolvedProvider } from './provider.ts';
 export { Approvals, setupHash, type ApprovalRequest } from './approvals.ts';
+export { ALWAYS_PROTECTED, Delegation, parseDelegation, type DelegationPolicy } from './delegation.ts';
 export { ServerLink, CommandFailed } from './link.ts';
 export { Sessions, killOrphans, processStart, type SessionRecord } from './supervision.ts';
 export { ProjectView, type AgentInfo, type TaskInfo, type MessageInfo } from './view.ts';
