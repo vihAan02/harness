@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // `harness`, the human CLI (D-54; docs/architecture.md §2). It reads ~/.harness (HARNESS_HOME) for the
 // server, the local token and the human principal, the same files harnessd uses.
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Approvals, computeMetrics, harnessHome, loadConfig, loadDeviceKey, renderHumanStatus, renderMetrics, untrustedText, type ApprovalRequest, type LocalConfig } from '@harness/daemon';
 import type { ProjectSnapshot } from '@harness/protocol';
@@ -50,11 +52,13 @@ const USAGE = `usage: harness <command> [--project <id>]
                                               write config.toml for the pilot (D-111): only the keys you typed are pinned;
                                               --ports-per-agent 0 gives agents no loopback access (D-143)
   doctor [--offline]                          check this Mac is ready for the pilot; prints each fix, never a secret
+  ui [--print]                                open the local UI: proves the running bridge is this Mac's, then opens a
+                                              one-time launch address (--print: show it instead) (D-117)
   --version`;
 
 type Args = { positional: string[]; flags: Record<string, string | true> };
 /** Flags that never take a value, so `harness claim T --force a b` keeps `a` as a path. */
-const BOOLEAN_FLAGS = new Set(['force', 'no-tests', 'no-wait', 'follow', 'json', 'yes', 'version', 'offline']);
+const BOOLEAN_FLAGS = new Set(['force', 'no-tests', 'no-wait', 'follow', 'json', 'yes', 'version', 'offline', 'print']);
 function parseArgs(argv: string[]): Args {
   const out: Args = { positional: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -129,6 +133,14 @@ async function main(argv: string[]): Promise<void> {
   if (a.flags.version || command === '-v') return void console.log(`harness ${pkg.version} (protocol v${PROTOCOL_VERSION})`);
 
   if (command === 'approve') return approve(argv.slice(1));
+  if (command === 'ui') {
+    // The UI's own launcher (packages/ui/src/main.ts open), run on this Node: it checks the bridge's proof of the
+    // shared secret before it opens anything, so a squatter on the UI port never gets a launch token (D-117, TH-23).
+    const launcher = path.join(import.meta.dirname, '..', '..', 'ui', 'src', 'main.ts');
+    const r = spawnSync(process.execPath, [launcher, 'open', ...(a.flags.print === true ? ['--print'] : [])], { stdio: 'inherit' });
+    process.exitCode = r.status ?? 1;
+    return;
+  }
   if (command === 'setup') return setup(a, argv);
   if (command === 'doctor') {
     const checks = await doctor(harnessHome(), { offline: a.flags.offline === true });
