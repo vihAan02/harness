@@ -1,13 +1,18 @@
 // The UI's formatters (T-2): a cost shows three decimals with a dollar sign, and a commit id shows its first 12 characters.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatCost, shortSha } from '../web/model/format.ts';
+import { formatUsd, shortSha } from '../web/model/format.ts';
 
-test('formatCost shows dollars with three decimals', () => {
-  assert.equal(formatCost(0.0123), '$0.012');
-  assert.equal(formatCost(0), '$0.000');
-  assert.equal(formatCost(1.5), '$1.500');
-  assert.equal(formatCost(12.3456), '$12.346');
+test('formatUsd shows dollars with three decimals by default', () => {
+  assert.equal(formatUsd(0.0123), '$0.012');
+  assert.equal(formatUsd(0), '$0.000');
+  assert.equal(formatUsd(1.5), '$1.500');
+  assert.equal(formatUsd(12.3456), '$12.346');
+});
+
+test('formatUsd takes the number of decimals', () => {
+  assert.equal(formatUsd(0.5, 2), '$0.50');
+  assert.equal(formatUsd(0.0123, 0), '$0');
 });
 
 test('shortSha keeps the first 12 characters', () => {
