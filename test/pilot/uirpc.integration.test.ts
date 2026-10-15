@@ -107,7 +107,7 @@ test('through the socket: a human\'s lifecycle commands, signed by harnessd: sta
     await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'the PR');
     const pr = s.a.daemon.view(s.project).prs.get(task)!;
     // What the human was shown must still be true on GitHub: a stale base is refused before anything is sent.
-    await assert.rejects(dispatch('integrate', task, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: 'b'.repeat(40) } }), /conflict: main is now [0-9a-f]{12}, not the bbbbbbbbbbbb you approved/);
+    await assert.rejects(dispatch('integrate', task, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: 'b'.repeat(40) } }), /conflict: main is now [0-9a-f]{12}, not the bbbbbbbbbbbb you were shown: look again/);
     await dispatch('integrate', task, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: pr.baseSha } });
     await s.until(() => s.a.daemon.view(s.project).tasks.get(task)?.status === 'landed', 30_000, 'the land');
     assert.equal(s.fake.log.filter((l) => l.method === 'PUT' && l.path.endsWith('/merge')).length, 1, 'one merge');

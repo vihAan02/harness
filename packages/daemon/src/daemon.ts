@@ -867,7 +867,13 @@ export class Daemon {
       const pr = await this.github(project).pull(shown.pr_number);
       if (pr.head.sha !== shown.head_sha) throw new DispatchRefused('conflict', `PR #${shown.pr_number}'s head is now ${pr.head.sha.slice(0, 12)}, not the ${shown.head_sha.slice(0, 12)} you approved: look again`);
       const base = await this.fetchProjectBase(project);
-      if (base !== shown.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${shown.base_sha.slice(0, 12)} you approved: the PR needs updating first`);
+      // Behind the actual base (D-115): bring the PR up to date with it first. Nothing is signed or merged; the new head
+      // runs its checks again, and only reviews of that head count, so the human integrates it once it's green again.
+      if (!(await git(project.repo, 'merge-base', '--is-ancestor', base, shown.head_sha).then(() => true, () => false))) {
+        const head = await this.refreshPr(projectId, taskId).catch((e: Error) => { throw new DispatchRefused('conflict', e.message); });
+        throw new DispatchRefused('conflict', `${project.baseBranch} moved to ${base.slice(0, 12)}, so PR #${shown.pr_number} is updated to ${head.slice(0, 12)}: its checks run again, and only approving reviews of that head count. Integrate it once it's green and approved`);
+      }
+      if (base !== shown.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${shown.base_sha.slice(0, 12)} you were shown: look again`);
       const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', base, shown.head_sha)).split('\0').filter(Boolean).sort();
       integrate = { pr_number: shown.pr_number, head_sha: shown.head_sha, base_sha: base, paths_sha256: pathsSha256(changed) };
     }
@@ -1736,6 +1742,10 @@ export class Daemon {
     const branch = this.remoteBranch(projectId, taskId);
     await pushBranch(project.repo, project.remote!, head, branch, pushed);
     j.append(projectId, taskId, 'pushed', { head, branch, refresh: true });
+    // Republished on the base it now contains: every view (the CLI's, the UI's, the other Macs') shows the new head on the
+    // actual base, and the old head's checks and reviews are dropped until the poller reads the new head's (D-115).
+    const pr = this.view(projectId).prs.get(taskId);
+    if (pr) await this.report(projectId, 'pr.publish', { task_id: taskId, pr_number: pr.prNumber, url: pr.url, head_sha: head, base_sha: base, remote_ref: `refs/heads/${branch}` });
     this.log(`${taskId}'s PR is up to date with ${project.baseBranch} again, at ${head.slice(0, 12)}`);
     return head;
   }
