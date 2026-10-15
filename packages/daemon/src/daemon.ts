@@ -244,6 +244,8 @@ export class Daemon {
   delegationTimer: NodeJS.Timeout | null = null;
   delegating = false;
   delegationTried = new Map<string, number>();
+  /** Each task's PR head as harnessd last refreshed it (D-147), so a poll from before that push isn't reported over it. */
+  refreshedPrs = new Map<string, { head: string; at: number }>();
   trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
   /** Each human dispatch signed here, by command_id: a retry of the same click resends it unchanged, so the coordinator applies it once. */
   signedDispatches = new Map<string, { request: string; name: string; args: Record<string, unknown>; at: number }>();
@@ -404,6 +406,11 @@ export class Daemon {
         projects: github, view: (id) => this.view(id), deviceId: this.config.deviceId, github: (p) => this.github(p),
         send: async (projectId, name, args) => (await this.link!.command(projectId, name, args)).result,
         advanceBase: async (p, tip) => { await advanceBaseRef(p.repo, p.id, tip); },
+        staleHead: async (p, taskId, head) => {
+          const r = this.refreshedPrs.get(`${p.id}:${taskId}`);
+          if (!r || r.head === head || Date.now() - r.at > 5 * 60_000) return false;
+          return git(p.repo, 'merge-base', '--is-ancestor', head, r.head).then(() => true, () => false);
+        },
         log: (m) => this.log(m), ...(this.o.pollMs ? { intervalMs: this.o.pollMs } : {}),
         ...(this.o.reconcileAfterMs ? { reconcileAfterMs: this.o.reconcileAfterMs } : {}),
       });
@@ -1760,6 +1767,7 @@ export class Daemon {
     const branch = this.remoteBranch(projectId, taskId);
     await pushBranch(project.repo, project.remote!, head, branch, pushed);
     j.append(projectId, taskId, 'pushed', { head, branch, refresh: true });
+    this.refreshedPrs.set(`${projectId}:${taskId}`, { head, at: Date.now() });
     // Republished on the base it now contains: every view (the CLI's, the UI's, the other Macs') shows the new head on the
     // actual base, and the old head's checks and reviews are dropped until the poller reads the new head's (D-115).
     const pr = this.view(projectId).prs.get(taskId);

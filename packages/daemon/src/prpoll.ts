@@ -22,6 +22,11 @@ export type PollerDeps = {
   send: (projectId: string, name: string, args: Record<string, unknown>) => Promise<unknown>;
   /** Moves harnessd's own base ref after a fetch (D-114). */
   advanceBase: (p: ProjectConfig, tip: string) => Promise<void>;
+  /**
+   * Whether `head`, read from GitHub for a task's PR, is older than what harnessd just pushed and republished for it
+   * (D-147): a read from before the push, or GitHub not showing the push yet. Such a read is skipped, not reported.
+   */
+  staleHead?: (p: ProjectConfig, taskId: string, head: string) => Promise<boolean>;
   log: (msg: string) => void;
   intervalMs?: number;
   /** How long another device's GitHub land waits, its device silent, before this one settles it (D-115). Default 10 min. */
@@ -109,6 +114,7 @@ export class Poller {
     for (const pr of view.prs.values()) {
       if (pr.deviceId !== this.d.deviceId || pr.state !== 'open' || pr.merged) continue;
       const live = await gh.pull(pr.prNumber);
+      if (await this.d.staleHead?.(p, pr.taskId, live.head.sha)) continue;
       const [checks, reviews] = await Promise.all([gh.checkRuns(live.head.sha), gh.reviews(pr.prNumber)]);
       const conclusions: Record<string, CheckConclusion> = {};
       for (const c of checks) {
