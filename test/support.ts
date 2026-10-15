@@ -242,6 +242,8 @@ export async function startPilotStack(p: {
   sideOptions?: { a?: Partial<DaemonOptions>; b?: Partial<DaemonOptions> };
   /** The coordinator's timings, such as how soon a silent device is offline and a peer may settle its land (D-115). */
   server?: { offlineAfterMs?: number; reconcileAfterMs?: number };
+  /** Each harnessd's [limits], as a pilot Mac sets them: one agent, no ports (D-38, D-143). */
+  limits?: { max_concurrent_agents?: number; ports_per_agent?: number };
 } = {}) {
   const cleanup: (() => Promise<void> | void)[] = [];
   const errors: unknown[] = [];
@@ -281,7 +283,7 @@ export async function startPilotStack(p: {
       fs.writeFileSync(home.deviceKey, keys[s].privateKeyPem, { mode: 0o600 });
       const raw = {
         device_id: device, principal: human, server_url: server.url, auth: 'device-key', server_key: serverKey.publicKey,
-        trust: { devices: trust }, limits: { port_range: ranges[s] }, agents: { max_budget_usd: 0.1, daily_budget_usd: 0.25 },
+        trust: { devices: trust }, limits: { port_range: ranges[s], ...p.limits }, agents: { max_budget_usd: 0.1, daily_budget_usd: 0.25 },
         projects: [{
           id: project, repo: pair[s].repo, integration: 'github', remote: fake.gitUrl, github_api: fake.apiUrl,
           commit_name: `Human ${s.toUpperCase()}`, commit_email: `${human}@users.noreply.github.com`,

@@ -1550,7 +1550,7 @@ export class Daemon {
   async prepareTask(t: { projectId: string; taskId: string; baseSha: string; agentId: string; reuse?: boolean; forceSetup?: boolean }): Promise<TaskWorkspace> {
     const project = this.project(t.projectId);
     if (!TASK_ID.test(t.taskId)) throw new Error(`invalid task id: ${t.taskId}`);
-    this.checkCapacity(this.config.limits.maxConcurrentAgents);
+    this.checkCapacity(this.config.limits.maxConcurrentAgents, t.taskId);
     const worktree = this.worktreeOf(t.projectId, t.taskId);
     let branch = taskBranch(t.taskId);
     // A reopened task keeps its worktree, its branch and what setup already made there (D-107).
@@ -1563,7 +1563,7 @@ export class Daemon {
 
     const repo = readRepoConfig(worktree);
     const policy = effectivePolicy(this.config, project, repo);
-    this.checkCapacity(policy.maxConcurrentAgents);
+    this.checkCapacity(policy.maxConcurrentAgents, t.taskId);
     if (repo.setup && (!t.reuse || t.forceSetup)) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
     const block = await this.ports.allocate(t.taskId, policy.portsPerAgent);
     // No ports, no allowLocalBinding: the session's sandbox then can't reach any loopback service (D-143, F-142).
@@ -2166,8 +2166,12 @@ export class Daemon {
     return path.join(this.home.worktrees, projectId, taskId);
   }
 
-  checkCapacity(limit: number): void {
-    const active = Object.keys(this.ports.list()).length;
+  /**
+   * D-38: the other tasks holding a slot on this device. A stopped task keeps its slot (and its ports) until it ends, so
+   * its own resume or reopen is never refused for the slot it already holds.
+   */
+  checkCapacity(limit: number, taskId: string): void {
+    const active = Object.keys(this.ports.list()).filter((owner) => owner !== taskId).length;
     if (active >= limit) throw new StartRefused('capacity', `already running ${active} task(s); the limit is ${limit} (D-38)`);
   }
 
