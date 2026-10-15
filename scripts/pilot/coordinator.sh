@@ -6,7 +6,7 @@
 #   coordinator.sh init                    the cluster (socket only, peer auth), the harness_pilot database, the server key
 #   coordinator.sh apply <pilot.toml> [--rotate <dev>]… [--revoke <dev>]…
 #                                          provision humans, devices, the project and agents (npm run admin -- apply)
-#   coordinator.sh service install|uninstall|start|stop
+#   coordinator.sh service install|uninstall|start|stop|restart
 #                                          launchd jobs for the cluster and the server, kept up across login and crashes
 #   coordinator.sh run                     what the server's launchd job runs: cap the log, wait for Postgres, serve
 #   coordinator.sh tunnel-account <name> <pubkey-file>
@@ -102,6 +102,10 @@ case "${1:-}" in
       install)
         need_pg; need_runtime
         [ -f "$DATA/PG_VERSION" ] && [ -f "$KEY" ] || die "run coordinator.sh init first"
+        # Stop what runs first, the server and then Postgres. A Postgres launchd keeps alive comes back after pg_ctl stops
+        # it, so its job is booted out first; pg_ctl then stops only one started by hand.
+        for l in "$LABEL_SRV" "$LABEL_PG"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; done
+        for _ in $(seq 1 30); do pg_up || break; sleep 1; done
         pg_up && LC_ALL=en_US.UTF-8 "$PGBIN/pg_ctl" -s -D "$DATA" -m fast -w stop
         mkdir -p "$AGENTS"
         cap_log "$LOGS/postgres.log"
@@ -118,8 +122,10 @@ HARNESS_PORT=$PORT" plist "$LABEL_SRV" "$LOGS/server.log" /bin/bash "$RUNTIME/sc
         ;;
       uninstall) for l in "$LABEL_SRV" "$LABEL_PG"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; rm -f "$AGENTS/$l.plist"; done; echo "removed both jobs; the data stays in $CH" ;;
       start) for l in "$LABEL_PG" "$LABEL_SRV"; do launchctl bootstrap "gui/$(id -u)" "$AGENTS/$l.plist"; done ;;
+      # The server again, from whatever runtime is current now (after install.sh promote); Postgres keeps running.
+      restart) launchctl kickstart -k "gui/$(id -u)/$LABEL_SRV" && echo "restarted $LABEL_SRV from $(readlink "$RUNTIME" 2>/dev/null || echo "$RUNTIME"). Check: coordinator.sh status" ;;
       stop) for l in "$LABEL_SRV" "$LABEL_PG"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; done ;;
-      *) die "usage: coordinator.sh service install|uninstall|start|stop" ;;
+      *) die "usage: coordinator.sh service install|uninstall|start|stop|restart" ;;
     esac
     ;;
   tunnel-account)
