@@ -1,4 +1,54 @@
-# Handoff: harness, Phase 0B (state as of 2026-10-06; the pilot sprint from 2026-10-08; latest update 2026-10-12)
+# Handoff: harness, Phase 0B (state as of 2026-10-06; the pilot sprint from 2026-10-08; latest update 2026-10-16)
+
+
+## Update (2026-10-16, S21): the first two-Mac test is done, its fixes are on `main`, and Vihaan's side carries both streams. Read this first
+- **Who and when:** Vihaan's Claude (stream B), 2026-10-13 to 2026-10-16, on Vihaan's Mac.
+  - **Under S21:** Vihaan's side carries both streams' in-flight work while Daniyal is away, and gives Vihaan's approvals at bottlenecks, each labelled as such.
+  - **Why this section:** HANDOFF is normally Daniyal's to edit; S21 hands that to Vihaan's side too.
+- **The first two-agent test (`scripts/pilot/README.md` §5) is complete, on two physically separate Macs.** All three of its tasks are on `main`:
+  - T-2 "UI formatters" as `53f74d3` (#147);
+  - T-3 "Rename the cost formatter" as `64be61f` (#148);
+  - T-4 "Integration page costs" as `9b43be6` (#149).
+- **What it showed, from the coordinator's event log** (#86 has the event numbers):
+  - **Each human assigned their own agent through a signed dispatch**, and the two agents ran at the same time.
+  - **One agent asked the other a question**, delivered in 41 ms and answered in about 4 s.
+  - **T-4 waited on T-3's land.** It was told when `format.ts` changed while T-3 was in progress (`dependency_changed`), and again when T-3 landed. Its harnessd synced its branch to the merge within a second (`worktree.synced` with the stale path).
+  - **A hard claim blocked T-3's integrate,** which was refused with `leased_by_other`; T-3 merged once the claim was released.
+  - **PRs opened by each human's harnessd**, approved by the other side and merged by `harness integrate`.
+  - **Recovery:**
+    - a 10-hour network outage on Vihaan's Mac, after which harnessd reconnected by itself and the same session waited again;
+    - a restart of Vihaan's Mac;
+    - Daniyal's restart drill;
+    - the coordinator's Mac asleep overnight.
+- **Merged since S19:**
+
+  | PR | What | Squash |
+  |---|---|---|
+  | #134, #138, #141, #140, #142 | The pilot PRs (empty land, coordinator, PB5, PB1b+PB2b, `demo:pilot`) | by Daniyal's Claude |
+  | #145 | Review fixes: `harness approve` shows everything, `setup` refuses dropped flags, the first test's wait | `215287f` |
+  | #136, #137 | The UI's read model, and the thin UI | `41403f7`, `5693524` |
+  | #147, #148, #149 | The first test's three tasks | `53f74d3`, `64be61f`, `9b43be6` |
+  | #150 | D-145 to D-147: resume in its own slot, PRs behind `main`, launchd services, the tunnel account, delegation, plus two delegation holes found in review and fixed (`db9f577`) | `ab38f6e` |
+  | #153 | Runbook: `harness status` doesn't list waits, no human message command, Power Nap | `c7bec07` |
+  | #154 | Delegation hardening: audit first, own tasks only, a refresh moves only what was published | `872f919` |
+  | #155 | `install.sh service`: a reinstall waits and retries launchd, `stop`/`status` need no Node, plists escaped, logs capped | `af7b156` |
+- **The Macs:**
+  - **Vihaan's** runs `ab38f6e`, with harnessd and the UI bridge as launchd services (`com.harness.harnessd`, `com.harness.ui`) and the tunnel job, and `harness doctor` all ok. Its Postgres 18 on 5432 is hardened but isn't a login service: after a reboot, start it with `LC_ALL=en_US.UTF-8 /opt/homebrew/opt/postgresql@18/bin/pg_ctl -D /opt/homebrew/var/postgresql@18 -l /opt/homebrew/var/postgresql@18/server.log start`.
+  - **Daniyal's** (the coordinator) still runs `f4a7c9a`, #150's pre-review head. **Keep `harness delegation off` there until it runs the final `main` (this PR's squash, or later).** Then:
+    - `install.sh install <main sha>`, `service stop`, `promote` and `service install`;
+    - `coordinator.sh service restart`;
+    - `harness doctor`;
+    - `harness delegation on` if wanted.
+- **Spend on the test:**
+  - T-2 $0.017, T-3 $0.014 (two sessions, the restart drill), T-4 $0.041, all on Haiku 5.5;
+  - each human on their own key, capped at $0.25 a day by OpenRouter. Vihaan's key was changed to his own on 2026-10-13; it had been the same key as Daniyal's.
+- **Open:**
+  - #152: every non-blocking follow-up from the run and the reviews;
+  - the parked A/B PRs (#80, #82, #83, #84, #65) and stream B's #118, #119, #121;
+  - the owners' next brief (the website/UI) hasn't been given.
+- **Known limits:**
+  - nothing can coordinate while Daniyal's Mac sleeps;
+  - a Mac with Power Nap flaps online and offline while asleep (F-151).
 
 ## Update (2026-10-12, S19): everything for the first two-Mac test is in PRs, and Daniyal's Mac runs the real pilot coordinator. Read this first
 - **Who and when:** Daniyal's Claude (stream A), 2026-10-12, about 19:30 to 21:45 UTC, under S19: commit the work for review, device keys everywhere, prepare the real two-Mac test, and **don't bypass review**. Merges are review-gated: a PR that touches stream B's files or a contract waits for Vihaan. The two-Mac test runs from a pushed candidate commit, so his reviews don't block preparing it, only `main`.
