@@ -31,17 +31,23 @@ HOME_DIR="${HARNESS_HOME:-$HOME/.harness}"
 LABEL_D=com.harness.harnessd
 LABEL_UI=com.harness.ui
 loaded() { launchctl print "gui/$(id -u)/$1" >/dev/null 2>&1; }
+# Right after a bootout launchd may still be tearing the job down, and a bootstrap then fails (error 5): try again.
+bootstrap() { local _; for _ in 1 2 3 4 5; do launchctl bootstrap "gui/$(id -u)" "$1" 2>/dev/null && return 0; sleep 2; done; launchctl bootstrap "gui/$(id -u)" "$1"; }
+# One previous log is kept: a log over 10 MiB is moved aside when its service is (re)installed or started.
+cap_log() { [ -f "$1" ] && [ "$(stat -f %z "$1")" -gt $((10 * 1024 * 1024)) ] && mv -f "$1" "$1.1"; return 0; }
+# A value for the plist, XML-escaped.
+xml() { local s="${1//&/&amp;}"; s="${s//</&lt;}"; printf '%s' "${s//>/&gt;}"; }
 # A launchd agent: started at login, restarted after a crash (not after a clean stop), given time to stop its sessions.
 agent_plist() { # agent_plist <label> <log> <workdir> <program and args…>
   local label="$1" log="$2" dir="$3" a; shift 3
   printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n'
-  printf '  <key>Label</key><string>%s</string>\n  <key>ProgramArguments</key>\n  <array>\n' "$label"
-  for a in "$@"; do printf '    <string>%s</string>\n' "$a"; done
-  printf '  </array>\n  <key>WorkingDirectory</key><string>%s</string>\n' "$dir"
+  printf '  <key>Label</key><string>%s</string>\n  <key>ProgramArguments</key>\n  <array>\n' "$(xml "$label")"
+  for a in "$@"; do printf '    <string>%s</string>\n' "$(xml "$a")"; done
+  printf '  </array>\n  <key>WorkingDirectory</key><string>%s</string>\n' "$(xml "$dir")"
   printf '  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key><string>%s</string>\n    <key>HOME</key><string>%s</string>\n    <key>HARNESS_HOME</key><string>%s</string>\n  </dict>\n' \
-    "$(dirname "$NODE"):$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$HOME" "$HOME_DIR"
+    "$(xml "$(dirname "$NODE"):$ROOT/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")" "$(xml "$HOME")" "$(xml "$HOME_DIR")"
   printf '  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n  <key>ThrottleInterval</key><integer>30</integer>\n  <key>ExitTimeOut</key><integer>90</integer>\n'
-  printf '  <key>ProcessType</key><string>Interactive</string>\n  <key>StandardOutPath</key><string>%s</string>\n  <key>StandardErrorPath</key><string>%s</string>\n</dict>\n</plist>\n' "$log" "$log"
+  printf '  <key>ProcessType</key><string>Interactive</string>\n  <key>StandardOutPath</key><string>%s</string>\n  <key>StandardErrorPath</key><string>%s</string>\n</dict>\n</plist>\n' "$(xml "$log")" "$(xml "$log")"
 }
 
 case "${1:-}" in
@@ -92,21 +98,26 @@ case "${1:-}" in
     ;;
   service)
     [ -L "$ROOT/current" ] || die "nothing is promoted yet: install.sh install <sha> first"
-    NODE="$(need_node)"
     LOGS="$HOME_DIR/logs"
     case "${2:-}" in
       install)
         [ -f "$HOME_DIR/config.toml" ] || die "no $HOME_DIR/config.toml: run harness setup and harness doctor first"
+        NODE="$(need_node)" # only the plists need it: stop, start and status work without a Node 24
         running && ! loaded "$LABEL_D" && die "harnessd is running outside launchd: stop it (Ctrl-C in its terminal), then install the service"
         mkdir -p "$AGENTS" "$LOGS"; chmod 700 "$LOGS"
         agent_plist "$LABEL_D" "$LOGS/harnessd.log" "$HOME" "$ROOT/bin/harnessd" > "$AGENTS/$LABEL_D.plist"
         agent_plist "$LABEL_UI" "$LOGS/ui.log" "$ROOT/current" "$NODE" "$ROOT/current/packages/ui/src/main.ts" serve > "$AGENTS/$LABEL_UI.plist"
         chmod 600 "$AGENTS/$LABEL_D.plist" "$AGENTS/$LABEL_UI.plist"
-        for l in "$LABEL_D" "$LABEL_UI"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; launchctl bootstrap "gui/$(id -u)" "$AGENTS/$l.plist"; done
+        # Reinstalling (a new runtime): the running jobs stop first, sessions stopped and their work kept, before the new ones start.
+        for l in "$LABEL_UI" "$LABEL_D"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; done
+        for _ in $(seq 1 90); do running || break; sleep 1; done
+        running && die "harnessd is still stopping; see $LOGS/harnessd.log, then run install.sh service install again"
+        cap_log "$LOGS/harnessd.log"; cap_log "$LOGS/ui.log"
+        for l in "$LABEL_D" "$LABEL_UI"; do bootstrap "$AGENTS/$l.plist"; done
         echo "harnessd and the UI bridge run under launchd from $ROOT/current, at every login. Logs: $LOGS/{harnessd,ui}.log. Check: harness doctor"
         ;;
       uninstall) for l in "$LABEL_UI" "$LABEL_D"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; rm -f "$AGENTS/$l.plist"; done; echo "removed both launchd agents; start harnessd by hand from now on" ;;
-      start) for l in "$LABEL_D" "$LABEL_UI"; do loaded "$l" || launchctl bootstrap "gui/$(id -u)" "$AGENTS/$l.plist"; done ;;
+      start) cap_log "$LOGS/harnessd.log"; cap_log "$LOGS/ui.log"; for l in "$LABEL_D" "$LABEL_UI"; do loaded "$l" || bootstrap "$AGENTS/$l.plist"; done ;;
       # bootout sends SIGTERM: harnessd stops its sessions (their work stays) and exits; launchd doesn't restart it.
       stop) for l in "$LABEL_UI" "$LABEL_D"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; done
         for _ in $(seq 1 90); do running || break; sleep 1; done
