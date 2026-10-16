@@ -14,6 +14,7 @@ import type { ViewContext, View } from '../app.ts';
 import { clear, el, listen } from '../dom.ts';
 import { REQUIRED, budgetModel, integrationModel, prUrl } from '../model/integration.ts';
 import type { IntegrationModel, IntegrationRow } from '../model/integration.ts';
+import { formatUsd } from '../model/format.ts';
 
 const NONE = 'None';
 const CONFLICT = "The PR's head or base changed since you looked; review the new head.";
@@ -229,11 +230,11 @@ function spendSection(snap: ProjectSnapshot, reset: Control): HTMLElement {
     ? el('p', { class: 'muted' }, 'No daily budget set')
     : el('div', { class: 'spend-progress' },
       el('progress', { value: String(model.spent), max: String(day) }),
-      el('span', { class: 'spend-progress-text' }, `${model.spent.toFixed(3)} of ${day.toFixed(3)} USD`),
+      el('span', { class: 'spend-progress-text' }, `${formatUsd(model.spent)} of ${formatUsd(day)} USD`),
     );
   const cap = model.cap === null
     ? el('p', { class: 'muted' }, 'No session cap set')
-    : el('p', { class: 'spend-cap' }, `One session is capped at $${model.cap.toFixed(3)}`);
+    : el('p', { class: 'spend-cap' }, `One session is capped at ${formatUsd(model.cap)}`);
   return el('section', { class: `panel spend level-${model.level}` },
     el('h2', {}, 'Spend and provider'),
     ...model.words.map((w) => el('p', { class: `spend-words level-${model.level}` }, w)),
@@ -245,7 +246,7 @@ function spendSection(snap: ProjectSnapshot, reset: Control): HTMLElement {
       : el('ul', { class: 'cost-list' }, ...model.tasks.map((t) =>
         el('li', { class: 'cost-item' },
           el('span', { class: 'cost-task' }, t.task),
-          el('span', { class: 'cost-amount' }, t.reported ? `$${t.costUsd.toFixed(3)}` : 'not reported yet'),
+          el('span', { class: 'cost-amount' }, t.reported ? formatUsd(t.costUsd) : 'not reported yet'),
         ))),
     model.circuit === null ? null : el('div', { class: 'circuit' },
       el('p', { class: 'circuit-words' }, `${model.circuit.kind}: ${model.circuit.reason}`),
