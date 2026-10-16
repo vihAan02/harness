@@ -367,12 +367,14 @@ async function land(c: CliClient, task: string, o: { tests: boolean; wait: boole
 /** `harness delegation [status|off|on]` (D-145). The policy itself is [delegation] in config.toml, written by its human. */
 function delegation(sub: string) {
   const home = harnessHome();
-  const config = loadConfig(home);
-  const d = new Delegation(home, config.deviceId, config.delegation);
+  // Off is written before config.toml is read: it works even while a broken config keeps everything else from loading.
   if (sub === 'off') {
-    fs.writeFileSync(d.revokedFile, `${new Date().toISOString()}\n`, { mode: 0o600 });
+    fs.mkdirSync(home.root, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(new Delegation(home, '', null).revokedFile, `${new Date().toISOString()}\n`, { mode: 0o600 });
     return void console.log('Delegation off: harnessd asks you again for every publish and integration, from its next decision on. Undo: harness delegation on');
   }
+  const config = loadConfig(home);
+  const d = new Delegation(home, config.deviceId, config.delegation);
   if (sub === 'on') {
     fs.rmSync(d.revokedFile, { force: true });
     if (!d.policy) return void console.log('No [delegation] in config.toml, so there is nothing to turn on.');
@@ -389,7 +391,8 @@ function delegation(sub: string) {
   const lines = fs.existsSync(d.auditFile) ? fs.readFileSync(d.auditFile, 'utf8').trim().split('\n').filter(Boolean).slice(-10) : [];
   console.log(lines.length ? `Last decisions (${d.auditFile}):` : 'No delegated decisions yet.');
   for (const l of lines) {
-    const r = JSON.parse(l) as Record<string, unknown>;
+    let r: Record<string, unknown>;
+    try { r = JSON.parse(l) as Record<string, unknown>; } catch { console.log('  (an unreadable line in the audit log)'); continue; }
     console.log(`  ${String(r.at).slice(0, 19)} ${String(r.action).padEnd(9)} ${String(r.task_id)} ${String(r.head_sha).slice(0, 12)}${r.pr_number ? ` PR #${String(r.pr_number)}` : ''}${r.land_id ? ` ${String(r.land_id)}` : ''}`);
   }
 }

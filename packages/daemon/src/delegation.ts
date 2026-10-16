@@ -36,7 +36,9 @@ export type DelegationPolicy = {
  * Paths a delegated publish never covers, whatever the policy says: CI and review rules, agent and harness config, and
  * dependency manifests. An entry ending in `/` is a folder at the repo's root; one with no `/` is a file name anywhere.
  */
-export const ALWAYS_PROTECTED = ['.github/', '.claude/', '.harness/', '.mcp.json', '.gitmodules', '.gitattributes', 'harness.yaml', 'CODEOWNERS', 'AGENTS.md', 'CLAUDE.md', 'package.json', 'package-lock.json'];
+export const ALWAYS_PROTECTED = ['.github/', '.claude/', '.harness/', '.mcp.json', '.gitmodules', '.gitattributes', 'harness.yaml', 'CODEOWNERS', 'AGENTS.md', 'CLAUDE.md', 'CLAUDE.local.md',
+  'package.json', 'package-lock.json', 'requirements.txt', 'pyproject.toml', 'Pipfile', 'Cargo.toml', 'go.mod', 'Gemfile', 'Makefile',
+  '.husky/', '.pre-commit-config.yaml'];
 /** A delegation lasts at most this long from when it's loaded: the owner renews it on purpose. */
 const MAX_DAYS = 31;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -83,7 +85,19 @@ export function parseDelegation(v: unknown, githubProjects: string[], now = Date
  */
 export function isProtected(file: string, extra: string[] = []): boolean {
   const f = file.toLowerCase();
+  // Agent config is read from any folder an agent works in, not only the root.
+  if (f.split('/').slice(0, -1).includes('.claude')) return true;
   return [...ALWAYS_PROTECTED, ...extra].map((p) => p.toLowerCase()).some((p) => p.endsWith('/') ? f.startsWith(p) : p.includes('/') ? f === p : f === p || f.endsWith(`/${p}`));
+}
+
+/**
+ * Why a task isn't this human's own routine work, or null. Only a task this human wrote, for their own agent, is
+ * delegated: another human's task reached this agent through a start this human approved once (D-34), not each step.
+ */
+export function taskRefusal(task: { ownerHumanId: string }, agentHumanId: string, principal: string): string | null {
+  if (agentHumanId !== principal) return "its agent is another human's";
+  if (task.ownerHumanId !== principal) return `${task.ownerHumanId} wrote the task`;
+  return null;
 }
 
 export type PrReview = { login: string; state: string; commit_id: string };

@@ -17,7 +17,7 @@ import { loadConfig, resolveSecrets, type LocalConfig, type ProjectConfig } from
 import { branchTip, changedPaths, commitAll, createWorktree, git, gitCommonDir, guardWorktrees, removeWorktree, TASK_ID, taskBranch } from './git.ts';
 import { ensureDir, readJson, writeJsonAtomic, type Home } from './home.ts';
 import { ServerLink, type LinkState } from './link.ts';
-import { checkAuthTarget, Handshake, loadDeviceKey } from './identity.ts';
+import { checkAuthTarget, Handshake, loadDeviceKey, untrustedText } from './identity.ts';
 import { Journal } from './journal.ts';
 import { advanceBaseRef, baseRef, fetchBase, gitRemote, pushBranch } from './remote.ts';
 import { ghToken, GitHubClient } from './github.ts';
@@ -25,7 +25,7 @@ import { publishHash, scanPublish } from './publish.ts';
 import { prBody, prTitle } from './prbody.ts';
 import { Poller } from './prpoll.ts';
 import { integrateRemote, REQUIRED_CHECKS } from './integrate-remote.ts';
-import { Delegation, reviewRefusal, type DelegationRecord } from './delegation.ts';
+import { Delegation, reviewRefusal, taskRefusal, type DelegationRecord } from './delegation.ts';
 import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -1750,15 +1750,19 @@ export class Daemon {
     if (this.running.has(taskId)) throw new Error(`${taskId}'s agent is running`);
     const task = this.view(projectId).tasks.get(taskId)!;
     const agent = this.view(projectId).agents.get(task.assignee!)!;
+    // Only what was published moves: a refresh merges the base into the head its human approved, never into work that
+    // came after it (a late edit, a reopen's commits), which would reach the PR with no approval.
+    const j = this.journal();
+    const pushed = (j.last(projectId, taskId, 'pushed')?.head as string | undefined) ?? null;
+    if (await git(worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error(`${taskId}'s worktree has changes that were never published: reopen the task, or remove them, before its PR is updated`);
+    if (pushed && await branchTip(project.repo, taskBranch(taskId)) !== pushed) throw new Error(`${taskId}'s branch has commits its PR doesn't: publish them first (reopen the task), then update the PR`);
     const base = await this.fetchProjectBase(project);
     const r = await syncWorktree({
       worktree, target: base, taskId, agent: { name: agent.name, email: `${agent.id}@harness.invalid` },
       ...(project.commitIdentity ? { identity: project.commitIdentity } : {}),
     });
     if (!r.ok) throw Object.assign(new Error(`updating ${taskId} with ${project.baseBranch} conflicts in ${r.conflicts.join(', ')}: reopen it to resolve them`), { conflicts: r.conflicts });
-    const j = this.journal();
     const head = await branchTip(project.repo, taskBranch(taskId));
-    const pushed = (j.last(projectId, taskId, 'pushed')?.head as string | undefined) ?? null;
     const gate = await scanPublish(project.repo, { head, base, pushed, prText: '', secrets: this.heldSecrets(projectId) });
     if (gate.blocked.length) {
       await this.report(projectId, 'publish.blocked', { task_id: taskId, reasons: gate.blocked.slice(0, 50) });
@@ -1799,9 +1803,22 @@ export class Daemon {
     return [auth?.apiKey, this.config.token, ...Object.values(resolveSecrets(this.home, project.secrets))].filter((v): v is string => typeof v === 'string' && v.length >= 8);
   }
 
-  /** Records one delegated decision: in the local audit log, and on the coordinator, where both humans see it (D-145). */
+  /**
+   * Writes a delegated decision to the local audit log before it's acted on (D-145): if the record can't be written,
+   * nothing is done without a click.
+   */
+  auditDelegated(r: DelegationRecord): boolean {
+    try {
+      this.delegation.audit(r);
+      return true;
+    } catch (e) {
+      this.log(`${r.task_id}: not delegated: the audit log couldn't be written (${(e as Error).message.split('\n')[0]}); it waits for a click`);
+      return false;
+    }
+  }
+
+  /** Reports a delegated decision, already in the local audit log, to the coordinator, where both humans see it (D-145). */
   async delegated(projectId: string, r: DelegationRecord): Promise<void> {
-    this.delegation.audit(r);
     const { project_id: _p, approval_id: _a, files: _f, ...args } = r;
     await this.report(projectId, 'delegation.report', { ...args, policy_sha256: this.delegation.policy!.sha256 })
       .catch((e: Error) => this.log(`delegation.report for ${r.task_id}: ${e.message} (it's in ${this.delegation.auditFile})`));
@@ -1824,7 +1841,7 @@ export class Daemon {
         for (const pr of [...view.prs.values()]) {
           const task = view.tasks.get(pr.taskId);
           const agent = task?.assignee ? view.agents.get(task.assignee) : undefined;
-          if (!task || task.status !== 'done' || !agent || agent.humanId !== this.config.principal) continue;
+          if (!task || task.status !== 'done' || !agent || taskRefusal(task, agent.humanId, this.config.principal) !== null) continue;
           if (pr.deviceId !== this.config.deviceId || pr.state !== 'open' || pr.merged) continue;
           if ([...view.lands.values()].some((l) => l.taskId === task.id && (l.status === 'requested' || l.status === 'accepted'))) continue;
           const green = REQUIRED_CHECKS.every((c) => pr.checks[c] === 'success');
@@ -1838,10 +1855,11 @@ export class Daemon {
           this.delegationTried.set(key, Date.now());
           const why = this.delegation.changeRefusal(changed, task.scope);
           if (why) {
-            this.log(`${task.id}: PR #${pr.prNumber} is ready, but its integration isn't delegated (${why}): harness integrate ${task.id}`);
+            this.log(`${task.id}: PR #${pr.prNumber} is ready, but its integration isn't delegated (${untrustedText(why, 300)}): harness integrate ${task.id}`);
             continue;
           }
           const base = { project_id: project.id, task_id: task.id, pr_number: pr.prNumber, base_sha: pr.baseSha };
+          if (!this.auditDelegated({ ...base, action: 'integrate', head_sha: pr.headSha })) continue;
           try {
             const r = await this.dispatchCommand(project.id, 'integrate', task.id, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: pr.baseSha } });
             const landId = (r.result as { land_id?: unknown } | null)?.land_id;
@@ -1851,7 +1869,7 @@ export class Daemon {
             const m = /is updated to ([0-9a-f]{12})/.exec((e as Error).message);
             if (e instanceof DispatchRefused && m) {
               const head = await branchTip(project.repo, taskBranch(task.id)).catch(() => m[1]!);
-              await this.delegated(project.id, { ...base, action: 'refresh', head_sha: head });
+              if (this.auditDelegated({ ...base, action: 'refresh', head_sha: head })) await this.delegated(project.id, { ...base, action: 'refresh', head_sha: head });
             }
             this.log(`${task.id}: delegated integration: ${(e as Error).message}`);
           }
@@ -1929,13 +1947,14 @@ export class Daemon {
         },
       });
       // D-145: a routine publish its human delegated is approved here, for this exact head and text, and audited.
-      const why = this.delegation.refusal('publish', projectId) ?? (agent.humanId !== this.config.principal ? 'its agent is another human\'s' : null)
+      const why = this.delegation.refusal('publish', projectId) ?? taskRefusal(task, agent.humanId, this.config.principal)
         ?? (gate.held.length ? 'the publish gate held part of it for a click' : null) ?? this.delegation.changeRefusal(changed, task.scope);
-      if (why === null) {
+      const rec: DelegationRecord = { action: 'publish', project_id: projectId, task_id: taskId, head_sha: head, base_sha: base, approval_id: req.id, files: changed.length };
+      if (why === null && this.auditDelegated(rec)) {
         this.approvals.approve(req.id);
-        await this.delegated(projectId, { action: 'publish', project_id: projectId, task_id: taskId, head_sha: head, base_sha: base, approval_id: req.id, files: changed.length });
+        await this.delegated(projectId, rec);
         this.log(`${taskId}: publishing ${head.slice(0, 12)} under the delegation (D-145): ${changed.length} file(s), all in its scope`);
-      } else this.log(`${taskId} is ready to publish${this.config.delegation ? ` (not delegated: ${why})` : ''}. Review it with: harness approve ${req.id}`);
+      } else this.log(`${taskId} is ready to publish${this.config.delegation && why ? ` (not delegated: ${untrustedText(why, 300)})` : ''}. Review it with: harness approve ${req.id}`);
       // Publishing is its human's decision (D-114): no deadline. A denial ends it; a reopen and a new commit ask again.
       if ((await this.waitForDecision(project.id, hash, req.id)) === 'denied') {
         j.append(projectId, taskId, 'publish_denied', { head, hash });

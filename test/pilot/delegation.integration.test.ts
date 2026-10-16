@@ -143,3 +143,32 @@ test('where the author owns every changed path, a stranger\'s approval or a with
     assert.equal(merges(s), 1);
   } finally { await s.stop(); }
 });
+
+test('no audit record, no delegated act: a publish whose record can\'t be written waits for a click', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    fs.mkdirSync(s.a.daemon.delegation.auditFile, { recursive: true }); // a directory where the log file goes: every append fails
+    const task = await finish(s, s.a, 'agent/noaudit', { 'site/index.html': '<p>v2</p>\n' });
+    await s.until(() => pendingPublish(s.a, task), 20_000, 'the publish request');
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(s.a.daemon.view(s.project).prs.has(task), false, 'not published without its record');
+    assert.ok(s.a.logs.some((l) => l.includes(`${task}: not delegated: the audit log couldn't be written`)), s.a.logs.join(' | '));
+    assert.deepEqual(await acted(s, task), []);
+  } finally { await s.stop(); }
+});
+
+test('a PR is brought up to date only from what was published: work left in the worktree stops the refresh', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    const task = await finish(s, s.a, 'agent/residue', { 'site/index.html': '<p>v2</p>\n' });
+    await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'the PR');
+    const pr = s.a.daemon.view(s.project).prs.get(task)!;
+    fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'site/late.html'), '<p>never published</p>\n');
+    await s.fake.pushToBase({ 'other.txt': 'o\n' }, 'a human merges something');
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: pr.headSha });
+    await s.until(() => s.a.logs.some((l) => l.includes(`${task}: delegated integration:`) && l.includes('never published')), 20_000, 'the refused refresh');
+    assert.equal(s.a.daemon.view(s.project).prs.get(task)!.headSha, pr.headSha, 'the PR keeps its head');
+    assert.equal(merges(s), 0);
+    assert.equal(await s.fake.tip(s.a.daemon.remoteBranch(s.project, task)), pr.headSha, 'nothing new was pushed');
+  } finally { await s.stop(); }
+});
