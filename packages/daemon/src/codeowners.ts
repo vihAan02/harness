@@ -4,7 +4,7 @@
 // PR can't rewrite who reviews it.
 import { git } from './git.ts';
 
-type Rule = { pattern: RegExp; owners: string[] };
+export type Rule = { pattern: RegExp; owners: string[] };
 
 /** A CODEOWNERS pattern (gitignore-like) as a regular expression over a repo-relative path. */
 export function patternToRegExp(p: string): RegExp {

@@ -14,7 +14,7 @@ const FAST = { pollMs: 150, delegationMs: 150 };
 const FILES = { 'README.md': 'pilot\n', 'site/index.html': '<p>v1</p>\n', '.github/CODEOWNERS': '* @fake-user @reviewer\n' };
 
 /** A task with `scope`, whose agent writes `files` and finishes; resolves with its id. */
-async function finish(s: PilotStack, side: PilotSide, name: string, files: Record<string, string>, scope = ['site/']) {
+async function finish(s: PilotStack, side: PilotSide, name: string, files: Record<string, string>, scope = ['site/'], remove: string[] = []) {
   const agent = (await side.command('agent.create', { name, vendor: 'claude' })).agent_id!;
   const task = await side.assign(agent, { title: `${name} work`, text: `do ${name}`, scope });
   await s.until(() => side.daemon.running.has(task), 20_000, `${task}'s session`);
@@ -23,6 +23,7 @@ async function finish(s: PilotStack, side: PilotSide, name: string, files: Recor
     fs.mkdirSync(path.dirname(path.join(wt, f)), { recursive: true });
     fs.writeFileSync(path.join(wt, f), c);
   }
+  for (const f of remove) fs.rmSync(path.join(wt, f));
   side.adapter.of(task).edited(Object.keys(files));
   await side.signed('task.complete', { task_id: task });
   return task;
@@ -106,5 +107,39 @@ test('a ready PR left behind by main is brought up to date by the delegation, an
     const merge = [...s.a.daemon.view(s.project).lands.values()].find((l) => l.taskId === task && l.status === 'completed')!.newBaseSha!;
     assert.equal(await s.fake.git(['rev-parse', `${merge}^1`]), moved);
     assert.deepEqual((await acted(s, task)).map((d) => d.action), ['publish', 'refresh', 'integrate']);
+  } finally { await s.stop(); }
+});
+
+test('a protected file moved into the scope is a change to that file: its publish waits for a click', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    // The move is a rename to Git: without both paths, only the in-scope new name would be checked.
+    const moved = await finish(s, s.a, 'agent/move', { 'site/OWNERS.txt': FILES['.github/CODEOWNERS'] }, ['site/'], ['.github/CODEOWNERS']);
+    await s.until(() => pendingPublish(s.a, moved), 20_000, 'the publish request');
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(s.a.daemon.view(s.project).prs.has(moved), false, 'not published without a click');
+    assert.ok(s.a.logs.some((l) => l.includes(moved) && l.includes('not delegated: .github/CODEOWNERS')), s.a.logs.join(' | '));
+    assert.deepEqual(await acted(s, moved), []);
+  } finally { await s.stop(); }
+});
+
+test('where the author owns every changed path, a stranger\'s approval or a withdrawn one integrates nothing; the other owner\'s does', async () => {
+  // site/ is fake-user's (A's human) alone, so the land asks for no review: only the delegation's check stands.
+  const files = { ...FILES, '.github/CODEOWNERS': '* @fake-user @reviewer\n/site/ @fake-user\n' };
+  const s = await startPilotStack({ files, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    const task = await finish(s, s.a, 'agent/own', { 'site/index.html': '<p>v2</p>\n' });
+    await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'the delegated PR');
+    const pr = s.a.daemon.view(s.project).prs.get(task)!;
+    s.fake.addReview(pr.prNumber, { login: 'stranger', state: 'APPROVED', commit_id: pr.headSha });
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(merges(s), 0, 'not merged on a stranger\'s approval');
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: pr.headSha });
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'CHANGES_REQUESTED', commit_id: pr.headSha });
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(merges(s), 0, 'not merged once the owner asked for changes');
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: pr.headSha });
+    await s.until(() => s.a.daemon.view(s.project).tasks.get(task)?.status === 'landed', 20_000, 'the land on the owner\'s approval');
+    assert.equal(merges(s), 1);
   } finally { await s.stop(); }
 });

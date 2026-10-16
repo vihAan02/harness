@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Delegation, inScope, isProtected, parseDelegation } from '../src/delegation.ts';
+import { parseCodeowners } from '../src/codeowners.ts';
+import { Delegation, inScope, isProtected, parseDelegation, reviewRefusal } from '../src/delegation.ts';
 import { tempDir, tempHome } from './fixtures.ts';
 
 const NOW = Date.parse('2026-10-15T06:00:00Z');
@@ -64,4 +65,33 @@ test('each decision reads the policy: its device, project and action; turned off
     assert.equal(line.policy_sha256, d.policy!.sha256);
     assert.equal(fs.statSync(path.join(home.logs, 'delegation.jsonl')).mode & 0o077, 0);
   } finally { cleanup(); }
+});
+
+test('protected paths match without regard to case, as a Mac disk resolves them', () => {
+  for (const f of ['site/Package.json', 'site/claude.md', 'site/Agents.MD', '.GitHub/workflows/ci.yml', 'Harness.yaml', 'site/codeowners']) assert.equal(isProtected(f), true, f);
+  assert.equal(isProtected('Docs/plan.md', ['docs/']), true);
+  assert.equal(isProtected('site/index.html'), false, 'the control: an ordinary file');
+});
+
+test('a delegated integrate needs another code owner\'s latest review to approve this exact head: never a stranger\'s', () => {
+  const H = 'a'.repeat(40);
+  const OLD = 'b'.repeat(40);
+  const review = (login: string, state: string, commit_id = H) => ({ login, state, commit_id });
+  // site/ is the author's alone, so the land itself would ask for no review: the delegation asks for another owner's.
+  const sole = parseCodeowners('* @me @other\n/site/ @me\n');
+  assert.equal(reviewRefusal(sole, ['site/a.ts'], 'me', [review('other', 'APPROVED')], H), null, 'the control: the other owner approved');
+  assert.match(String(reviewRefusal(sole, ['site/a.ts'], 'me', [review('stranger', 'APPROVED')], H)), /no other code owner \(@other\) approved/);
+  assert.match(String(reviewRefusal(sole, ['site/a.ts'], 'me', [review('me', 'APPROVED')], H)), /no other code owner/, 'not the author');
+  assert.match(String(reviewRefusal(sole, ['site/a.ts'], 'me', [review('other', 'APPROVED', OLD)], H)), /no other code owner/, 'not another head');
+  assert.match(String(reviewRefusal(sole, ['site/a.ts'], 'me', [review('other', 'APPROVED'), review('other', 'CHANGES_REQUESTED')], H)), /@other requested changes/);
+  assert.equal(reviewRefusal(sole, ['site/a.ts'], 'me', [review('other', 'APPROVED'), review('other', 'COMMENTED')], H), null, 'a later comment changes nothing');
+  assert.match(String(reviewRefusal(sole, ['site/a.ts'], 'me', [review('other', 'APPROVED'), review('other', 'DISMISSED')], H)), /no other code owner/, 'a dismissed approval');
+  // Paths with other owners: each of them, as the land checks.
+  const shared = parseCodeowners('* @me @other @third\n');
+  assert.match(String(reviewRefusal(shared, ['site/a.ts'], 'me', [review('other', 'APPROVED')], H)), /from @third/);
+  assert.equal(reviewRefusal(shared, ['site/a.ts'], 'me', [review('Other', 'APPROVED'), review('third', 'APPROVED')], H), null, 'logins compare without case');
+  // No one else to read it, or no login known: refused.
+  assert.match(String(reviewRefusal(parseCodeowners('* @me\n'), ['site/a.ts'], 'me', [review('stranger', 'APPROVED')], H)), /names no other human/);
+  assert.match(String(reviewRefusal([], ['site/a.ts'], 'me', [review('other', 'APPROVED')], H)), /names no other human/);
+  assert.match(String(reviewRefusal(sole, ['site/a.ts'], null, [review('other', 'APPROVED')], H)), /login isn't known/);
 });

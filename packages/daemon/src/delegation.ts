@@ -5,7 +5,7 @@
 //   few enough, and that the publish gate held nothing of (a dependency manifest, say). The approval binds the exact
 //   head and PR text, as a click would (D-114).
 // - integrate: once GitHub shows the task's PR clean, its required checks green and an approving review of its exact
-//   head, sign the integrate a click would sign. harnessd re-reads the PR and the base, and the land checks the
+//   head by another code owner (reviewRefusal), sign the integrate a click would sign. harnessd re-reads the PR and the base, and the land checks the
 //   protections, the checks, the CODEOWNERS reviews of that head and the leases (D-115): nothing is skipped. A PR behind
 //   its base is brought up to date instead, once per head and base.
 // Never delegated: the repo's setup and test commands, another human's start of a session here (D-34), a held change,
@@ -15,6 +15,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { requiredReviewers, type Rule } from './codeowners.ts';
 import { ensureDir, type Home } from './home.ts';
 
 export type DelegationAction = 'publish' | 'integrate';
@@ -76,9 +77,39 @@ export function parseDelegation(v: unknown, githubProjects: string[], now = Date
   return { ...shaped, sha256: createHash('sha256').update(JSON.stringify({ v: 1, ...shaped })).digest('hex') };
 }
 
-/** Whether a path is one only a click may change. */
+/**
+ * Whether a path is one only a click may change. Matched without regard to case: on a Mac's case-insensitive disk
+ * `site/Package.json` is the `package.json` npm reads there, and `site/claude.md` the `CLAUDE.md` an agent reads.
+ */
 export function isProtected(file: string, extra: string[] = []): boolean {
-  return [...ALWAYS_PROTECTED, ...extra].some((p) => p.endsWith('/') ? file.startsWith(p) : p.includes('/') ? file === p : file === p || file.endsWith(`/${p}`));
+  const f = file.toLowerCase();
+  return [...ALWAYS_PROTECTED, ...extra].map((p) => p.toLowerCase()).some((p) => p.endsWith('/') ? f.startsWith(p) : p.includes('/') ? f === p : f === p || f.endsWith(`/${p}`));
+}
+
+export type PrReview = { login: string; state: string; commit_id: string };
+
+/**
+ * Why a PR's reviews aren't the reading a delegated integrate needs, or null. Each login counts by its latest review
+ * that isn't a comment, as GitHub and the land's precheck read them. Every CODEOWNERS owner of a changed path other than
+ * this human (`author`) must have approved this exact head; where this human owns every changed path, so that the land
+ * would ask for no review at all, another owner named in CODEOWNERS must have. An approval from anyone else (on a public
+ * repository anyone can leave one), of another head, or followed by a change request doesn't count.
+ */
+export function reviewRefusal(rules: Rule[], changed: string[], author: string | null, reviews: PrReview[], head: string): string | null {
+  if (!author) return "this human's GitHub login isn't known";
+  const latest = new Map<string, PrReview>();
+  for (const r of reviews) if (typeof r.login === 'string' && r.login && r.state !== 'COMMENTED') latest.set(r.login.toLowerCase(), r);
+  const approved = (who: string) => { const r = latest.get(who.toLowerCase()); return r?.state === 'APPROVED' && r.commit_id === head; };
+  const required = requiredReviewers(rules, changed, author);
+  const others = required.length ? required : [...new Set(rules.flatMap((r) => r.owners))].filter((o) => o.toLowerCase() !== author.toLowerCase());
+  if (!others.length) return 'CODEOWNERS names no other human to review it';
+  const objecting = others.filter((o) => latest.get(o.toLowerCase())?.state === 'CHANGES_REQUESTED');
+  if (objecting.length) return `${objecting.map((o) => `@${o}`).join(', ')} requested changes`;
+  if (required.length) {
+    const missing = required.filter((o) => !approved(o));
+    return missing.length ? `it needs an approving review of ${head.slice(0, 12)} from ${missing.map((o) => `@${o}`).join(', ')}` : null;
+  }
+  return others.some(approved) ? null : `no other code owner (${others.map((o) => `@${o}`).join(', ')}) approved ${head.slice(0, 12)}`;
 }
 
 /** A scope entry is a folder prefix (`src/api/`) or an exact file (D-21). */

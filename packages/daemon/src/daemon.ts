@@ -25,7 +25,7 @@ import { publishHash, scanPublish } from './publish.ts';
 import { prBody, prTitle } from './prbody.ts';
 import { Poller } from './prpoll.ts';
 import { integrateRemote, REQUIRED_CHECKS } from './integrate-remote.ts';
-import { Delegation, type DelegationRecord } from './delegation.ts';
+import { Delegation, reviewRefusal, type DelegationRecord } from './delegation.ts';
 import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -1832,8 +1832,10 @@ export class Daemon {
           if (!green || !reviewed || (pr.mergeableState !== 'clean' && pr.mergeableState !== 'behind')) continue;
           const key = `${project.id}:${task.id}:${pr.headSha}:${pr.baseSha}`;
           if (Date.now() - (this.delegationTried.get(key) ?? 0) < 10 * 60_000) continue;
-          this.delegationTried.set(key, Date.now());
           const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', `${pr.baseSha}...${pr.headSha}`).catch(() => '')).split('\0').filter(Boolean);
+          // The approval must be another code owner's, at this head, and still their latest word: not anyone's (D-145).
+          if (reviewRefusal(await codeownersAt(project.repo, pr.baseSha), changed, await this.githubLoginFor(project), pr.reviews, pr.headSha) !== null) continue;
+          this.delegationTried.set(key, Date.now());
           const why = this.delegation.changeRefusal(changed, task.scope);
           if (why) {
             this.log(`${task.id}: PR #${pr.prNumber} is ready, but its integration isn't delegated (${why}): harness integrate ${task.id}`);
@@ -1886,7 +1888,9 @@ export class Daemon {
     }
     const gh = this.github(project);
     await this.githubLoginFor(project);
-    const changed = (await git(project.repo, 'diff', '--name-only', '-z', `${base}...${head}`)).split('\0').filter(Boolean);
+    // Both paths of a move (--no-renames), as everywhere else: a protected or out-of-scope file renamed into the scope
+    // is a change to that file too, so the delegation (D-145) and the reviewers named in the PR see it.
+    const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', `${base}...${head}`)).split('\0').filter(Boolean);
     const agent = view.agents.get(task.assignee!)!;
     const sessions = [...view.sessions.values()].filter((s) => s.taskId === taskId);
     const usage = sessions.map((s) => view.usage.get(s.id)).filter((u) => u !== undefined);
