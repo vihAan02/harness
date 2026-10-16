@@ -21,8 +21,10 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
 4. **The pinned runtime.** From any checkout of this repo, with the candidate's full commit id (both Macs run the same one):
    ```
    scripts/pilot/install.sh install <sha>
+   ~/harness-runtime/current/scripts/pilot/install.sh promote <sha>     # only if an older runtime is current
    export PATH="$HOME/harness-runtime/bin:$PATH"     # add it to ~/.zshrc
    ```
+   `install` makes `current` only on a Mac that has none, so a Mac with an older runtime also needs `promote`.
 5. **This device's key:** `harness setup keygen --device dev_<you>_<mac>` (`dev_daniyal_mac`, `dev_vihaan_mbp`). It prints `public_key = "ed25519:…"` and a fingerprint. Send the public key to the operator and read the fingerprint aloud.
 6. **Your model key (D-116).** Your own OpenRouter key, with a **$0.25 a day** limit set on the key at openrouter.ai, in `~/.harness/secrets.toml` (0600):
    ```
@@ -36,6 +38,7 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
    ```
    and add `export PGPASSFILE="$HOME/.pgpass"` to `~/.zshrc`, or stop those clusters while agents run. `pg-harden.sh --undo` restores a cluster.
 8. **Tailscale:** install it and log in. Daniyal shares his Mac with Vihaan (Tailscale admin console → Machines → Share). Vihaan accepts. Keep Tailscale SSH off.
+9. **Vihaan only: the tunnel key,** once: `~/harness-runtime/current/scripts/pilot/tunnel.sh keygen`. Send its public key (`~/.ssh/harness_tunnel_ed25519.pub`, one line) to the operator with the device key from step 5, and read its fingerprint aloud.
 
 ## 2. The coordinator (operator, on Daniyal's Mac)
 1. **Create it:**
@@ -52,27 +55,31 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
      ```
      It prints every device's fingerprint. Each human confirms theirs aloud. **A mismatch stops everything.**
    - **Never re-create the coordinator's database.** A new database is a new epoch, and every harnessd stops with `coordinator_changed` until its human accepts it.
-3. **The tunnel account for Vihaan.** Vihaan runs `scripts/pilot/tunnel.sh keygen` on his Mac and sends the public key. Then:
+3. **The tunnel account for Vihaan.** Save the tunnel public key Vihaan sent (§1 step 9) as a file holding exactly that one line, say `vihaan-tunnel.pub`. Then:
    ```
    ~/harness-runtime/current/scripts/pilot/coordinator.sh tunnel-account harness-tun-vihaan vihaan-tunnel.pub
    ```
-   It prints the key's fingerprint (read it aloud with Vihaan first), then the `sudo` commands to run yourself:
-   - a hidden account with no password login and no shell;
-   - its `authorized_keys` line, `restrict,port-forwarding,permitopen="127.0.0.1:7400",command="/usr/bin/false"`;
-   - an sshd `Match User harness-tun-*` block allowing only that one local forward;
-   - an `sshd -t` check.
+   It prints the key's fingerprint (read it aloud with Vihaan first), then what to do, in this order:
+   1. **Remote Login first** (System Settings → General → Sharing → Remote Login): on, "Allow access for: Only these users", with every entry removed, Administrators included. Leave "Allow full disk access for remote users" off.
+   2. **The `sudo` commands, run by you:**
+      - a hidden account with no password login and `/sbin/nologin` as its shell. macOS refuses an account whose shell is `/usr/bin/false`, after its key is accepted;
+      - its `authorized_keys` line, `restrict,port-forwarding,permitopen="127.0.0.1:7400",command="/usr/bin/false"`;
+      - an sshd `Match User harness-tun-*` block allowing only that one local forward;
+      - `ssh-keygen -A` (macOS makes host keys only at the first connection) and an `sshd -t` check;
+      - the account added to Remote Login's access group (`dseditgroup … com.apple.access_ssh`), and the group printed. It must list only `harness-tun-vihaan`.
+   3. **The host key:** read the fingerprint it prints last aloud to Vihaan.
 
-   Then turn on **Remote Login** (System Settings → General → Sharing), allowing only `harness-tun-vihaan`.
+   `sysadminctl` warns that there's no clear-text password for FileVault. That's expected.
 4. **Check:** `coordinator.sh status`.
    - It shows both launchd jobs, the server `(device-key)`, the epoch, the coordinator key, this Mac's SSH host-key fingerprint (read it aloud to Vihaan), Remote Login, and every loopback listener.
    - Agents can reach any loopback port, so quit anything listed there that runs code (a dev server, a browser's remote-debugging port) before agents run.
 
 ## 3. Joining (each human)
-1. **Vihaan only: the tunnel.** Its key comes from `scripts/pilot/tunnel.sh keygen` (§2 step 3), once. `<host>` is exactly the name `tailscale status` shows for Daniyal's Mac, or its 100.x address:
+1. **Vihaan only: the tunnel.** Its key is the one from §1 step 9. `<host>` is Daniyal's Mac's 100.x Tailscale address, as `tailscale status` shows it (the address is what's been tested, not the name). Nothing on Vihaan's Mac may listen on 127.0.0.1:7400: the tunnel needs that port, and otherwise it retries every 10 seconds:
    ```
-   scripts/pilot/tunnel.sh known-host <host> SHA256:<the host-key fingerprint Daniyal read aloud>
-   scripts/pilot/tunnel.sh install harness-tun-vihaan@<host>
-   scripts/pilot/tunnel.sh status
+   ~/harness-runtime/current/scripts/pilot/tunnel.sh known-host <host> SHA256:<the host-key fingerprint Daniyal read aloud>
+   ~/harness-runtime/current/scripts/pilot/tunnel.sh install harness-tun-vihaan@<host>
+   ~/harness-runtime/current/scripts/pilot/tunnel.sh status
    ```
 2. **Both: write `config.toml`,** pinning only what you were told aloud:
    ```
@@ -87,10 +94,15 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
    - `--ports-per-agent 0` gives this Mac's agents no loopback access at all (D-143). The UI tasks need none, and `harness doctor` says which you have.
    - Re-run `setup` with `--force` to change it, for example to add the other device once it exists. It writes the file from the flags alone, so give every one of them again.
    - Every `doctor` line must say `ok` (or `skip` with a reason) before harnessd starts. Each `FAIL` names its fix.
-3. **Both: start harnessd in a terminal and leave it running.** It asks `gh` for your GitHub token, which works in a terminal session:
+3. **Both: run harnessd and the UI bridge as launchd services.** They start at every login and restart after a crash. harnessd asks `gh` for your GitHub token, and reads your model key from `~/.harness/secrets.toml`, so no secret is in either plist:
    ```
-   harnessd
+   ~/harness-runtime/current/scripts/pilot/install.sh service install
+   harness doctor
+   harness ui
    ```
+   - `harness ui` checks the running bridge is this Mac's, then opens the board in your browser. `harness ui --print` prints the one-time address instead.
+   - Logs are in `~/.harness/logs/harnessd.log` and `ui.log`. `install.sh service status` shows both services, and `install.sh service stop` stops them, with their sessions stopped and the work kept.
+   - In a terminal instead, for debugging: `install.sh service uninstall`, then `harnessd`.
 4. **Check together:** `harness status` on each Mac shows both devices online. Send one message each way before any agent runs.
 
 ## 4. Running a task (each human, for their own agent)
@@ -101,6 +113,21 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
 - **Integrate:** `harness integrate <task>`. It shows the PR, its head, the base, the checks and reviews. harnessd merges exactly that head as one squash through GitHub, and every other Mac fetches the merge and syncs.
   - Only the agent's own human can integrate.
   - Nobody else may push or merge on the repo while it runs: GitHub's strict up-to-date rule, and harnessd's "one PR in flight" check.
+  - **If `main` moved since the PR was opened** (GitHub says "behind"), the first `harness integrate` brings it up to date instead (D-147): harnessd merges `main` into the task's branch, pushes it and republishes the PR, and merges nothing. CI runs again on the new head, and the reviewer approves the new head. Then `harness integrate` again.
+- **Delegation (D-145), optional, per human:** your harnessd can publish and integrate your own agents' routine tasks without your click. Add to your own `~/.harness/config.toml` (re-add it after any `harness setup --force`), then `install.sh service stop` and `start`:
+  ```
+  [delegation]
+  devices = ["dev_<you>_<mac>"]
+  projects = ["prj_harness"]
+  actions = ["publish", "integrate"]
+  until = "<a date at most 31 days away>"     # it lapses at the start of that day (UTC)
+  # protected = ["docs/"]                     # more paths that always need your click
+  # max_files = 40
+  ```
+  - **Publish** is approved only when every changed file is inside the task's scope, none is protected (`.github/`, CODEOWNERS, `harness.yaml`, `.claude/`, `AGENTS.md`/`CLAUDE.md`, `package.json` and its lock, plus yours), and the publish gate held nothing. Anything else waits for `harness approve` as before, and the log says why.
+  - **Integrate** happens once GitHub shows the PR clean, all three checks green and the other human's approval of its exact head; the land checks everything a click does. A ready PR left behind by `main` is brought up to date first.
+  - **Never delegated:** setup and test commands, another human's start on your agent, and GitHub reviews. Reviewing the other human's PRs stays a reading by you, or by an agent you ask, labelled as an agent review on your behalf.
+  - **See and stop it:** `harness delegation` shows the policy, whether it's active and its last decisions. `harness delegation off` stops it at once (no restart); `harness delegation on` lifts that. Both Macs see each decision: `harness log --kind delegation`.
 - **Watch:** `harness status` (tasks, agents, waits, PRs) and `harness log --follow`.
 - **Spend:** one agent per Mac, at most $0.10 a session and $0.25 a day (D-116). Record each paid run's cost.
 
@@ -141,12 +168,15 @@ The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactl
 ## 6. Recovery
 | What happened | What to do |
 |---|---|
-| A Mac slept, or the tunnel dropped | Nothing. launchd restarts the tunnel and harnessd reconnects. `tunnel.sh status` shows the tunnel; `harness doctor` proves who's behind it. While Daniyal's Mac sleeps, nobody can coordinate: keep it awake during a run (`caffeinate -dimsu`) |
-| harnessd or a Mac restarted mid-task | Start harnessd. It reconciles from its journal (D-113). A task whose session ended shows as **stopped**: `harness task resume <task>` starts a new session with the work so far |
+| A Mac slept, or the tunnel dropped | Nothing. launchd restarts the tunnel and harnessd reconnects. `tunnel.sh status` shows the tunnel; `harness doctor` proves who's behind it |
+| Daniyal's Mac slept | While it sleeps, nobody can coordinate, and the coordinator's timers (waits, leases) fire late. `caffeinate` doesn't stop a lid-close sleep on battery. During a run, keep it **on power with the lid open**, or have its owner run `sudo pmset -a disablesleep 1` (undo: `0`). `pmset -g log \| grep -E "Sleep\|Wake"` shows when it slept. On each wake, `device.offline` then `device.online` in the same second for a device is that sleep, not a lost connection |
+| The tunnel loops, and Vihaan's `tunnel.log` says `Connection closed by <host> port 22` right after `Server accepts key` | The account is refused after its key. Operator: `dscl . -read /Users/harness-tun-vihaan UserShell` must be `/sbin/nologin`, and `dscl . -read /Groups/com.apple.access_ssh GroupMembership` must list it. Vihaan runs `tunnel.sh stop` until it's fixed; macOS's sshd logs nothing about it |
+| harnessd or a Mac restarted mid-task | Nothing to start: launchd starts harnessd at login and after a crash. It reconciles from its journal (D-113). A task whose session ended shows as **stopped**: `harness task resume <task>` starts a new session with the work so far, in the slot the task still holds |
 | `server_identity_mismatch` | Something other than the coordinator answers on 127.0.0.1:7400. Don't proceed. Check the tunnel (`tunnel.sh status`) and the pinned `server_key` with the operator |
 | `coordinator_changed` | The coordinator's database is new. harnessd won't mix its local state with it. Agree with the operator before accepting the new epoch |
 | D-116: a provider failure stopped the agents | Fix the account (key, credit) at the provider, then `harness provider reset`. A budget stop clears at the next UTC day |
-| A device key was lost or exposed | Operator: `coordinator.sh apply pilot.toml --revoke dev_x`, and delete that Mac's line in `/etc/ssh/harness_authorized_keys/`. **The other human also re-runs `harness setup … --force` without the old pin and restarts harnessd:** until then their harnessd still trusts what the old key signs. A device that's still connected is cut off at its next message. Then make a new key under a new device id and apply again |
+| A device key was lost or exposed | Operator: `coordinator.sh apply pilot.toml --revoke dev_x`. **The other human also re-runs `harness setup … --force` without the old pin and restarts harnessd (`install.sh service stop`, then `start`):** until then their harnessd still trusts what the old key signs. A device that's still connected is cut off at its next message. Then make a new key under a new device id and apply again. The device key (`~/.harness/device.key`) isn't the tunnel key; revoke that too only if the Mac itself was lost |
+| A tunnel key was lost or exposed, or its human leaves | Operator: `sudo rm /etc/ssh/harness_authorized_keys/harness-tun-<name>`, then `sudo pkill -u harness-tun-<name>` (an open tunnel outlives its key). For a new key: Vihaan runs `tunnel.sh keygen` again, and the operator runs only the `authorized_keys` lines `coordinator.sh tunnel-account` prints, since the account exists |
 | A device's key changed on purpose | Read the new fingerprint aloud. The operator runs `coordinator.sh apply pilot.toml --rotate dev_x`, and the other human re-pins it with `harness setup … --force` and restarts harnessd |
 | Postgres hardening broke something | `PGPORT=<port> scripts/pilot/pg-harden.sh --undo`. harnessd then refuses to start agents again (D-119) until that cluster is hardened or stopped |
-| A new candidate | Stop harnessd (its sessions stop and the work stays), `install.sh install <sha>` and `install.sh promote <sha>`. On Daniyal's Mac also `coordinator.sh service install`, which restarts the server from the new runtime. Start harnessd, run `harness doctor` |
+| A new candidate | `install.sh install <sha>`, then `install.sh service stop` (sessions stop, the work stays), `install.sh promote <sha>` and `install.sh service install` (it rewrites both plists for the new runtime and starts them). On Daniyal's Mac also `coordinator.sh service restart`, which restarts the server from the new runtime and leaves Postgres running. Then `harness doctor` |

@@ -24,7 +24,8 @@ import { ghToken, GitHubClient } from './github.ts';
 import { publishHash, scanPublish } from './publish.ts';
 import { prBody, prTitle } from './prbody.ts';
 import { Poller } from './prpoll.ts';
-import { integrateRemote } from './integrate-remote.ts';
+import { integrateRemote, REQUIRED_CHECKS } from './integrate-remote.ts';
+import { Delegation, reviewRefusal, type DelegationRecord } from './delegation.ts';
 import { codeownersAt, requiredReviewers } from './codeowners.ts';
 import { acquireLock } from './lockfile.ts';
 import { effectivePolicy, readRepoConfig, type RepoConfig } from './repo-config.ts';
@@ -145,6 +146,8 @@ export type DaemonOptions = {
   github?: { token?: () => Promise<string>; retryMs?: number };
   /** How often GitHub-mode projects' base and PRs are polled (D-114). Default 60 s. */
   pollMs?: number;
+  /** How often this human's delegated integrations are looked for (D-145). Default 30 s. */
+  delegationMs?: number;
   /** How long another device's GitHub land waits, its device offline, before this one settles it from GitHub (D-115). Default 10 min. */
   reconcileAfterMs?: number;
   /** The UI bridge's socket (D-117; protocol.md §12): `~/.harness/run/harnessd.sock` in production. Off when unset. */
@@ -236,6 +239,13 @@ export class Daemon {
   githubToken: (() => Promise<string>) | null = null;
   githubLogin: string | null = null;
   poller: Poller | null = null;
+  /** What this human delegated (D-145), and the integrations already tried: once per PR head and base, retried after a pause. */
+  delegation: Delegation;
+  delegationTimer: NodeJS.Timeout | null = null;
+  delegating = false;
+  delegationTried = new Map<string, number>();
+  /** Each task's PR head as harnessd last refreshed it (D-147), so a poll from before that push isn't reported over it. */
+  refreshedPrs = new Map<string, { head: string; at: number }>();
   trustPg: { at: number; hits: Promise<TrustLogin[]> } | null = null; // the last D-119 check
   /** Each human dispatch signed here, by command_id: a retry of the same click resends it unchanged, so the coordinator applies it once. */
   signedDispatches = new Map<string, { request: string; name: string; args: Record<string, unknown>; at: number }>();
@@ -246,6 +256,7 @@ export class Daemon {
     this.config = o.config ?? loadConfig(o.home);
     this.log = o.log ?? (() => {});
     this.approvals = new Approvals(this.home);
+    this.delegation = new Delegation(this.home, this.config.deviceId, this.config.delegation);
     this.spend = new SpendLedger(this.home);
     this.circuit = new ProviderCircuit(this.home);
     this.sessions = new Sessions(this.home);
@@ -395,10 +406,23 @@ export class Daemon {
         projects: github, view: (id) => this.view(id), deviceId: this.config.deviceId, github: (p) => this.github(p),
         send: async (projectId, name, args) => (await this.link!.command(projectId, name, args)).result,
         advanceBase: async (p, tip) => { await advanceBaseRef(p.repo, p.id, tip); },
+        staleHead: async (p, taskId, head) => {
+          const r = this.refreshedPrs.get(`${p.id}:${taskId}`);
+          if (!r || r.head === head || Date.now() - r.at > 5 * 60_000) return false;
+          return git(p.repo, 'merge-base', '--is-ancestor', head, r.head).then(() => true, () => false);
+        },
         log: (m) => this.log(m), ...(this.o.pollMs ? { intervalMs: this.o.pollMs } : {}),
         ...(this.o.reconcileAfterMs ? { reconcileAfterMs: this.o.reconcileAfterMs } : {}),
       });
       this.poller.start();
+    }
+    if (this.config.delegation && !this.delegationTimer) {
+      this.log(`delegation (D-145): ${this.config.delegation.actions.join(' and ')} for ${this.config.delegation.projects.join(', ')} until ${this.config.delegation.until}${this.delegation.refusal(this.config.delegation.actions[0]!, this.config.delegation.projects[0]!) ? `, but not now: ${this.delegation.refusal(this.config.delegation.actions[0]!, this.config.delegation.projects[0]!)}` : ''}`);
+      const tick = () => {
+        this.delegationTimer = setTimeout(() => { void this.delegateIntegrations().catch((e: Error) => this.log(`delegation: ${e.message}`)).finally(() => { if (!this.stopping) tick(); }); }, this.o.delegationMs ?? 30_000);
+        this.delegationTimer.unref?.();
+      };
+      tick();
     }
   }
 
@@ -867,7 +891,13 @@ export class Daemon {
       const pr = await this.github(project).pull(shown.pr_number);
       if (pr.head.sha !== shown.head_sha) throw new DispatchRefused('conflict', `PR #${shown.pr_number}'s head is now ${pr.head.sha.slice(0, 12)}, not the ${shown.head_sha.slice(0, 12)} you approved: look again`);
       const base = await this.fetchProjectBase(project);
-      if (base !== shown.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${shown.base_sha.slice(0, 12)} you approved: the PR needs updating first`);
+      // Behind the actual base (D-115): bring the PR up to date with it first. Nothing is signed or merged; the new head
+      // runs its checks again, and only reviews of that head count, so the human integrates it once it's green again.
+      if (!(await git(project.repo, 'merge-base', '--is-ancestor', base, shown.head_sha).then(() => true, () => false))) {
+        const head = await this.refreshPr(projectId, taskId).catch((e: Error) => { throw new DispatchRefused('conflict', e.message); });
+        throw new DispatchRefused('conflict', `${project.baseBranch} moved to ${base.slice(0, 12)}, so PR #${shown.pr_number} is updated to ${head.slice(0, 12)}: its checks run again, and only approving reviews of that head count. Integrate it once it's green and approved`);
+      }
+      if (base !== shown.base_sha) throw new DispatchRefused('conflict', `${project.baseBranch} is now ${base.slice(0, 12)}, not the ${shown.base_sha.slice(0, 12)} you were shown: look again`);
       const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', base, shown.head_sha)).split('\0').filter(Boolean).sort();
       integrate = { pr_number: shown.pr_number, head_sha: shown.head_sha, base_sha: base, paths_sha256: pathsSha256(changed) };
     }
@@ -1518,6 +1548,7 @@ export class Daemon {
     this.stopping = true;
     this.stopSignal.abort(); // setup commands and land tests end now, and their lands are interrupted (#74)
     await this.ui?.stop();
+    if (this.delegationTimer) clearTimeout(this.delegationTimer);
     await this.poller?.stop();
     this.leases.stop();
     // The land in flight finishes before the link closes: it reports through it, and once the server hears it
@@ -1550,7 +1581,7 @@ export class Daemon {
   async prepareTask(t: { projectId: string; taskId: string; baseSha: string; agentId: string; reuse?: boolean; forceSetup?: boolean }): Promise<TaskWorkspace> {
     const project = this.project(t.projectId);
     if (!TASK_ID.test(t.taskId)) throw new Error(`invalid task id: ${t.taskId}`);
-    this.checkCapacity(this.config.limits.maxConcurrentAgents);
+    this.checkCapacity(this.config.limits.maxConcurrentAgents, t.taskId);
     const worktree = this.worktreeOf(t.projectId, t.taskId);
     let branch = taskBranch(t.taskId);
     // A reopened task keeps its worktree, its branch and what setup already made there (D-107).
@@ -1563,7 +1594,7 @@ export class Daemon {
 
     const repo = readRepoConfig(worktree);
     const policy = effectivePolicy(this.config, project, repo);
-    this.checkCapacity(policy.maxConcurrentAgents);
+    this.checkCapacity(policy.maxConcurrentAgents, t.taskId);
     if (repo.setup && (!t.reuse || t.forceSetup)) await this.runApprovedSetup(project, t.taskId, worktree, repo.setup);
     const block = await this.ports.allocate(t.taskId, policy.portsPerAgent);
     // No ports, no allowLocalBinding: the session's sandbox then can't reach any loopback service (D-143, F-142).
@@ -1736,6 +1767,11 @@ export class Daemon {
     const branch = this.remoteBranch(projectId, taskId);
     await pushBranch(project.repo, project.remote!, head, branch, pushed);
     j.append(projectId, taskId, 'pushed', { head, branch, refresh: true });
+    this.refreshedPrs.set(`${projectId}:${taskId}`, { head, at: Date.now() });
+    // Republished on the base it now contains: every view (the CLI's, the UI's, the other Macs') shows the new head on the
+    // actual base, and the old head's checks and reviews are dropped until the poller reads the new head's (D-115).
+    const pr = this.view(projectId).prs.get(taskId);
+    if (pr) await this.report(projectId, 'pr.publish', { task_id: taskId, pr_number: pr.prNumber, url: pr.url, head_sha: head, base_sha: base, remote_ref: `refs/heads/${branch}` });
     this.log(`${taskId}'s PR is up to date with ${project.baseBranch} again, at ${head.slice(0, 12)}`);
     return head;
   }
@@ -1761,6 +1797,69 @@ export class Daemon {
     const auth = this.provider().auth as { apiKey?: string } | undefined;
     const project = this.project(projectId);
     return [auth?.apiKey, this.config.token, ...Object.values(resolveSecrets(this.home, project.secrets))].filter((v): v is string => typeof v === 'string' && v.length >= 8);
+  }
+
+  /** Records one delegated decision: in the local audit log, and on the coordinator, where both humans see it (D-145). */
+  async delegated(projectId: string, r: DelegationRecord): Promise<void> {
+    this.delegation.audit(r);
+    const { project_id: _p, approval_id: _a, files: _f, ...args } = r;
+    await this.report(projectId, 'delegation.report', { ...args, policy_sha256: this.delegation.policy!.sha256 })
+      .catch((e: Error) => this.log(`delegation.report for ${r.task_id}: ${e.message} (it's in ${this.delegation.auditFile})`));
+  }
+
+  /**
+   * D-145: this human's routine integrations, each decided as their click would be. A PR of this device's task, by this
+   * human's agent, is integrated once GitHub shows it clean with its required checks green and an approving review of its
+   * exact head; one that's behind its base but otherwise ready is brought up to date instead (only then, to spare CI).
+   * The dispatch is the one `harness integrate` signs, so harnessd re-reads the PR and base and the land checks
+   * everything a click's does. Each head and base is tried once, and again only after ten minutes.
+   */
+  async delegateIntegrations(): Promise<void> {
+    if (this.delegating || this.stopping || !this.link?.epoch || !this.deviceKey) return;
+    this.delegating = true;
+    try {
+      for (const project of this.config.projects) {
+        if (project.integration !== 'github' || this.delegation.refusal('integrate', project.id) !== null) continue;
+        const view = this.view(project.id);
+        for (const pr of [...view.prs.values()]) {
+          const task = view.tasks.get(pr.taskId);
+          const agent = task?.assignee ? view.agents.get(task.assignee) : undefined;
+          if (!task || task.status !== 'done' || !agent || agent.humanId !== this.config.principal) continue;
+          if (pr.deviceId !== this.config.deviceId || pr.state !== 'open' || pr.merged) continue;
+          if ([...view.lands.values()].some((l) => l.taskId === task.id && (l.status === 'requested' || l.status === 'accepted'))) continue;
+          const green = REQUIRED_CHECKS.every((c) => pr.checks[c] === 'success');
+          const reviewed = pr.reviews.some((r) => r.state === 'APPROVED' && r.commit_id === pr.headSha);
+          if (!green || !reviewed || (pr.mergeableState !== 'clean' && pr.mergeableState !== 'behind')) continue;
+          const key = `${project.id}:${task.id}:${pr.headSha}:${pr.baseSha}`;
+          if (Date.now() - (this.delegationTried.get(key) ?? 0) < 10 * 60_000) continue;
+          const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', `${pr.baseSha}...${pr.headSha}`).catch(() => '')).split('\0').filter(Boolean);
+          // The approval must be another code owner's, at this head, and still their latest word: not anyone's (D-145).
+          if (reviewRefusal(await codeownersAt(project.repo, pr.baseSha), changed, await this.githubLoginFor(project), pr.reviews, pr.headSha) !== null) continue;
+          this.delegationTried.set(key, Date.now());
+          const why = this.delegation.changeRefusal(changed, task.scope);
+          if (why) {
+            this.log(`${task.id}: PR #${pr.prNumber} is ready, but its integration isn't delegated (${why}): harness integrate ${task.id}`);
+            continue;
+          }
+          const base = { project_id: project.id, task_id: task.id, pr_number: pr.prNumber, base_sha: pr.baseSha };
+          try {
+            const r = await this.dispatchCommand(project.id, 'integrate', task.id, { expected: { pr_number: pr.prNumber, head_sha: pr.headSha, base_sha: pr.baseSha } });
+            const landId = (r.result as { land_id?: unknown } | null)?.land_id;
+            await this.delegated(project.id, { ...base, action: 'integrate', head_sha: pr.headSha, ...(typeof landId === 'string' ? { land_id: landId } : {}) });
+            this.log(`${task.id}: integrating PR #${pr.prNumber} at ${pr.headSha.slice(0, 12)} under the delegation (D-145)`);
+          } catch (e) {
+            const m = /is updated to ([0-9a-f]{12})/.exec((e as Error).message);
+            if (e instanceof DispatchRefused && m) {
+              const head = await branchTip(project.repo, taskBranch(task.id)).catch(() => m[1]!);
+              await this.delegated(project.id, { ...base, action: 'refresh', head_sha: head });
+            }
+            this.log(`${task.id}: delegated integration: ${(e as Error).message}`);
+          }
+        }
+      }
+    } finally {
+      this.delegating = false;
+    }
   }
 
   /**
@@ -1789,7 +1888,9 @@ export class Daemon {
     }
     const gh = this.github(project);
     await this.githubLoginFor(project);
-    const changed = (await git(project.repo, 'diff', '--name-only', '-z', `${base}...${head}`)).split('\0').filter(Boolean);
+    // Both paths of a move (--no-renames), as everywhere else: a protected or out-of-scope file renamed into the scope
+    // is a change to that file too, so the delegation (D-145) and the reviewers named in the PR see it.
+    const changed = (await git(project.repo, 'diff', '--no-renames', '--name-only', '-z', `${base}...${head}`)).split('\0').filter(Boolean);
     const agent = view.agents.get(task.assignee!)!;
     const sessions = [...view.sessions.values()].filter((s) => s.taskId === taskId);
     const usage = sessions.map((s) => view.usage.get(s.id)).filter((u) => u !== undefined);
@@ -1827,7 +1928,14 @@ export class Daemon {
           held: gate.held.map((h) => ({ rule: h.rule, path: h.path ?? null })), diffstat,
         },
       });
-      this.log(`${taskId} is ready to publish. Review it with: harness approve ${req.id}`);
+      // D-145: a routine publish its human delegated is approved here, for this exact head and text, and audited.
+      const why = this.delegation.refusal('publish', projectId) ?? (agent.humanId !== this.config.principal ? 'its agent is another human\'s' : null)
+        ?? (gate.held.length ? 'the publish gate held part of it for a click' : null) ?? this.delegation.changeRefusal(changed, task.scope);
+      if (why === null) {
+        this.approvals.approve(req.id);
+        await this.delegated(projectId, { action: 'publish', project_id: projectId, task_id: taskId, head_sha: head, base_sha: base, approval_id: req.id, files: changed.length });
+        this.log(`${taskId}: publishing ${head.slice(0, 12)} under the delegation (D-145): ${changed.length} file(s), all in its scope`);
+      } else this.log(`${taskId} is ready to publish${this.config.delegation ? ` (not delegated: ${why})` : ''}. Review it with: harness approve ${req.id}`);
       // Publishing is its human's decision (D-114): no deadline. A denial ends it; a reopen and a new commit ask again.
       if ((await this.waitForDecision(project.id, hash, req.id)) === 'denied') {
         j.append(projectId, taskId, 'publish_denied', { head, hash });
@@ -2166,8 +2274,12 @@ export class Daemon {
     return path.join(this.home.worktrees, projectId, taskId);
   }
 
-  checkCapacity(limit: number): void {
-    const active = Object.keys(this.ports.list()).length;
+  /**
+   * D-38: the other tasks holding a slot on this device. A stopped task keeps its slot (and its ports) until it ends, so
+   * its own resume or reopen is never refused for the slot it already holds.
+   */
+  checkCapacity(limit: number, taskId: string): void {
+    const active = Object.keys(this.ports.list()).filter((owner) => owner !== taskId).length;
     if (active >= limit) throw new StartRefused('capacity', `already running ${active} task(s); the limit is ${limit} (D-38)`);
   }
 

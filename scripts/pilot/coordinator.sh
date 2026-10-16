@@ -6,7 +6,7 @@
 #   coordinator.sh init                    the cluster (socket only, peer auth), the harness_pilot database, the server key
 #   coordinator.sh apply <pilot.toml> [--rotate <dev>]… [--revoke <dev>]…
 #                                          provision humans, devices, the project and agents (npm run admin -- apply)
-#   coordinator.sh service install|uninstall|start|stop
+#   coordinator.sh service install|uninstall|start|stop|restart
 #                                          launchd jobs for the cluster and the server, kept up across login and crashes
 #   coordinator.sh run                     what the server's launchd job runs: cap the log, wait for Postgres, serve
 #   coordinator.sh tunnel-account <name> <pubkey-file>
@@ -102,6 +102,10 @@ case "${1:-}" in
       install)
         need_pg; need_runtime
         [ -f "$DATA/PG_VERSION" ] && [ -f "$KEY" ] || die "run coordinator.sh init first"
+        # Stop what runs first, the server and then Postgres. A Postgres launchd keeps alive comes back after pg_ctl stops
+        # it, so its job is booted out first; pg_ctl then stops only one started by hand.
+        for l in "$LABEL_SRV" "$LABEL_PG"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; done
+        for _ in $(seq 1 30); do pg_up || break; sleep 1; done
         pg_up && LC_ALL=en_US.UTF-8 "$PGBIN/pg_ctl" -s -D "$DATA" -m fast -w stop
         mkdir -p "$AGENTS"
         cap_log "$LOGS/postgres.log"
@@ -118,8 +122,10 @@ HARNESS_PORT=$PORT" plist "$LABEL_SRV" "$LOGS/server.log" /bin/bash "$RUNTIME/sc
         ;;
       uninstall) for l in "$LABEL_SRV" "$LABEL_PG"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; rm -f "$AGENTS/$l.plist"; done; echo "removed both jobs; the data stays in $CH" ;;
       start) for l in "$LABEL_PG" "$LABEL_SRV"; do launchctl bootstrap "gui/$(id -u)" "$AGENTS/$l.plist"; done ;;
+      # The server again, from whatever runtime is current now (after install.sh promote); Postgres keeps running.
+      restart) launchctl kickstart -k "gui/$(id -u)/$LABEL_SRV" && echo "restarted $LABEL_SRV from $(readlink "$RUNTIME" 2>/dev/null || echo "$RUNTIME"). Check: coordinator.sh status" ;;
       stop) for l in "$LABEL_SRV" "$LABEL_PG"; do launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true; done ;;
-      *) die "usage: coordinator.sh service install|uninstall|start|stop" ;;
+      *) die "usage: coordinator.sh service install|uninstall|start|stop|restart" ;;
     esac
     ;;
   tunnel-account)
@@ -132,10 +138,16 @@ HARNESS_PORT=$PORT" plist "$LABEL_SRV" "$LOGS/server.log" /bin/bash "$RUNTIME/sc
     FP="$(ssh-keygen -l -f "$PUB" | awk '{print $2}')"
     cat <<EOF
 # Read this fingerprint aloud with its human before running anything: $FP
+# First: System Settings > General > Sharing > Remote Login: on, "Allow access for: Only these users", and remove every
+# entry, Administrators included ("Allow full disk access for remote users" stays off). That makes the access group.
 # Then run these yourself (they need your password). They make $NAME a tunnel-only account: no password, no shell,
-# no TTY, one forwarding to 127.0.0.1:$PORT and nothing else.
-sudo sysadminctl -addUser $NAME -fullName "Harness tunnel ($NAME)" -shell /usr/bin/false -home /var/empty -password "\$(openssl rand -base64 33)"
+# no TTY, one forwarding to 127.0.0.1:$PORT and nothing else. If $NAME already exists (a new tunnel key), run only the
+# authorized_keys lines, then: sudo pkill -u $NAME (an open tunnel outlives its key).
+# The shell is /sbin/nologin, not /usr/bin/false: macOS's PAM refuses an account whose shell is /usr/bin/false, after
+# the key is accepted. sysadminctl warns about no clear-text password for FileVault; that's expected.
+sudo sysadminctl -addUser $NAME -fullName "Harness tunnel ($NAME)" -shell /sbin/nologin -home /var/empty -password "\$(openssl rand -base64 33)"
 sudo dscl . -create /Users/$NAME IsHidden 1
+sudo dscl . -read /Users/$NAME UserShell IsHidden
 sudo mkdir -p /etc/ssh/harness_authorized_keys
 printf '%s\n' 'restrict,port-forwarding,permitopen="127.0.0.1:$PORT",command="/usr/bin/false" $TYPE $B64 $NAME' | sudo tee /etc/ssh/harness_authorized_keys/$NAME >/dev/null
 sudo chown -R root:wheel /etc/ssh/harness_authorized_keys && sudo chmod 755 /etc/ssh/harness_authorized_keys && sudo chmod 644 /etc/ssh/harness_authorized_keys/$NAME
@@ -157,10 +169,14 @@ Match User harness-tun-*
   GatewayPorts no
   ForceCommand /usr/bin/false
 CONF
+# macOS makes its SSH host keys only at the first connection, and sshd -t needs them.
+sudo ssh-keygen -A
 sudo sshd -t && echo "sshd config ok"
-# Remote Login: System Settings > General > Sharing > Remote Login: on, "Allow access for: Only these users",
-# with $NAME added (equivalently: sudo dseditgroup -o edit -a $NAME -t user com.apple.access_ssh).
-# Then read your host key's fingerprint aloud to $NAME's human: coordinator.sh status prints it.
+# Only the tunnel accounts may use Remote Login (the group System Settings made above).
+sudo dseditgroup -o edit -a $NAME -t user com.apple.access_ssh
+dscl . -read /Groups/com.apple.access_ssh GroupMembership
+# Then read this Mac's host-key fingerprint aloud to $NAME's human (coordinator.sh status prints it too):
+ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub
 EOF
     ;;
   status)
@@ -177,7 +193,9 @@ EOF
     if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then echo "127.0.0.1:$PORT answers (harness doctor proves who's behind it)"; else echo "127.0.0.1:$PORT doesn't answer"; fi
     pg_up && echo "epoch: $("$PGBIN/psql" -h "$SOCK" -d "$DB" -Atqc 'SELECT epoch FROM coordinator_epoch' 2>/dev/null || echo '(not migrated yet)')"
     [ -f "$KEY" ] && [ -f "$RUNTIME/scripts/pilot/admin.ts" ] && (cd "$RUNTIME" && HARNESS_SERVER_KEY_FILE="$KEY" "$(node24)" scripts/pilot/admin.ts server-key | tail -2)
-    for f in /etc/ssh/ssh_host_ed25519_key.pub; do [ -r "$f" ] && echo "this Mac's SSH host key (read it aloud for known_hosts): $(ssh-keygen -l -f "$f")"; done
+    if [ -r /etc/ssh/ssh_host_ed25519_key.pub ]; then echo "this Mac's SSH host key (read it aloud for known_hosts): $(ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub)"
+    else echo "this Mac's SSH host key: none yet (sudo ssh-keygen -A makes it; coordinator.sh tunnel-account prints that step)"; fi
+    echo "Remote Login allowed for:$(dscl . -read /Groups/com.apple.access_ssh GroupMembership 2>/dev/null | cut -d: -f2 || echo ' (no access group: everyone with an account)')"
     if nc -z 127.0.0.1 22 2>/dev/null; then echo "Remote Login: on"; else echo "Remote Login: off (System Settings > General > Sharing)"; fi
     command -v tailscale >/dev/null 2>&1 && echo "tailscale: $(tailscale status --self --peers=false 2>/dev/null | head -1 || echo 'not running')"
     echo "loopback listeners (agents can reach every one of them; quit any that runs code before a real run):"

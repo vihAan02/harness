@@ -42,6 +42,7 @@ import { isModelAlias, isReservedEnvName, MODEL_ID, priceOf, type Prices } from 
 import type { IntegrationMode } from '@harness/protocol';
 import { KeyError, parsePublicKey, publicKeyText } from '@harness/protocol/signing';
 import { parse, stringify } from 'smol-toml';
+import { parseDelegation, type DelegationPolicy } from './delegation.ts';
 import { readPrivateFile, type Home } from './home.ts';
 
 export type ProjectConfig = {
@@ -91,6 +92,8 @@ export type LocalConfig = {
   setup: { allowedDomains: string[]; timeoutSeconds: number };
   agents: { provider: string | null; model: string | null; maxBudgetUsd: number | null; dailyBudgetUsd: number | null; readAllow: string[] };
   providers: Record<string, ProviderConfig>;
+  /** What harnessd may decide for this human without a click (D-145); null: nothing. */
+  delegation: DelegationPolicy | null;
 };
 
 /** Linux hands out ephemeral ports from 32768 and macOS from 49152; agent port blocks stay below both (D-68). */
@@ -179,7 +182,7 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
     if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error(`config: ${name} must be a table`);
     return v as Record<string, unknown>;
   };
-  onlyKeys(raw, ['device_id', 'principal', 'server_url', 'auth', 'server_key', 'trust', 'limits', 'setup', 'agents', 'ui', 'providers', 'projects'], 'the config');
+  onlyKeys(raw, ['device_id', 'principal', 'server_url', 'auth', 'server_key', 'trust', 'limits', 'setup', 'agents', 'ui', 'providers', 'projects', 'delegation'], 'the config');
 
   const limits = table(raw.limits, '[limits]');
   onlyKeys(limits, ['max_concurrent_agents', 'ports_per_agent', 'port_range'], '[limits]');
@@ -320,6 +323,7 @@ export function parseConfig(raw: Record<string, unknown>, token: string, opts: P
       readAllow: strings(agents.read_allow, 'agents.read_allow', /^(~\/|\/)[^\u0000-\u001f\u007f]{1,1000}$/),
     },
     providers,
+    delegation: parseDelegation(raw.delegation, projects.filter((p) => p.integration === 'github').map((p) => p.id)),
   };
 }
 

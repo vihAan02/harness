@@ -124,3 +124,46 @@ test('the base moved and conflicts with the task: nothing is pushed or merged, a
     assert.equal(fs.readFileSync(path.join(t.worktree, 'a.txt'), 'utf8'), 'a, by the task\n');
   } finally { await s.stop(); }
 });
+
+test('integrating from what harnessd shows after the base moved: the PR is brought up to date and republished, the old approval no longer counts, and the new head lands once reviewed', async () => {
+  const s = await startPilotStack({ files: { 'README.md': 'pilot\n', 'a.txt': 'a\n', '.github/CODEOWNERS': '* @fake-user @reviewer\n' }, daemonOptions: FAST });
+  try {
+    const t = await started(s, s.a, 'agent/behind-shown');
+    const pr = await publishThrough(s, s.a, t.task, { 'a.txt': 'a, by the task\n' });
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: pr.headSha });
+    const moved = await s.fake.pushToBase({ 'other.txt': 'o\n' }, 'a human merges something');
+    // What `harness integrate` and the UI sign: the PR as this harnessd's view shows it.
+    const shown = () => {
+      const p = s.a.daemon.view(s.project).prs.get(t.task)!;
+      return { pr_number: p.prNumber, head_sha: p.headSha, base_sha: p.baseSha };
+    };
+    const lands = () => [...s.a.daemon.view(s.project).lands.values()].filter((l) => l.taskId === t.task);
+
+    // Behind: harnessd brings the PR up to date with the actual base instead of refusing for good. Nothing is signed or merged.
+    await assert.rejects(s.a.daemon.dispatchCommand(s.project, 'integrate', t.task, { expected: shown() }),
+      (e: Error & { code?: string }) => e.code === 'conflict' && /is updated to [0-9a-f]{12}/.test(e.message) && /only approving reviews of that head count/.test(e.message));
+    const head = (await s.fake.tip(s.a.daemon.remoteBranch(s.project, t.task)))!;
+    assert.notEqual(head, pr.headSha);
+    for (const c of [moved, pr.headSha]) assert.equal(await s.fake.git(['merge-base', '--is-ancestor', c, head]).then(() => true, () => false), true);
+    assert.equal(lands().length, 0, 'no land was requested');
+    assert.equal(s.fake.log.filter((l) => l.method === 'PUT' && l.path.endsWith('/merge')).length, 0, 'nothing merged');
+    // Republished: both Macs see the PR's new head on the actual base, with the old head's checks and reviews gone.
+    for (const side of [s.a, s.b]) {
+      await s.until(() => { const p = side.daemon.view(s.project).prs.get(t.task); return p?.headSha === head && p.baseSha === moved; }, 20_000, `the republished PR in ${side.device}'s view`);
+    }
+
+    // The approval was of the old head: integrating the new one fails for want of a review, and nothing merges.
+    await s.a.daemon.dispatchCommand(s.project, 'integrate', t.task, { expected: shown() });
+    await s.until(() => lands().some((l) => l.status === 'failed'), 20_000, 'the land to fail');
+    assert.equal(lands()[0]!.reason, 'review_required');
+    assert.equal(s.fake.log.filter((l) => l.method === 'PUT' && l.path.endsWith('/merge')).length, 0);
+
+    // Reviewed at the new head: it lands, as one squash of exactly that head onto exactly the moved base.
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: head });
+    await s.a.daemon.dispatchCommand(s.project, 'integrate', t.task, { expected: shown() });
+    await s.until(() => s.a.daemon.view(s.project).tasks.get(t.task)?.status === 'landed', 20_000, 'the land');
+    const merge = lands().find((l) => l.status === 'completed')!.newBaseSha!;
+    assert.equal(await s.fake.git(['rev-parse', `${merge}^1`]), moved);
+    assert.equal(await s.fake.git(['rev-parse', `${merge}^{tree}`]), await s.fake.git(['rev-parse', `${head}^{tree}`]));
+  } finally { await s.stop(); }
+});
