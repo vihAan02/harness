@@ -103,7 +103,7 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
    - `harness ui` checks the running bridge is this Mac's, then opens the board in your browser. `harness ui --print` prints the one-time address instead.
    - Logs are in `~/.harness/logs/harnessd.log` and `ui.log`. `install.sh service status` shows both services, and `install.sh service stop` stops them, with their sessions stopped and the work kept.
    - In a terminal instead, for debugging: `install.sh service uninstall`, then `harnessd`.
-4. **Check together:** `harness status` on each Mac shows both devices online. Send one message each way before any agent runs.
+4. **Check together:** `harness status` on each Mac shows both devices online. No command lets a human send a message; the agents' own question and answer in §5 are the first messages between the Macs.
 
 ## 4. Running a task (each human, for their own agent)
 - **Each human's agent was made by `pilot.toml`:** `agent/daniyal-ui`, `agent/vihaan-ui`. Each human writes and assigns their own tasks. Another human's task for your agent waits for your approval (D-34), and a risky message waits for review (D-118).
@@ -128,7 +128,11 @@ This runbook takes both Macs from nothing to a running pilot, and back again aft
   - **Integrate** happens once GitHub shows the PR clean, all three checks green and the other human's approval of its exact head; the land checks everything a click does. A ready PR left behind by `main` is brought up to date first.
   - **Never delegated:** setup and test commands, another human's start on your agent, and GitHub reviews. Reviewing the other human's PRs stays a reading by you, or by an agent you ask, labelled as an agent review on your behalf.
   - **See and stop it:** `harness delegation` shows the policy, whether it's active and its last decisions. `harness delegation off` stops it at once (no restart); `harness delegation on` lifts that. Both Macs see each decision: `harness log --kind delegation`.
-- **Watch:** `harness status` (tasks, agents, waits, PRs) and `harness log --follow`.
+- **Watch:**
+  - `harness status`: devices, agents, tasks with their claims, overlaps, blocked tasks and open questions;
+  - `harness log --kind wait`: waits, which `harness status` doesn't list;
+  - `harness ui`: PRs and their checks;
+  - `harness log --follow`: everything as it happens.
 - **Spend:** one agent per Mac, at most $0.10 a session and $0.25 a day (D-116). Record each paid run's cost.
 
 ## 5. The first two-agent test
@@ -150,7 +154,7 @@ The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactl
    harness task add "Integration page costs" --scope packages/ui/ --file /tmp/2-integration.md --assign vihaan-ui      # Vihaan: T-3
    ```
    His agent reads `format.ts` and waits for T-2 to land. Then:
-   - **Daniyal,** once `harness status` shows that wait: `harness task assign T-2 daniyal-ui`. Both tasks' scope is `packages/ui/`, so each board shows the overlap. His agent asks Vihaan's agent how many decimals the integration page shows, waits for the answer, then renames `formatCost` to `formatUsd(usd, digits)` and updates its callers.
+   - **Daniyal,** once `harness log --kind wait` shows that wait (`wait.started` on T-2; `harness status` doesn't list waits): `harness task assign T-2 daniyal-ui`. Both tasks' scope is `packages/ui/`, so each board shows the overlap. His agent asks Vihaan's agent how many decimals the integration page shows, waits for the answer, then renames `formatCost` to `formatUsd(usd, digits)` and updates its callers.
    - **Recovery drill:** while Daniyal's agent is still working on T-2, stop Daniyal's harnessd (Ctrl-C), start it again, see T-2 **stopped** in `harness status`, and run `harness task resume T-2`.
    - **T-2 lands:** Vihaan approves the PR on GitHub, and Daniyal runs `harness integrate T-2`. Vihaan's harnessd fetches the merge and syncs T-3's branch, and his agent is told `format.ts` changed, with the diff. It then makes the integration page's costs call `formatUsd`.
    - Vihaan approves T-3's publish, Daniyal approves the PR on GitHub, and Vihaan runs `harness integrate T-3`.
@@ -168,7 +172,7 @@ The three task texts are in `scripts/pilot/first-test/`, so both Macs run exactl
 ## 6. Recovery
 | What happened | What to do |
 |---|---|
-| A Mac slept, or the tunnel dropped | Nothing. launchd restarts the tunnel and harnessd reconnects. `tunnel.sh status` shows the tunnel; `harness doctor` proves who's behind it |
+| A Mac slept, or the tunnel dropped | Nothing. launchd restarts the tunnel and harnessd reconnects. `tunnel.sh status` shows the tunnel; `harness doctor` proves who's behind it. With Power Nap on, a sleeping Mac wakes for a minute about every 15 minutes, so its device shows online and offline in turn (`pmset -g log` shows the `DarkWake` lines); keep it awake during a run |
 | Daniyal's Mac slept | While it sleeps, nobody can coordinate, and the coordinator's timers (waits, leases) fire late. `caffeinate` doesn't stop a lid-close sleep on battery. During a run, keep it **on power with the lid open**, or have its owner run `sudo pmset -a disablesleep 1` (undo: `0`). `pmset -g log \| grep -E "Sleep\|Wake"` shows when it slept. On each wake, `device.offline` then `device.online` in the same second for a device is that sleep, not a lost connection |
 | The tunnel loops, and Vihaan's `tunnel.log` says `Connection closed by <host> port 22` right after `Server accepts key` | The account is refused after its key. Operator: `dscl . -read /Users/harness-tun-vihaan UserShell` must be `/sbin/nologin`, and `dscl . -read /Groups/com.apple.access_ssh GroupMembership` must list it. Vihaan runs `tunnel.sh stop` until it's fixed; macOS's sshd logs nothing about it |
 | harnessd or a Mac restarted mid-task | Nothing to start: launchd starts harnessd at login and after a crash. It reconciles from its journal (D-113). A task whose session ended shows as **stopped**: `harness task resume <task>` starts a new session with the work so far, in the slot the task still holds |
