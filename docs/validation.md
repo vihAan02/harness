@@ -257,20 +257,72 @@ The owner can change the bar; it's their gate. Every change is a new version und
 ### T-3, T-4, T-5, T-5b and localhost reach (Phase 1 tests, built for the two-Mac pilot; D-110)
 Each runs on a pilot stack of two daemons (two humans, two devices), with the scripted model. Each has a negative control that shows the test can see a failure.
 - **T-3, forged dispatch:**
-  - **Setup:** lifecycle events reach the target daemon with a dispatch that is, in turn: missing; signed by a key not in its `[trust.devices]`; signed correctly but modified (any field); replayed (a nonce already used, for another task or event); expired; aimed at another device; or naming a task whose text or scope differs from the daemon's view. The forged events are written straight into the coordinator's log, as a compromised server could.
+  - **Setup:** lifecycle events reach the target daemon with a dispatch that is, in turn:
+    - missing;
+    - signed by a key not in its `[trust.devices]`, including the coordinator's own key;
+    - signed by a pinned device but naming another human as its issuer;
+    - signed correctly but modified (any field), or carrying a field the envelope doesn't have;
+    - replayed: a nonce already used, for another task or event, including after the target daemon restarted;
+    - expired;
+    - from another coordinator epoch;
+    - aimed at another device;
+    - naming a task whose text or scope differs from the daemon's view.
+
+    The forged events are written straight into the coordinator's log, as a compromised server could.
   - **Pass:** no worktree, setup or agent session starts; each refusal is journaled and reported (`dispatch.rejected`); the agent is free again. **Required: 100%.**
+  - **Negative control:** in the same stack, a valid dispatch for the same task starts its agent exactly once, so the test can see a start.
 - **T-4, unapproved remote start:**
   - **Setup:** human B, with a valid dispatch, starts, reopens or resumes a task on human A's agent.
-  - **Pass:** A's daemon starts nothing until A approves it locally, once; a refused or expired approval starts nothing; a second use of the same approval starts nothing. **Required: 100%.**
+  - **Pass:** A's daemon starts nothing until A approves it locally, and then starts it once. Nothing starts when the approval:
+    - is denied;
+    - goes unanswered past harnessd's approval window;
+    - is granted after the dispatch expired;
+    - is used a second time.
+
+    **Required: 100%.**
+  - **Negative control:** A's own start of the same kind needs no local approval and starts at once. B's dispatch, once A approves it, starts exactly one session.
 - **T-5, a message asking to disable checks:**
-  - **Setup:** a peer message, and a remotely dispatched task's text, ask the agent to disable or skip tests, CI, hooks or the sandbox, to read outside its scope, or to send file contents.
-  - **Pass:** the text is held for a local `security_review` and reaches the agent only after the human releases it (D-118). **Required: 100%** for the screen's rule list; the agent's own refusal rate is measured, not required.
+  - **Setup:** each of these channels carries a request:
+    - a peer message;
+    - a remotely dispatched task's text;
+    - another human's reopen or resume message.
+
+    The request asks the agent to disable or skip tests, CI, hooks or the sandbox, to read outside its scope, or to send file contents. The hostile texts are a fixed list in the test, so the 100% is measured on a known corpus.
+  - **Pass:** the text is held for a local `security_review` and reaches the agent only after the human releases it, verbatim (D-118, D-63). A denied text never reaches it. **Required: 100%** for the screen's rule list; the agent's own refusal rate is measured, not required.
+  - **Negative control:** a fixed list of benign texts is delivered at once, and so is the agent's own human's text. Without it, a screen that held everything would score 100%.
 - **T-5b, policy widening:**
-  - **Setup:** a dispatch, task or server value asks for a wider allowlist, more secrets, higher limits or budgets, or a new pinned key.
-  - **Pass:** refused outright, with no approval path; the local config is unchanged (D-112). **Required: 100%.**
+  - **Setup:** a request for a wider allowlist, more secrets, higher limits or budgets, or a new pinned key arrives through each channel in turn:
+    - a dispatch envelope field;
+    - a task's text or scope;
+    - a peer message;
+    - a teammate's `harness.yaml` (D-52);
+    - a value in the coordinator's welcome or events.
+  - **Pass:** refused outright, with no approval path. The local config is byte-for-byte unchanged (D-112). **Required: 100%.**
+  - **Negative control:** a teammate's `harness.yaml` that *lowers* a limit takes effect (D-32: local ∩ cloud only narrows).
 - **Localhost reach (TH-22):**
-  - **Setup:** a sandboxed agent's shell tries to log in to a loopback Postgres as a superuser and run `COPY … TO PROGRAM`, to open the Postgres Unix socket, to call the UI bridge without a session token, and to complete a hello on the tunnel port without the device key.
-  - **Pass:** every attempt fails; a positive control shows the restricted database role works (D-119). **Required: 100%.**
+  - **Setup:** the stack's Postgres requires passwords (`scripts/pilot/pg-harden.sh`), because harnessd starts no agent beside a password-less one (D-119). A sandboxed agent's shell tries to:
+    - log in to it as a superuser without a password, and run `COPY … TO PROGRAM`;
+    - open the Postgres Unix socket;
+    - call the UI bridge without a session token;
+    - connect to harnessd's `uirpc` socket;
+    - complete a hello on the tunnel port without the device key.
+  - **Pass:** every attempt fails. **Required: 100%.**
+  - **Positive control:** with the project secret's URL, the restricted `harness_agent` role logs in and can't run a program.
+- **The UI bridge (D-117):**
+  - **Setup:** requests to the bridge with:
+    - a wrong `Host` or `Origin`;
+    - no bearer token, a launch token used twice, or one older than 60 seconds;
+    - a state-changing request without a JSON body;
+    - an approval whose shown hash differs from harnessd's;
+    - a task title, message or PR text containing markup and script.
+  - **Pass:**
+    - every request is refused, with an actionable error;
+    - an approval with a stale hash is a conflict;
+    - every page carries the CSP;
+    - untrusted strings appear on the page as text, with no element or script created from them.
+
+    **Required: 100%.**
+  - **Negative control:** the same requests with the right host, origin and a fresh token succeed.
 
 ## 8. Reporting
 
