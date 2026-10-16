@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseCodeowners } from '../src/codeowners.ts';
-import { Delegation, inScope, isProtected, parseDelegation, reviewRefusal } from '../src/delegation.ts';
+import { Delegation, inScope, isProtected, parseDelegation, reviewRefusal, taskRefusal } from '../src/delegation.ts';
 import { tempDir, tempHome } from './fixtures.ts';
 
 const NOW = Date.parse('2026-10-15T06:00:00Z');
@@ -94,4 +94,15 @@ test('a delegated integrate needs another code owner\'s latest review to approve
   assert.match(String(reviewRefusal(parseCodeowners('* @me\n'), ['site/a.ts'], 'me', [review('stranger', 'APPROVED')], H)), /names no other human/);
   assert.match(String(reviewRefusal([], ['site/a.ts'], 'me', [review('other', 'APPROVED')], H)), /names no other human/);
   assert.match(String(reviewRefusal(sole, ['site/a.ts'], null, [review('other', 'APPROVED')], H)), /login isn't known/);
+});
+
+test('more manifests and agent config are protected, including a .claude folder anywhere', () => {
+  for (const f of ['requirements.txt', 'svc/pyproject.toml', 'crates/x/Cargo.toml', 'go.mod', 'Gemfile', 'Makefile', 'site/Makefile', '.husky/pre-commit', '.pre-commit-config.yaml', 'CLAUDE.local.md', 'site/.claude/settings.json', 'a/b/.Claude/agents/x.md']) assert.equal(isProtected(f), true, f);
+  for (const f of ['site/claude-notes.md', 'site/makefile.ts', 'docs/claude/x.md']) assert.equal(isProtected(f), false, f);
+});
+
+test('only a task this human wrote, for their own agent, is delegated', () => {
+  assert.equal(taskRefusal({ ownerHumanId: 'human_a' }, 'human_a', 'human_a'), null, 'the control: own task, own agent');
+  assert.match(String(taskRefusal({ ownerHumanId: 'human_b' }, 'human_a', 'human_a')), /human_b wrote the task/);
+  assert.match(String(taskRefusal({ ownerHumanId: 'human_a' }, 'human_b', 'human_a')), /another human's/);
 });

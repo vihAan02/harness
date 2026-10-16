@@ -121,6 +121,8 @@ export class Poller {
         const v = c.status !== 'completed' ? 'pending' : (c.conclusion ?? 'pending');
         conclusions[c.name] = CONCLUSIONS.includes(v as CheckConclusion) ? v as CheckConclusion : 'failure';
       }
+      // Again: a refresh may have pushed and republished while the checks and reviews were read (D-147).
+      if (await this.d.staleHead?.(p, pr.taskId, live.head.sha)) continue;
       await this.d.send(p.id, 'pr.status', {
         task_id: pr.taskId, pr_number: pr.prNumber, head_sha: live.head.sha, state: live.state, merged: live.merged,
         ...(live.merged && live.merge_commit_sha ? { merge_sha: live.merge_commit_sha } : {}),

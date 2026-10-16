@@ -5,6 +5,7 @@
 // once its new head is reviewed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Approvals } from '../../packages/daemon/src/approvals.ts';
@@ -141,5 +142,62 @@ test('where the author owns every changed path, a stranger\'s approval or a with
     s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: pr.headSha });
     await s.until(() => s.a.daemon.view(s.project).tasks.get(task)?.status === 'landed', 20_000, 'the land on the owner\'s approval');
     assert.equal(merges(s), 1);
+  } finally { await s.stop(); }
+});
+
+test('no audit record, no delegated act: a publish whose record can\'t be written waits for a click', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    fs.mkdirSync(s.a.daemon.delegation.auditFile, { recursive: true }); // a directory where the log file goes: every append fails
+    const task = await finish(s, s.a, 'agent/noaudit', { 'site/index.html': '<p>v2</p>\n' });
+    await s.until(() => pendingPublish(s.a, task), 20_000, 'the publish request');
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(s.a.daemon.view(s.project).prs.has(task), false, 'not published without its record');
+    assert.ok(s.a.logs.some((l) => l.includes(`${task}: not delegated: the audit log couldn't be written`)), s.a.logs.join(' | '));
+    assert.deepEqual(await acted(s, task), []);
+  } finally { await s.stop(); }
+});
+
+test('a PR is brought up to date only from what was published: work left in the worktree stops the refresh', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    const task = await finish(s, s.a, 'agent/residue', { 'site/index.html': '<p>v2</p>\n' });
+    await s.until(() => s.a.daemon.view(s.project).prs.has(task), 20_000, 'the PR');
+    const pr = s.a.daemon.view(s.project).prs.get(task)!;
+    fs.writeFileSync(path.join(s.a.daemon.worktreeOf(s.project, task), 'site/late.html'), '<p>never published</p>\n');
+    await s.fake.pushToBase({ 'other.txt': 'o\n' }, 'a human merges something');
+    s.fake.addReview(pr.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: pr.headSha });
+    await s.until(() => s.a.logs.some((l) => l.includes(`${task}: delegated integration:`) && l.includes('never published')), 20_000, 'the refused refresh');
+    assert.equal(s.a.daemon.view(s.project).prs.get(task)!.headSha, pr.headSha, 'the PR keeps its head');
+    assert.equal(merges(s), 0);
+    assert.equal(await s.fake.tip(s.a.daemon.remoteBranch(s.project, task)), pr.headSha, 'nothing new was pushed');
+  } finally { await s.stop(); }
+});
+
+/** Commits on a task's branch, in its worktree, as if a step had left them there: `merge` makes a sync merge commit. */
+function leftCommit(wt: string, task: string, kind: 'merge' | 'plain') {
+  const g = (...a: string[]) => execFileSync('git', ['-C', wt, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+  const c = kind === 'merge'
+    ? g('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-p', 'HEAD~1', '-m', `Sync ${task} with the base\n\nHarness-Task: ${task}\nHarness-Sync: 0123456789abcdef0123456789abcdef01234567`)
+    : g('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'an unpublished commit');
+  g('reset', '-q', '--hard', c);
+}
+
+test('a refresh that merged but didn\'t push may go again; any other commit after the publish stops it', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    const own = await finish(s, s.a, 'agent/stranded', { 'site/index.html': '<p>v2</p>\n' });
+    const other = await finish(s, s.a, 'agent/extra', { 'site/about.html': '<p>about</p>\n' });
+    await s.until(() => s.a.daemon.view(s.project).prs.has(own) && s.a.daemon.view(s.project).prs.has(other), 20_000, 'both PRs');
+    const prOwn = s.a.daemon.view(s.project).prs.get(own)!;
+    const prOther = s.a.daemon.view(s.project).prs.get(other)!;
+    leftCommit(s.a.daemon.worktreeOf(s.project, own), own, 'merge');
+    leftCommit(s.a.daemon.worktreeOf(s.project, other), other, 'plain');
+    const moved = await s.fake.pushToBase({ 'other.txt': 'o\n' }, 'a human merges something');
+    s.fake.addReview(prOwn.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: prOwn.headSha });
+    s.fake.addReview(prOther.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: prOther.headSha });
+    await s.until(() => s.a.daemon.view(s.project).prs.get(own)?.baseSha === moved, 20_000, 'the stranded merge\'s PR refreshed');
+    await s.until(() => s.a.logs.some((l) => l.includes(`${other}: delegated integration:`) && l.includes("branch has commits its PR doesn't")), 20_000, 'the other refused');
+    assert.equal(s.a.daemon.view(s.project).prs.get(other)!.headSha, prOther.headSha, 'the other PR keeps its head');
   } finally { await s.stop(); }
 });
