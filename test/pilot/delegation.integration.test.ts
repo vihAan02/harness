@@ -5,6 +5,7 @@
 // once its new head is reviewed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Approvals } from '../../packages/daemon/src/approvals.ts';
@@ -170,5 +171,33 @@ test('a PR is brought up to date only from what was published: work left in the 
     assert.equal(s.a.daemon.view(s.project).prs.get(task)!.headSha, pr.headSha, 'the PR keeps its head');
     assert.equal(merges(s), 0);
     assert.equal(await s.fake.tip(s.a.daemon.remoteBranch(s.project, task)), pr.headSha, 'nothing new was pushed');
+  } finally { await s.stop(); }
+});
+
+/** Commits on a task's branch, in its worktree, as if a step had left them there: `merge` makes a sync merge commit. */
+function leftCommit(wt: string, task: string, kind: 'merge' | 'plain') {
+  const g = (...a: string[]) => execFileSync('git', ['-C', wt, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+  const c = kind === 'merge'
+    ? g('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-p', 'HEAD~1', '-m', `Sync ${task} with the base\n\nHarness-Task: ${task}\nHarness-Sync: 0123456789abcdef0123456789abcdef01234567`)
+    : g('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'an unpublished commit');
+  g('reset', '-q', '--hard', c);
+}
+
+test('a refresh that merged but didn\'t push may go again; any other commit after the publish stops it', async () => {
+  const s = await startPilotStack({ files: FILES, daemonOptions: FAST, delegate: ['a'] });
+  try {
+    const own = await finish(s, s.a, 'agent/stranded', { 'site/index.html': '<p>v2</p>\n' });
+    const other = await finish(s, s.a, 'agent/extra', { 'site/about.html': '<p>about</p>\n' });
+    await s.until(() => s.a.daemon.view(s.project).prs.has(own) && s.a.daemon.view(s.project).prs.has(other), 20_000, 'both PRs');
+    const prOwn = s.a.daemon.view(s.project).prs.get(own)!;
+    const prOther = s.a.daemon.view(s.project).prs.get(other)!;
+    leftCommit(s.a.daemon.worktreeOf(s.project, own), own, 'merge');
+    leftCommit(s.a.daemon.worktreeOf(s.project, other), other, 'plain');
+    const moved = await s.fake.pushToBase({ 'other.txt': 'o\n' }, 'a human merges something');
+    s.fake.addReview(prOwn.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: prOwn.headSha });
+    s.fake.addReview(prOther.prNumber, { login: 'reviewer', state: 'APPROVED', commit_id: prOther.headSha });
+    await s.until(() => s.a.daemon.view(s.project).prs.get(own)?.baseSha === moved, 20_000, 'the stranded merge\'s PR refreshed');
+    await s.until(() => s.a.logs.some((l) => l.includes(`${other}: delegated integration:`) && l.includes("branch has commits its PR doesn't")), 20_000, 'the other refused');
+    assert.equal(s.a.daemon.view(s.project).prs.get(other)!.headSha, prOther.headSha, 'the other PR keeps its head');
   } finally { await s.stop(); }
 });

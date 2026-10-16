@@ -1754,9 +1754,17 @@ export class Daemon {
     // came after it (a late edit, a reopen's commits), which would reach the PR with no approval.
     const j = this.journal();
     const pushed = (j.last(projectId, taskId, 'pushed')?.head as string | undefined) ?? null;
-    if (await git(worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error(`${taskId}'s worktree has changes that were never published: reopen the task, or remove them, before its PR is updated`);
-    if (pushed && await branchTip(project.repo, taskBranch(taskId)) !== pushed) throw new Error(`${taskId}'s branch has commits its PR doesn't: publish them first (reopen the task), then update the PR`);
     const base = await this.fetchProjectBase(project);
+    // Checked last, right before the merge: nothing may start or write in between.
+    if (this.running.has(taskId)) throw new Error(`${taskId}'s agent is running`);
+    if (await git(worktree, 'status', '--porcelain', '--untracked-files=all')) throw new Error(`${taskId}'s worktree has changes that were never published: reopen the task, or remove them, before its PR is updated`);
+    const tip = await branchTip(project.repo, taskBranch(taskId));
+    if (pushed && tip !== pushed) {
+      // An earlier refresh that merged but didn't get to push left only its own sync merges: those may go again.
+      const own = !(await git(project.repo, 'rev-list', '--no-merges', `${pushed}..${tip}`))
+        && (await git(project.repo, 'log', '--merges', '--format=%(trailers:key=Harness-Sync,valueonly,separator=%x2C)', `${pushed}..${tip}`)).split('\n').every((l) => l.trim() !== '');
+      if (!own) throw new Error(`${taskId}'s branch has commits its PR doesn't: publish them first (reopen the task), then update the PR`);
+    }
     const r = await syncWorktree({
       worktree, target: base, taskId, agent: { name: agent.name, email: `${agent.id}@harness.invalid` },
       ...(project.commitIdentity ? { identity: project.commitIdentity } : {}),
@@ -1871,7 +1879,8 @@ export class Daemon {
               const head = await branchTip(project.repo, taskBranch(task.id)).catch(() => m[1]!);
               if (this.auditDelegated({ ...base, action: 'refresh', head_sha: head })) await this.delegated(project.id, { ...base, action: 'refresh', head_sha: head });
             }
-            this.log(`${task.id}: delegated integration: ${(e as Error).message}`);
+            else this.auditDelegated({ ...base, action: 'integrate', head_sha: pr.headSha, outcome: `refused: ${untrustedText((e as Error).message, 200)}` });
+            this.log(`${task.id}: delegated integration: ${untrustedText((e as Error).message, 400)}`);
           }
         }
       }

@@ -134,6 +134,8 @@ export function inScope(file: string, scope: string[]): boolean {
 export type DelegationRecord = {
   action: DelegationAction | 'refresh'; project_id: string; task_id: string; head_sha: string; base_sha: string;
   pr_number?: number; land_id?: string; approval_id?: string; files?: number;
+  /** Set on a second record when an act that was audited first didn't happen. */
+  outcome?: string;
 };
 
 export class Delegation {
