@@ -800,4 +800,19 @@ Sources: `scripts/provider-check.ts` runs and the `demo:0b --real --provider ope
 - **A real `demo:0b` on it:** Haiku 5.5 stayed inside its task's declared scope. It reported `task_blocked` to the human rather than edit a test fixture its change broke outside the scope. DeepSeek's runs had passed the same demo.
 
 Sources: [models](https://openrouter.ai/api/v1/models), [Haiku 5.5's endpoints](https://openrouter.ai/api/v1/models/anthropic/claude-haiku-5.5/endpoints) and [its `:batch` endpoints](https://openrouter.ai/api/v1/models/anthropic/claude-haiku-5.5:batch/endpoints), [Batch API quickstart](https://openrouter.ai/docs/batch-quickstart.md), [API keys](https://openrouter.ai/docs/client-sdks/typescript/sdks/apikeys/README.md); the provider check and `demo:0b --real` runs, 2026-10-07. *Impact: D-126; the `openrouter-haiku55` table; the demo's backend scope.*
+**F-150 ✔ On macOS, sshd refuses a key-authenticated user whose shell is `/usr/bin/false`, after the key is accepted, by closing the connection with no message; `/sbin/nologin` works** (checked 2026-10-13, on the pilot's coordinator Mac, macOS with OpenSSH 10.3).
+- **Seen from the client** (`ssh -vvv` with the tunnel's options): the server answers the key query (`Server accepts key`, packet 60), the client sends the signed request (packet 50), then `Connection closed by <host> port 22`. There's no USERAUTH_SUCCESS or FAILURE and no disconnect message.
+- **The cause, on the server:** sshd's PAM account phase. `/etc/pam.d/sshd` has `account required pam_opendirectory.so`, which refuses that shell, and sshd then exits ("Access denied … by PAM account configuration").
+- **The fix that worked:** the tunnel account's shell set to `/sbin/nologin`. The tunnel uses `ssh -N`, so no session or command runs, and the key line's `restrict,port-forwarding,permitopen=…` with `ForceCommand` still apply.
+
+*Impact:* `coordinator.sh tunnel-account` creates the account with `/sbin/nologin` (#150), and README §6 has a recovery row for this symptom.
+
+**F-151 ✔ With Power Nap on, a sleeping MacBook dark-wakes for about a minute every 15 minutes, and each wake reconnects the network long enough for a device to go online, then offline** (checked 2026-10-15, on Vihaan's Mac).
+- `pmset -g` showed `powernap 1`.
+- `pmset -g log` showed `DarkWake` and `Sleep` pairs about every 15 minutes, from 00:09 to 05:30 local time.
+- In the same window, the coordinator logged `device.offline`/`device.online` pairs for `dev_vihaan_mbp` every few minutes, and the tunnel's sshd session restarted.
+
+*Impact:* a sleeping pilot Mac looks like a flapping one. README §6 says so: keep the Mac awake during a run.
+
+Sources: the pilot's own runs: Vihaan's `ssh -vvv` trace and Daniyal's sshd diagnosis (2026-10-13), and Vihaan's `pmset -g log` (2026-10-15). Recorded on the pilot board, #86.
 <!-- Stream B: append new F-IDs (F-120 to F-139) above this line. -->

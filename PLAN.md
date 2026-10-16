@@ -44,6 +44,7 @@ These sources define this plan. Later sources win where they sharpen or override
 | **S14** | [Co-owner declares the functional MVP](docs/source/2026-10-06-S14-coowner-functional-mvp-scope.md) | Declared on the A8 evidence, with the real-model run's scope stated; scripted-model coverage accepted for the rest (D-109) |
 | **S17** | [Owner puts the two-Mac pilot first](docs/source/2026-10-08-S17-owner-pilot-sprint.md) | A private pilot on both owners' Macs and its thin UI, built through Harness, come before the counted A/B; the security model, budgets ($0.50 a day in total) and credential rules unchanged (D-110 to D-119) |
 | **S18** | [Co-owner hands both streams to his Claude for the first real two-agent test](docs/source/2026-10-10-S18-coowner-takeover-two-agent-test.md) | Consolidate both streams and reach a real two-Mac, two-agent test; the coordinator runs on Daniyal's Mac over Tailscale; green PRs merge with reviews after (D-142) |
+| **S21** | [Owner's side carries both streams while the co-owner is away](docs/source/2026-10-16-S21-owner-takes-over-both-streams.md) | After the first two-Mac test: Vihaan's Claude carries both streams' in-flight work until Vihaan says otherwise, and gives his approvals at bottlenecks, labelled; very large or urgent calls go to him; Daniyal's Mac is updated by Daniyal at the end |
 
 **How this version was produced (2026-10-01):**
 1. Written from S1–S3.
